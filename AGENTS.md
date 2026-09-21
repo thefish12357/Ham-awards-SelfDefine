@@ -1,0 +1,331 @@
+# AGENTS.md — Ham Radio Awards System
+
+> 本文件为 AI 助手在本目录工作时的项目说明。新开对话时优先阅读本文件。
+> 上游仓库：https://github.com/BH2VSQ/Ham-awards-SelfDefine （main 分支，package version `2.2.0`）
+> 本文件最后核对时间：2026-09-21
+> 二次开发规划见 **`ROADMAP.md`**（6 项需求的技术方案、DB/API 变更、里程碑）
+> ✅ 许可证：上游已于 2026-09-21 补充 **GPL-3.0**（`LICENSE`，commit `b4773ab Add LICENSE.md`），作者已授权二次开发。
+> GPL-3.0 是**传染性**许可：对外分发本仓库或其衍生作品时，必须同样以 GPL-3.0 授权并提供源码；仅自用/内部使用不受限制。
+> `package.json` 已补 `"license": "GPL-3.0"`。
+> 本仓库已接管上游 git 历史（`origin` = 上游），并在此基础上做了 Docker 化 + 基础设施改造，详见 §5 与 §7。
+> ★ **2026-09-21 完成 M0（基础设施）**：Tailwind 改本地构建、补 Hash 路由、抽出 `src/lib/`、修 `POST /api/awards` 不返回新 id、删除死代码 `src/install.jsx`。详见 `ROADMAP.md` §5。
+
+---
+
+## 1. 项目定位
+
+业余无线电（HAM）**奖项管理系统**。核心业务：导入 LoTW 导出的 ADIF 通联日志 → 解析入库 → 按奖状规则匹配 QSO → 用户在线申请奖状 → 管理员审核签发。
+
+## 2. 技术栈
+
+| 层 | 技术 | 备注 |
+|---|---|---|
+| 前端 | React 18 + Vite 4 | JSX（**非 TypeScript**） |
+| 样式 | **Tailwind CSS 3 本地构建** | 入口 `src/index.css`（`@tailwind` 三条指令），配置 `tailwind.config.cjs` / `postcss.config.cjs`。**必须用 `.cjs` 后缀**，因为 `package.json` 是 `type: module` |
+| 图标 | lucide-react | |
+| 路由 | **轻量 Hash 路由** | 无 react-router。`App` 的 `subView` 与 `location.hash` 双向同步（`src/lib/routes.js`），刷新可停留当前页、链接可分享；`adminPath` 仍未被前端使用 |
+| 后端 | Express 4 单体（`server.js`） | |
+| 数据库 | PostgreSQL（`pg`） | ADIF 记录存 JSONB |
+| 对象存储 | MinIO + multer | 存奖状背景图 |
+| 认证 | JWT + bcryptjs + TOTP(otplib/qrcode) | 支持 Google Authenticator 2FA |
+| 运行环境 | Node.js v16+ | 实测环境 Node v24 |
+
+## 3. 目录结构
+
+```
+/
+├── index.html          # Vite HTML 模板（已不再引 CDN；favicon 指向 /favicon.svg）
+├── vite.config.js      # root='.', outDir='dist', /api 代理 -> 9993
+├── tailwind.config.cjs # ★ 新增：Tailwind 本地构建配置（扫描 index.html + src）
+├── postcss.config.cjs  # ★ 新增：PostCSS 配置（tailwindcss + autoprefixer）
+├── package.json        # type: module
+├── server.js           # ★ 后端单体，约 50KB，全部 API 在此
+├── src/
+│   ├── main.jsx        # 入口，挂载到 #root（import './index.css'）
+│   ├── app.jsx         # ★ 约 139KB，前端几乎全部组件都在这一个文件里
+│   ├── index.css       # ★ Tailwind 入口（@tailwind base/components/utilities）
+│   ├── lib/            # ★ 新增：新功能的公共模块，不要再往 app.jsx 里塞
+│   │   ├── apiFetch.js #   统一请求封装（原 app.jsx 第 16–49 行抽出）
+│   │   ├── routes.js   #   Hash 路由工具（readRoute / writeRoute / isRouteAllowed）
+│   │   ├── awardLayout.js  #   奖状布局 schema（v2，mm 单位）+ 工具
+│   │   └── exportAwardPdf.js   #   客户端 PDF 导出（html-to-image + jsPDF，按需加载）
+│   ├── components/     # ★ 新增：可复用组件
+│   │   ├── AwardRenderer.jsx   #   布局 → DOM 渲染（编辑器/我的奖状/审核预览/PDF 共用）
+│   │   ├── VisualDesigner.jsx  #   可视化布局编辑器（拖拽/缩放/属性/撤销重做/底图上传/多等级）
+│   │   └── PasswordInput.jsx   #   带「显示密码」眼睛图标的密码框（登录/注册/用户中心）
+│   └── pages/          # ★ 新增：独立页面（app.jsx 只做最小接入）
+│       ├── LotwImportView.jsx  #   LoTW 直连页（需求①）
+│       └── VerifyView.jsx      #   公开校验页（免登录，二维码指向 #/verify/<serial>）
+├── server/             # ★ 新增：后端新增模块（server.js 仍是唯一入口）
+│   ├── services/
+│   │   ├── adif.js           # ADIF 解析（整串 + 流式），替代 server.js 内联实现
+│   │   ├── awardEngine.js    # ★ 奖状判定引擎（纯函数，数据源可插拔）
+│   │   ├── lotwClient.js     # LoTW 报表拉取 + 自动二分重试
+│   │   └── lotwSessions.js   # ★ LoTW 临时会话（纯内存，TTL 30 分钟）
+│   └── routes/
+│       └── lotw.js           # /api/lotw/* 路由（工厂函数注入依赖，避免循环 import）
+├── public/
+│   └── favicon.svg     # ★ 新增：修掉 index.html 的 favicon 404
+├── docs/
+│   └── hamcq-oauth-application.md  # ★ 新增：HamCQ OAuth2 接入材料（备查）
+├── dist/               # 前端构建产物，由 server.js 静态托管（不入库）
+│
+├── Dockerfile          # ★ 新增：多阶段构建（Vite 构建 -> 生产依赖运行时）
+├── ROADMAP.md          # ★ 新增：二次开发规划（6 项需求方案 / 里程碑 / 风险）
+├── docker-compose.yml  # ★ 新增：db + minio + app + installer 四个服务
+├── docker/
+│   └── autoinstall.mjs # ★ 新增：调用 /api/install 完成首次安装（幂等）
+├── .env.example        # ★ 新增：可调参数模板（复制为 .env）
+├── .gitignore          # ★ 新增：排除 config.json（内含密钥）等
+├── .dockerignore       # ★ 新增
+└── DOCKER.md           # ★ 新增：Docker 部署 / 开发说明
+```
+
+## 4. ⚠️ 端口：README 是错的，以此处为准
+
+| 服务 | 端口 | 依据 |
+|---|---|---|
+| 前端 Vite 开发服务器 | **5173**（默认） | `vite.config.js` 未配 `server.port` |
+| 后端 API | **9993** | `server.js` 末尾 `Number(process.env.PORT) \|\| 9993` |
+
+- README 里写的 `3003` **已过时，不要使用**。
+- `vite.config.js` 的注释 `Corrected port to match server.js` 已确认以 9993 为准。
+- 后端端口已支持 `process.env.PORT` 覆盖，**默认仍是 9993**（原为硬编码，为 Docker 化所加）。
+- Docker 部署时宿主机映射端口见 `.env` 的 `*_HOST_PORT`：应用 `9993`、PostgreSQL `55432`、MinIO `9000/9001`。
+
+## 5. 启动与调试
+
+```powershell
+npm install
+
+# 方式一：开发模式（前端热更新，推荐日常开发 / 浏览器调试）
+npm run dev          # 终端 1 -> http://localhost:5173 ，/api 自动代理到 9993
+node server.js       # 终端 2 -> http://localhost:9993 （需先有 PostgreSQL）
+
+# 方式二：生产模式（单进程，由 server.js 托管 dist）
+npm run build        # 生成 dist/
+node server.js       # 直接访问 http://localhost:9993
+```
+
+前置依赖：**PostgreSQL v12+** 与 **MinIO** 需可用；首次访问 `http://localhost:5173` 会自动进入安装向导（填数据库信息 + 设置管理员呼号/密码）。
+
+```powershell
+# 方式三：全栈 Docker（推荐，一条命令、易清理，详见 DOCKER.md）
+Copy-Item .env.example .env
+docker compose up -d --build        # 首次自动建库、建 bucket、建管理员 ADMIN/ChangeMe_123
+docker compose down -v --rmi local  # 连数据卷一起删干净
+```
+
+**Docker 模式要点**
+
+- 容器：`ham-awards-db`（PostgreSQL）、`ham-awards-minio`、`ham-awards-app`、`ham-awards-installer`（一次性，Exited(0) 属正常）。
+- 三个命名卷 `ham-awards_pgdata` / `miniodata` / `appdata` 承载全部数据；`config.json` 在 app 容器内为 `/data/config.json`（由 `CONFIG_FILE` 指定）。
+- MinIO 镜像用 `quay.io/minio/minio:latest`：本机 Docker Hub 加速节点拉不动 `minio/minio`，二者内容一致。
+- 验证方式见 `<project_guidance>` 内的浏览器调试小节；容器态访问 `http://localhost:9993`。
+- 改前端/`server.js` 后必须 `docker compose up -d --build` 才生效；只改 `docker/autoinstall.mjs` 则 `docker compose up -d` 即可。
+- 日常改代码建议**只用容器跑 db + minio**，应用在本机 `npm run dev` 热更新（DOCKER.md §4 有对应向导填法）。
+
+### ★ 本机开发（M0 起推荐的日常方式，已实测）
+
+容器只跑基础设施，应用跑本机源码，改一行即时生效：
+
+```powershell
+# 1. 只起 db + minio（若 app 容器在跑会占用 9993，先停掉）
+docker compose up -d db minio
+docker compose stop app          # 需要时用 docker compose start app 恢复
+
+# 2. 后端（本机源码）
+node server.js                   # -> http://localhost:9993
+
+# 3. 前端（热更新，可选）
+npm run dev                      # -> http://localhost:5173 ，/api 代理到 9993
+```
+
+**免手点完成安装**：本机 `config.json` 不存在时 `/api/system-status` 会返回 `installed:false`。
+不用打开安装向导，直接复用容器那套脚本，把端口指向宿主机映射即可：
+
+```powershell
+$env:APP_URL='http://localhost:9993'; $env:DB_HOST='localhost'; $env:DB_PORT='55432'
+$env:DB_USER='ham'; $env:DB_PASS='ham_pass'; $env:DB_NAME='ham_awards'
+$env:MINIO_ENDPOINT='localhost'; $env:MINIO_PORT='9000'
+$env:MINIO_ACCESS_KEY='minioadmin'; $env:MINIO_SECRET_KEY='minioadmin123'
+$env:MINIO_BUCKET='ham-awards'
+$env:ADMIN_CALLSIGN='ADMIN'; $env:ADMIN_PASSWORD='ChangeMe_123'
+node docker/autoinstall.mjs
+```
+
+本机模式与容器模式的 `config.json` 相互独立（前者在项目根，后者在 appdata 卷 `/data`），
+**注意 `jwtSecret` 不同**：混用会导致 401 并触发前端自动登出重载。切换环境时重新登录即可。
+
+停止后台进程（后端 9993 与 Vite 5173 都可能以隐藏窗口方式跑在后台）：
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -like '*server.js*' -or $_.CommandLine -like '*vite*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId }
+```
+
+### 浏览器调试
+
+本项目已配置 **Playwright MCP**（`--browser chrome`，headed 模式）。调试时：
+
+- 开发态访问 `http://localhost:5173`；需要验证构建产物时访问 `http://localhost:9993`
+- 优先用 `browser_snapshot`（无障碍树）而非截图定位元素
+- 改完 UI 后自查 `browser_console_messages`，不要只看页面渲染
+
+## 6. API 约定
+
+- 所有接口前缀 **`/api`**
+- ⚠️ **README 声称的“防重放（`x-timestamp` 5 分钟窗口）在 v2.2.0 代码里并不存在”**：全仓库检索无 `x-timestamp`，`server.js` 仅挂了 `cors()` / `express.json()` / `express.static()` 三个中间件。手工调接口**不需要**该头。（此前本文件误抄 README，已更正。若上游后续补上该机制再按 README 处理。）
+- 未安装时 `/api/install` 公开可调（`verifyToken` 首行放行），这是 `docker/autoinstall.mjs` 能免手点完成安装的基础。
+
+主要模块：
+
+| 前缀 | 用途 | 权限 |
+|---|---|---|
+| `/api/system-status` | 系统状态（是否已安装、adminPath） | 公开 |
+| `/api/install` | 首次安装向导 | 未安装时公开 |
+| `/api/auth/login`、`/api/auth/register` | 登录 / 注册 | 公开 |
+| `/api/stats/dashboard` | 仪表盘统计 | 登录 |
+| `/api/user/*` | 个人中心：profile、`2fa/setup|enable|disable`、password、logs、account、my-awards、qsos | 登录 |
+| `/api/logbook/upload` | ADIF 日志上传 | 登录 |
+| `/api/lotw/connect` | 读取 LoTW 报表到**内存会话**（不落库、不落盘） | 登录 |
+| `/api/lotw/evaluate` | 用内存会话判定奖状进度 | 登录 |
+| `/api/lotw/apply` | 用内存会话申请奖状（**只落申请记录，不落 QSO**） | 登录 |
+| `/api/lotw/session` | GET 查状态；DELETE/POST 清除（支持 `?id=sessionId` 能力令牌，供 `sendBeacon` 无法带 Auth 头时使用） | 登录 |
+| `/api/verify/:serial` | 奖状真伪校验，呼号脱敏（BH2VSQ → BH***Q） | **公开** |
+| `/api/verify/:serial/qr` | 校验二维码 PNG（内容 = 本站 `/#/verify/<serial>`） | **公开** |
+| `/api/media?key=awards/…` | 同源图片代理。底图在 MinIO 属跨域，canvas 导出会被污染，走这里规避 | **公开**（仅限 `awards/` 一级前缀，禁穿越） |
+| `/api/awards/*` | 奖状：my、all_approved、`:id/check`、`:id/apply`、增删改、upload-bg | 登录 / 奖状管理员 |
+| `/api/qsos/:id/awards` | 查某条 QSO 参与哪些奖状 | 登录 |
+| `/api/admin/*` | users、awards/pending、awards/approved、awards/audit、issued-awards、settings | **系统管理员** |
+
+## 7. 编码约定与雷区
+
+### 必须遵守
+
+1. **`src/app.jsx` 是 139KB 的单体文件**，不要"顺手重构"或整体重写。改动一律用局部替换（精确匹配上下文），并避免大范围重新格式化。**新功能一律放新文件**（`src/lib/`、`src/components/`、`src/pages/`），`App` 只做最小接入。
+2. **样式只用 Tailwind 类名**。`src/index.css` 现在只有三条 `@tailwind` 指令，它是 Tailwind 的**编译入口**，不是自定义样式层。
+3. **Tailwind 已改本地构建**（2026-09-21，不再依赖外网 CDN）：
+   - 配置为 `tailwind.config.cjs` / `postcss.config.cjs`，**必须保持 `.cjs` 后缀**（`package.json` 是 `type: module`，用 `.js` 会加载失败）
+   - 扫描范围是 `./index.html` + `./src/**/*.{js,jsx}`。**字符串拼接出的类名不会被扫描到**（如 `` `bg-${c}-500` ``），这类写法要改为完整类名或加 `safelist`
+   - `Dockerfile` 里已把这两个配置文件与 `public/` 加进构建阶段的 `COPY`，改动结构时别漏
+4. **前端是轻量 Hash 路由**（`src/lib/routes.js`）。新增页面：先在 `app.jsx` 的菜单与渲染分发里加分支，**再把新 id 加进 `ALL_ROUTES` 与对应的 `ROUTES_BY_ROLE`**，否则 URL 同步和角色守卫都不认它。服务端 `express.static('dist')` 仍无 SPA fallback，但 hash 不会发给服务端，所以刷新安全。
+5. **改动后端端口/静态目录时同步检查** `vite.config.js` 的 proxy 目标。
+6. `adminPath` 是**名存实亡的配置**：只写进 `config.json` 并被 `/api/system-status` 回显，前端从未读取，改它不影响入口路径。
+7. **外部请求统一走 `src/lib/apiFetch.js`**，不要写裸 `fetch('/api/...')`，否则会漏掉 `Authorization` / `x-2fa-code` 注入与 401 自动登出。
+   - ⚠️ **新接口不要用 401 表达"业务性失败"**（如密码错误、上游凭据错误）。前端只在 `401 且 error ∈ {TOKEN_MISSING, TOKEN_INVALID}` 时才自动登出；即便如此，业务失败也应改用 400 / 403 / 409，避免误导。（上游遗留的 `/api/user/password`、`requirePassword`、`/api/user/2fa/disable` 都误用了 401，已在 `apiFetch` 侧兼容；LoTW 凭据错误刻意返回 **400**。）
+8. **奖状判定逻辑只有一份**：`server/services/awardEngine.js`（纯函数，不碰 DB）。`server.js` 里的 `evaluateAward` 只是「取数据 + 调用引擎」的薄封装。**新增判定路径必须复用该引擎**（LoTW 会话就是这么做的），不要再复制一份规则逻辑。
+9. **奖状布局（layout）只有一份 schema**：`src/lib/awardLayout.js`，v2、单位 **mm**、A4 横版 297×210。编辑器、`AwardRenderer`、审核预览、PDF 导出读同一份；旧 `layout: []` 会被 `normalizeLayout` 归一化。改 schema 前先想清楚向后兼容。
+10. **多等级差异写在元素的 `levelOverrides` 里**，不要在渲染层各写一套判断：
+    ```js
+    // 元素级：Gold 等级下换色、加大、上移
+    { id:'e2', type:'text', binding:'level', color:'#a16207', h:18, y:80,
+      levelOverrides: { Gold: { color:'#eab308', h:30, y:70 } } }
+    ```
+    只有 `AwardRenderer` 通过 `resolveElementForLevel(el, data.level)` 合并差异，因此**所有消费方自动生效**。
+    编辑器用 `ignoreLevelOverrides` 在「默认（所有等级共用）」模式下关掉合并，避免"改基础设计却看到覆盖效果"。
+    新增渲染路径时**不要绕过 `AwardRenderer`**，否则多等级会失效。
+11. **密码输入一律用 `src/components/PasswordInput.jsx`**（自带显隐切换 + `autoComplete`）。裸 `<input type="password">` 会缺眼睛图标，也会触发浏览器控制台警告、并可能让 Chrome 的自动填充下拉挡住按钮。
+12. **★ 字体有版权红线**（2026-09-21 定）：奖状字体列表 `src/lib/awardLayout.js` 的 `FONTS` **只允许**开源可商用授权（**SIL OFL** / **Apache-2.0** / 官方明确免费商用）与**操作系统自带**字体。**严禁**加入方正、汉仪、造字工房、华文、长城等商业字体 —— 用于生成对外发布的奖状会收到律师函。新增字体时必须在 `label` 里标出授权来源。
+   - **系统字体（微软雅黑/宋体/楷体等）可以放进 `font-family`**：CSS 里只是**引用本机已安装的字体**，属于常规引用，不涉及复制/再分发；且 PDF 走**栅格化**（渲染成位图）而非嵌入字体文件，不受字体 EULA 的「嵌入分发」条款约束。仍建议优先选开源字体。
+   - **★ 已自托管思源黑体 + 思源宋体**（2026-09-21）：`public/fonts/` 放 **404 个 woff2 分片**（400 / 700 字重，共 **10.78 MB**），`src/styles/fonts.css` 有 **404 条 `@font-face`**（由 `scripts/build-fonts.mjs` 生成，**勿手改**）。这两款在 `FONTS` 里标 `★已内置`，**任何设备渲染都一致**。
+     - 中文按 `unicode-range` 切成 101 片，浏览器**只下载实际用到的那几片** —— 实测渲染「业余无线电奖状AWARD」仅下载 4 片 / 125 KB，所以仓库虽大、首屏不受影响。
+     - **更新字体**：`npm install --no-save @fontsource/noto-sans-sc @fontsource/noto-serif-sc && node scripts/build-fonts.mjs`。这两个包**刻意不写进 `package.json`** —— 字体文件已入库，写进去会让 Docker 构建白白下载 160 MB+。
+     - OFL 要求随字体分发许可证，已放在 `public/fonts/LICENSE-*.txt`，**不要删**。
+   - ⚠️ **其余字体仍有前提**：除思源黑体 / 宋体外，能否生效仍取决于渲染机器装没装，未装会静默回退。因此 `FONTS[*].value` 一律写成**完整兜底栈**：`开源字体 → 同风格系统字体 → 通用族`（如 `"Noto Serif SC","Source Han Serif SC","Noto Serif CJK SC","SimSun",serif`）。
+   - ⚠️ **导出 PDF 前必须 `await document.fonts.ready`**：`@font-face` 用 `font-display: swap`，字体没加载完就栅格化会拿到回退字体，导致「PDF ≠ 设计」。
+   - 已知代价：字体声明让 CSS 从 ~27 KB 涨到 **400 KB（gzip 131 KB）**。若后续嫌大，可把 `fonts.css` 从主入口拆出、在奖状渲染页按需动态 `import`。
+13. **★ 导出 PDF 的三条硬约束**（`src/lib/exportAwardPdf.js`，2026-09-21 修过一轮「一直转圈」，**别踩回去**）：
+   - **判断图片是否加载完，只看 `img.complete`**，不要写 `complete && naturalWidth > 0`。图片**加载失败**时正是 `complete=true` 且 `naturalWidth=0`，此时若还去监听 `load`/`error`，就是在等一个**永远不会再触发**的事件 → Promise 永久挂起（表现就是按钮卡在「生成中…」）。
+   - **加载失败的 `<img>` 必须在栅格化前从 DOM 移除**（用同尺寸占位 div 顶替）。`html-to-image` 会逐张 fetch 并内联图片，拉不动就抛一个**没有 message 的 `Event`**，上层只能看到「[object Event]」，**整个导出直接失败**。移除后 PDF 仍能生成，只是缺这几张图，再由 `failedImages` 提示用户。
+   - **`URL.pathname` 保留 percent-encoding**。拿它直接 `encodeURIComponent` 会**二次编码**（`%C3%A6` → `%25C3%25A6`），`/api/media?key=` 必然 404。必须先 `decodeURIComponent` 还原成真实 key 再编码一次。
+   - 另外：`waitForImages` 与 `toPng` 都要有**超时兜底**（否则任何一次网络挂起都会永久卡住 UI）；栅格化前要 `await document.fonts.ready`。
+   - 报错信息要用 `describeError()` 提取 —— `e.message || e` 遇到 Event 会输出「[object Event]」。
+   - **★ `toPng` 必须开 `includeQueryParams: true`**：html-to-image 的资源缓存 key 默认会 `url.replace(/\?.*/, '')` **剥掉 query string**。而底图统一走 `/api/media?key=<对象名>`，不同奖状只有 key 不同 —— 剥掉 query 后缓存 key 全部退化成同一个 `/api/media`，**连续导出多份奖状时第二份会命中第一份的缓存，底图被替换成上一份奖状的图**（2026-09-21 实测：先导「测试」再导「M3 测试奖状」，后者 PDF 从 118 KB 涨到 4.2 MB，里面装着前者的底图）。开启后以完整 URL 作 key，互不污染；单份 PDF 内同 URL 仍正常复用。
+14. **上传文件不要用 `req.file.originalname` 当对象名**：multipart 的 filename 被 multer/busboy 按 **latin1** 解码，中文会变成乱码（`QQ截图` → `QQæªå¾`，还夹着不可见的控制字符），对象名与 URL 从此永久失配。`/api/awards/upload-bg` 现在只取**扩展名**，主体用 `时间戳 + 随机串`（`bg_<ts>_<hex>.png`）。
+
+### 本仓库相对上游的改动
+
+**A. 容器化改动（向后兼容，仅为 Docker 部署）**
+
+1. `server.js`：`CONFIG_FILE` 支持 `process.env.CONFIG_FILE`，让 config.json 落到容器卷。
+2. `server.js`：`const PORT = Number(process.env.PORT) || 9993;`（默认不变）。
+3. `server.js` 的 `/api/awards/upload-bg`：生成背景图 URL 时支持 `minio.publicEndPoint/publicPort` 或 `MINIO_PUBLIC_ENDPOINT/PORT`。**容器内存对象走服务名 `minio:9000`，浏览器解析不了服务名**，所以对外地址必须另配。
+4. `src/main.jsx`：`'./App'` → `'./app.jsx'`（否则 Linux/Docker 构建必然失败）。
+5. 新增 Docker 相关文件（见 §3），未改动任何既有业务流程。
+
+> 拉取上游更新遇到冲突时，优先保留上游逻辑，再把上面 4 处源码改动重新套用。
+
+**B. 基础设施改动（M0，2026-09-21）**
+
+6. `index.html`：移除 Tailwind CDN `<script>`；favicon 由 `/vite.svg` 改为 `/favicon.svg`。
+7. 新增 `tailwind.config.cjs` + `postcss.config.cjs`；`src/index.css` 从空文件改为 `@tailwind` 入口。
+8. 新增 `src/lib/apiFetch.js`（原 `app.jsx` 16–49 行整体抽出）与 `src/lib/routes.js`。
+9. `src/app.jsx`：改为 import 上述两个模块（`apiFetch` 行为不变，仅错误信息更健壮）；`App` 内新增 3 个 effect 实现 hash 路由同步与角色守卫。
+10. `server.js` 的 `POST /api/awards`：新建分支改为 `RETURNING id` 并回传 `{ success, id }`（**上游不返回 id 是个真实缺陷**，前端因此拿不到新建对象）。
+11. 新增 `public/favicon.svg`；删除死代码 `src/install.jsx`（app.jsx 内自带同名组件）。
+12. `package.json` 补 `"license": "GPL-3.0"`。
+
+**C. LoTW 直连（M1，2026-09-21）**
+
+13. 新增 `server/services/{adif,awardEngine,lotwClient,lotwSessions}.js` 与 `server/routes/lotw.js`。
+14. `server.js`：删除内联的 `parseAdif` 与约 190 行判定逻辑，改为 import 上述模块；`evaluateAward` 变成「取数据 + 调引擎」的薄封装（**对外行为不变**，既有调用方无需改动）。
+15. `server.js`：新增 `DEFAULT_LOTW_CONFIG` 与 `applyLotwConfig()`，`config.json` 从此含 `lotw` 段（`enabled` / `timeoutMs` / `batchMaxBytes` / `maxSplitDepth` / `cacheTtlMinutes` / `maxMemoryMb`）。
+16. `src/app.jsx`：菜单新增「LoTW 直连」（仅 `user` 角色）+ 渲染分支；`src/lib/routes.js` 登记 `lotw_import`。
+17. `src/lib/apiFetch.js`：**修正 401 处理**。原实现把所有 401 都当登录过期并强制登出，导致「旧密码错误」「密码确认失败」这类正常业务错误把用户踢出去；现改为只认 `TOKEN_MISSING` / `TOKEN_INVALID`。**新接口请勿用 401 表示业务失败**。
+18. `server.js`：奖状序列号由 `Math.random()` 改为 `crypto.randomInt()` 逐位生成 16 位。
+19. 新增 `src/pages/LotwImportView.jsx`（含数据出境提示、连接表单、临时会话状态、奖状判定与申请）。
+
+**D. 奖状模板设计器（M2，2026-09-21）**
+
+20. 新增 `src/lib/awardLayout.js`（布局 schema + 工具）、`src/components/AwardRenderer.jsx`（布局 → DOM）、`src/components/VisualDesigner.jsx`（可视化编辑器）。
+21. `src/app.jsx`：`AwardDesigner` 的 Step 3 由「裁剪底图」改为可视化布局；**删除**旧裁剪相关代码（`uploadedImage`/`cropState`/`handleFileSelect`/`generateCroppedImage`/`canvasRef` 及约 90 行死 JSX）。
+22. `saveAward` 改为把 `layout`（v2）写进 `awards.layout`（旧版恒写 `[]`）；`bg_url` 与 `layout.canvas.bgUrl` 保持一致（兼容 `MyAwardsView`）。
+23. **修复需求⑤**：底图上传改为「显式 ref 触发 + 上传中状态 + 错误提示」，弃用 label 包裹 hidden input 的脆弱写法。
+
+**E. PDF 导出 + 公开校验页（M3，2026-09-21）**
+
+24. 新增 `src/lib/exportAwardPdf.js`：离屏渲染 `AwardRenderer` → `html-to-image` 按 **300 DPI** 栅格化 → `jsPDF` 铺满 `layout.canvas` 尺寸（默认 A4 横版 297×210）。依赖较大，**在 `handleExportPdf` 里动态 `import()`**，不进首屏包（首屏 272 KB，PDF 分包 421 KB）。
+25. 新增 `src/pages/VerifyView.jsx`（公开校验页）+ `src/lib/routes.js` 的 `parseVerifyHash` / `isPublicHashRoute`；`App` 在**登录判断之前**拦截 `#/verify/<serial>`，并让 hash 同步 effect 跳过公开路由，避免把校验页 URL 覆盖掉。
+26. `server.js`：新增 `/api/verify/:serial`、`/api/verify/:serial/qr`、`/api/media`（同源图片代理）；三者在 `verifyToken` 里放行。
+27. `AwardRenderer` 的 `qrcode` 元素：有 `data.serial` 时渲染真二维码（`/api/verify/<serial>/qr`，同源 → 导出不污染画布），否则显示占位框。
+28. `server.js` 的 `/api/user/my-awards` 增加返回 `a.layout`（导出 PDF 需要布局）。
+
+**F. 实机体验反馈修复（M3.1，2026-09-21）**
+
+29. 新增 `src/components/PasswordInput.jsx`；登录 / 注册 / 用户中心（改密码、危险操作确认）的密码框全部换用它，支持**显示/隐藏密码**并显式声明 `autoComplete`。
+30. `AwardDetailModal` 左侧新增**「实际效果 / 设计底图」切换**（保留原底图预览），实际效果用 `ResponsiveAwardRenderer` + 示例数据渲染；管理员/奖状管理员多一个**「下载效果 PDF」**按钮，可在审核前就看到用户最终拿到的样子。
+31. `MyAwardsView` 的卡片改为按真实布局渲染（有布局时），无布局的老奖状自动退回旧卡片；抽出 `buildAwardRenderData()` 让**卡片与 PDF 共用同一份字段组装**。
+32. **多等级差异（`levelOverrides`）**：`awardLayout.js` 新增 `resolveElementForLevel` / `hasLevelOverride`；`AwardRenderer` 新增 `ignoreLevelOverrides`；`VisualDesigner` 新增「编辑范围」选择器（默认 / 各等级）+ 覆盖标记 + 清除覆盖。`AwardDesigner` 把 `rules.thresholds` 的名称作为 `levels` 传给编辑器。
+
+### 已知问题（改动相关代码时留意，勿盲改）
+
+- ~~`src/main.jsx` 导入 `./App` 而实际文件名是 `app.jsx`~~ → **已修复**（见上表第 4 条）；此坑在 Docker 构建里是致命错误，不要再改回去。
+- ~~`index.html` 引用 `/vite.svg` 但无 `public/` 目录会 404~~ → **已修复**（第 6/11 条）。
+- ~~`adminPath` 未校验、前端也不使用~~ → 仍是**名存实亡**的配置，只是不再误导（见 §7 第 6 条）。
+- ~~`POST /api/awards` 不返回新 id~~ → **已修复**（第 10 条）。
+- `/api/admin/settings` 对 `adminPath` 未做合法性校验，可写入任意字符串。
+- 奖状序列号使用 `Math.random()` 生成 16 位数字，非密码学安全（计划改 `crypto.randomInt()`）。
+- MinIO 存储桶策略为公开读（`s3:GetObject` 允许 `*`），且**没有 CORS 配置**（做客户端 PDF 导出前必须补），**不要上传敏感内容**。
+- `cors()` 未限制 origin，完全放开。
+- `jwt.verify` 未显式指定 `algorithms: ['HS256']`。
+- **判定引擎的类型陷阱**：`rules.targets.list` 被解析成**字符串**集合，而 `getTargetValue('dxcc')` 直接返回 `qso.dxcc || raw.dxcc`（不做 `String()` 转换）。数据库里 `dxcc` 是 `VARCHAR`、ADIF 也是字符串，所以现在能匹配；**一旦某处传进来数值（如 `291`），会静默匹配失败、得分变 0 且不报错**。改动相关代码时务必保持字符串。
+- **`lucide-react` 是 0.263.1，图标集有限**：例如 **没有 `ShieldX`**（用了会构建失败：`"ShieldX" is not exported by ...`），而 `BadgeCheck` / `XCircle` / `ShieldAlert` 有。新增图标前先验证：`node -e "import('lucide-react').then(m=>console.log('Xxx' in m))"`。
+- **客户端 PDF 导出的跨域坑**：底图存放在 MinIO（另一个端口）时，画进 canvas 会让画布被污染，`toDataURL` 直接抛 SecurityError。因此导出前会把「本站对象存储」的地址换成同源代理 `/api/media?key=...`；**非本站的图片 URL 无法保证**，会以「导出失败：底图或图片存在跨域限制」报错。
+- **React 18 `createRoot` 是异步挂载**：离屏渲染后**不能只等两帧**（实测 rAF 会先于 scheduler 的宏任务执行，`firstElementChild` 仍为 null）。必须轮询等待节点出现（见 `exportAwardPdf.js` 的 `waitForNode`）。
+
+## 8. 安全红线
+
+- **不要滥用 `autoApprove`**：本项目含登录、2FA、管理员审核流。未经确认就自动放行浏览器点击/输入或写操作类工具，可能造成后台数据被误改。
+- 该 MCP 配置为**本地开发用途**。不要用持久化浏览器 profile（会带上本机所有登录态），不要指向生产环境域名。
+- 提交前确认 `.env` / `config.json` / 数据库口令 / `GITHUB_PERSONAL_ACCESS_TOKEN` 等**未被纳入版本控制**。
+
+## 9. 可用工具（MCP）
+
+| 服务 | 用途 |
+|---|---|
+| `playwright` | 打开本地页面、点击、填表、读 console / network、截图。用于 UI 改动后的**自我验证** |
+| `GitHub` | 读取上游仓库文件、查提交、搜代码、开 issue / PR。用于**对照上游实现** |
+
+> 改完 UI 后**自行用 Playwright 验证再交付**，不要只描述"应该没问题"。

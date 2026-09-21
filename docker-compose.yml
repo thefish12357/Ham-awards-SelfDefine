@@ -1,0 +1,106 @@
+# 全栈 Docker：PostgreSQL + MinIO + 应用（含一次性初始化容器）
+# 用法：Copy-Item .env.example .env 后 docker compose up -d --build
+# 彻底清理：docker compose down -v --rmi local
+name: ham-awards
+
+services:
+  # ---------------- PostgreSQL ----------------
+  db:
+    image: postgres:16-alpine
+    container_name: ham-awards-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ham}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ham_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-ham_awards}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      # 只为本机用客户端连库而暴露，容器之间走 5432
+      - "${DB_HOST_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ham} -d ${POSTGRES_DB:-ham_awards}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # ---------------- MinIO（奖状背景图） ----------------
+  minio:
+    # MinIO 官方同时发布在 Docker Hub 与 Quay。若本机 Docker Hub 加速节点不稳定，
+    # 可换成 minio/minio:latest（二者内容一致）。
+    image: quay.io/minio/minio:latest
+    container_name: ham-awards-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - miniodata:/data
+    ports:
+      - "${MINIO_HOST_PORT:-9000}:9000"        # S3 API
+      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001" # Web 控制台
+
+  # ---------------- 应用（Express 单体，托管 dist） ----------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ham-awards-app:local
+    container_name: ham-awards-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      PORT: 9993
+      # config.json 落在命名卷里，容器重建不丢安装状态
+      CONFIG_FILE: /data/config.json
+      # 上传/删除对象走容器网络里的服务名；浏览器读图走 localhost
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost}
+      MINIO_PUBLIC_PORT: ${MINIO_HOST_PORT:-9000}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - appdata:/data
+    ports:
+      - "${APP_HOST_PORT:-9993}:9993"
+
+  # ---------------- 一次性初始化（跑完即退出） ----------------
+  # 只用 node 官方镜像 + 挂载脚本，不依赖 app 镜像，避免 compose 去“拉”本地构建的镜像。
+  # 脚本只用到 Node 内置 fetch，无第三方依赖。
+  installer:
+    image: node:20-alpine
+    container_name: ham-awards-installer
+    depends_on:
+      app:
+        condition: service_started
+    environment:
+      APP_URL: http://app:9993
+      AUTO_INSTALL: ${AUTO_INSTALL:-true}
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-ham}
+      DB_PASS: ${POSTGRES_PASSWORD:-ham_pass}
+      DB_NAME: ${POSTGRES_DB:-ham_awards}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-ham-awards}
+      ADMIN_CALLSIGN: ${ADMIN_CALLSIGN:-ADMIN}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ChangeMe_123}
+      ADMIN_PATH: ${ADMIN_PATH:-admin}
+    volumes:
+      # 只读挂载脚本，改完直接 compose up 即可，无需重建镜像
+      - ./docker/autoinstall.mjs:/scripts/autoinstall.mjs:ro
+    command: ["node", "/scripts/autoinstall.mjs"]
+    restart: "no"
+
+volumes:
+  pgdata:
+  miniodata:
+  appdata:

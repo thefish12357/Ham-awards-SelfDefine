@@ -1,0 +1,7 @@
+/* 自托管字体（SIL OFL 1.1）：思源黑体 Noto Sans SC + 思源宋体 Noto Serif SC
+   由 scripts/build-fonts.mjs 生成，勿手动编辑 */
+@import './styles/fonts.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

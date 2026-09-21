@@ -1,0 +1,11 @@
+node_modules
+dist
+uploads
+config.json
+.env
+.env.*
+.git
+.git_empty_backup
+AGENTS.md
+DOCKER.md
+*.log
