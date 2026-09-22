@@ -18,6 +18,7 @@ import { apiFetch } from './lib/apiFetch.js';
 import { DEFAULT_ROUTE, isPublicHashRoute, isRouteAllowed, parseVerifyHash, readRoute, writeRoute } from './lib/routes.js';
 import LotwImportView from './pages/LotwImportView.jsx';
 import VerifyView from './pages/VerifyView.jsx';
+import EvidenceAuditView from './pages/EvidenceAuditView.jsx';
 import { normalizeLayout } from './lib/awardLayout.js';
 import { collectExternalImages } from './lib/media.js';
 import VisualDesigner from './components/VisualDesigner.jsx';
@@ -587,6 +588,11 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
     const hasLayout = Array.isArray(award.layout?.elements) && award.layout.elements.length > 0;
     const canPreviewPdf = hasLayout && (userRole === 'admin' || userRole === 'award_admin');
 
+    // 实物材料（M4）：用户上传 QSL 卡片照片供管理员审核
+    const [evUploading, setEvUploading] = useState(false);
+    const [myEvidence, setMyEvidence] = useState([]);
+    const evidenceFileRef = useRef(null);
+
     const previewData = {
         callsign: (() => {
             try {
@@ -628,6 +634,14 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
         }
     }, []);
 
+    useEffect(() => {
+        if (userRole === 'user' && award.id) {
+            apiFetch('/evidence/mine')
+                .then((list) => setMyEvidence((list || []).filter((e) => e.award_id === award.id)))
+                .catch(() => {});
+        }
+    }, [userRole, award.id]);
+
     const checkEligibility = async (includeQsos = false) => {
         setChecking(true);
         try {
@@ -661,6 +675,28 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
     const handleLoadMatrix = () => {
         setShowMatrix(true);
         checkEligibility(true); // reload with qsos
+    };
+
+    const handleEvidenceUpload = async (e) => {
+        const file = e.target.files && e.target.files[0];
+        e.target.value = '';
+        if (!file) return;
+        if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return; }
+        if (file.size > 5 * 1024 * 1024) { alert('图片不能超过 5 MB'); return; }
+        setEvUploading(true);
+        try {
+            const fd = new FormData();
+            fd.append('photo', file);
+            fd.append('award_id', award.id);
+            await apiFetch('/evidence', { method: 'POST', body: fd });
+            const list = await apiFetch('/evidence/mine');
+            setMyEvidence((list || []).filter((x) => x.award_id === award.id));
+            alert('实物卡片已上传，等待管理员审核');
+        } catch (err) {
+            alert('上传失败: ' + (err.message || err.error || '未知错误'));
+        } finally {
+            setEvUploading(false);
+        }
     };
 
     const rules = award.rules || {};
@@ -875,6 +911,40 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
                                         </div>
                                     )}
                                 </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* 实物材料（M4）：用户上传 QSL 卡片 */}
+                    {userRole === 'user' && (
+                        <div className="mt-6 pt-4 border-t">
+                            <h4 className="font-bold text-sm text-slate-500 uppercase flex items-center gap-2 mb-2">
+                                <ImageIcon size={14}/> 实物卡片材料
+                            </h4>
+                            <p className="text-xs text-slate-400 mb-3">
+                                若该奖状需要 QSL 实物确认，可上传卡片照片供管理员审核；审核通过后计入资格，照片会立即从服务器删除。
+                            </p>
+                            <input ref={evidenceFileRef} type="file" accept="image/*" className="hidden" onChange={handleEvidenceUpload} />
+                            <button
+                                type="button"
+                                onClick={() => evidenceFileRef.current && evidenceFileRef.current.click()}
+                                disabled={evUploading}
+                                className="w-full py-2.5 rounded-lg border-2 border-dashed border-slate-300 text-slate-600 text-xs font-bold flex items-center justify-center gap-2 hover:bg-slate-50 disabled:opacity-60"
+                            >
+                                {evUploading ? <Loader2 size={14} className="animate-spin"/> : <Upload size={14}/>}
+                                {evUploading ? '上传中…' : '上传实物卡片照片'}
+                            </button>
+                            {myEvidence.length > 0 && (
+                                <ul className="mt-3 space-y-1 text-xs">
+                                    {myEvidence.map((ev) => (
+                                        <li key={ev.id} className="flex justify-between items-center bg-slate-50 px-3 py-2 rounded border">
+                                            <span className="text-slate-600">{ev.note || 'QSL 卡片'} · {new Date(ev.created_at).toLocaleDateString('zh-CN')}</span>
+                                            {ev.status === 'pending' && <span className="text-amber-600 font-bold">待审核</span>}
+                                            {ev.status === 'approved' && <span className="text-green-600 font-bold">已通过</span>}
+                                            {ev.status === 'rejected' && <span className="text-red-500 font-bold">已驳回{ev.reject_reason ? '：' + ev.reject_reason : ''}</span>}
+                                        </li>
+                                    ))}
+                                </ul>
                             )}
                         </div>
                     )}
@@ -2238,6 +2308,7 @@ export default function App() {
           { id: 'admin_overview', label: '奖状总览', icon: Layout, show: user.role === 'admin' },
           { id: 'issuanceManager', label: '颁发管理', icon: Trophy, show: user.role === 'admin' }, 
           { id: 'users', label: '用户管理', icon: Users, show: user.role === 'admin' },
+          { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'admin' || user.role === 'award_admin' },
           
           // Common Bottom
           { id: 'userCenter', label: '用户中心', icon: User, show: true },
@@ -2313,6 +2384,7 @@ export default function App() {
                       {subView === 'admin_overview' && <SystemAdminAwardManager viewMode="overview" />}
                       
                       {subView === 'issuanceManager' && <IssuanceManager />}                      
+                      {subView === 'evidence_audit' && <EvidenceAuditView />}
                       {subView === 'userCenter' && <UserCenterView user={user} refreshUser={refreshUser} onLogout={handleLogout} />}
                   </div>
               </main>

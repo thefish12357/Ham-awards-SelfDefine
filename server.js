@@ -19,6 +19,7 @@ import { parseAdif } from './server/services/adif.js';
 import { evaluateAward as evaluateAwardCore } from './server/services/awardEngine.js';
 import { configureLotwSessions } from './server/services/lotwSessions.js';
 import { createLotwRouter } from './server/routes/lotw.js';
+import { createEvidenceRouter } from './server/routes/evidence.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,6 +88,14 @@ async function initMinioBucket() {
                 }]
             };
             await minioClient.setBucketPolicy(appConfig.minioBucket, JSON.stringify(policy));
+        }
+
+        // 私有桶（实物材料照片，M4）：**不设公开读 policy**，管理员用 presigned URL 查看
+        const evidenceBucket = appConfig.evidenceBucket || 'ham-awards-evidence';
+        const evExists = await minioClient.bucketExists(evidenceBucket);
+        if (!evExists) {
+            await minioClient.makeBucket(evidenceBucket, 'us-east-1');
+            console.log(`Bucket '${evidenceBucket}' created successfully (private).`);
         }
     } catch (err) {
         console.error("MinIO Bucket init error:", err);
@@ -219,6 +228,27 @@ async function upgradeSchema() {
     if (!uaColNames.includes('level')) await client.query("ALTER TABLE user_awards ADD COLUMN level VARCHAR(50)");
     if (!uaColNames.includes('score_snapshot')) await client.query("ALTER TABLE user_awards ADD COLUMN score_snapshot INTEGER");
 
+    // 实物材料（M4）：照片存私有桶，审核后立即删图，DB 只留审核结论
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS award_evidence (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        award_id INTEGER REFERENCES awards(id) ON DELETE CASCADE,
+        type VARCHAR(20) DEFAULT 'qsl_card',
+        note TEXT,
+        object_key TEXT,
+        mime VARCHAR(64),
+        bytes INTEGER,
+        sha256 CHAR(64),
+        status VARCHAR(20) DEFAULT 'pending',
+        reviewer_id INTEGER REFERENCES users(id),
+        reviewed_at TIMESTAMP,
+        reject_reason TEXT,
+        purged_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_award_evidence_status ON award_evidence(status, created_at)`);
 
     console.log("Database schema checked.");
   } catch (err) {
@@ -343,6 +373,15 @@ app.use('/api/lotw', createLotwRouter({
     getDbPool: () => dbPool,
     verifyToken,
     getConfig: () => appConfig,
+}));
+
+// --- 实物材料（M4 新增）---
+app.use('/api/evidence', createEvidenceRouter({
+    getDbPool: () => dbPool,
+    verifyToken,
+    verifyAwardAdmin,
+    getConfig: () => appConfig,
+    getMinio: () => minioClient,
 }));
 
 // --- 基础 & 认证 ---

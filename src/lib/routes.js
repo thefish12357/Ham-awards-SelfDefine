@@ -30,6 +30,7 @@ export const ALL_ROUTES = [
   'admin_overview',
   'issuanceManager',
   'users',
+  'evidence_audit',
   'userCenter',
 ];
 
@@ -45,6 +46,7 @@ export const ROUTES_BY_ROLE = {
     'award_drafts',
     'award_returned',
     'award_audit_list',
+    'evidence_audit',
     'userCenter',
   ],
   admin: [
@@ -54,6 +56,7 @@ export const ROUTES_BY_ROLE = {
     'admin_overview',
     'issuanceManager',
     'users',
+    'evidence_audit',
     'userCenter',
   ],
 };

@@ -2,12 +2,16 @@
 
 > 本文件为 AI 助手在本目录工作时的项目说明。新开对话时优先阅读本文件。
 > 上游仓库：https://github.com/BH2VSQ/Ham-awards-SelfDefine （main 分支，package version `2.2.0`）
-> 本文件最后核对时间：2026-09-21
+> 本仓库公开存档：https://github.com/thefish12357/Ham-awards-SelfDefine （public，`main` 分支）
+> 本文件最后核对时间：2026-09-22
 > 二次开发规划见 **`ROADMAP.md`**（6 项需求的技术方案、DB/API 变更、里程碑）
 > ✅ 许可证：上游已于 2026-09-21 补充 **GPL-3.0**（`LICENSE`，commit `b4773ab Add LICENSE.md`），作者已授权二次开发。
 > GPL-3.0 是**传染性**许可：对外分发本仓库或其衍生作品时，必须同样以 GPL-3.0 授权并提供源码；仅自用/内部使用不受限制。
 > `package.json` 已补 `"license": "GPL-3.0"`。
-> 本仓库已接管上游 git 历史（`origin` = 上游），并在此基础上做了 Docker 化 + 基础设施改造，详见 §5 与 §7。
+> 本仓库已接管上游 git 历史，并在此基础上做了 Docker 化 + 基础设施改造，详见 §5 与 §7。
+> git remote 现状：`origin` = 上游（拉更新用）；`archive` = 公开存档仓库（更新：`git push archive release:main`）。
+> 本地分支：`main` = 上游历史；`release` = **干净归档分支**（无上游历史，已跟踪 `archive/main`）。
+> ⚠️ **敏感历史**：上游 commit `989f008` 的 `config.json` 曾含真实密钥（jwtSecret / DB 密码 / 内网 IP）。公开归档特意用孤儿分支，**不要把上游历史推到公开仓库**。
 > ★ **2026-09-21 完成 M0（基础设施）**：Tailwind 改本地构建、补 Hash 路由、抽出 `src/lib/`、修 `POST /api/awards` 不返回新 id、删除死代码 `src/install.jsx`。详见 `ROADMAP.md` §5。
 
 ---
@@ -244,6 +248,13 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
    - 报错信息要用 `describeError()` 提取 —— `e.message || e` 遇到 Event 会输出「[object Event]」。
    - **★ `toPng` 必须开 `includeQueryParams: true`**：html-to-image 的资源缓存 key 默认会 `url.replace(/\?.*/, '')` **剥掉 query string**。而底图统一走 `/api/media?key=<对象名>`，不同奖状只有 key 不同 —— 剥掉 query 后缓存 key 全部退化成同一个 `/api/media`，**连续导出多份奖状时第二份会命中第一份的缓存，底图被替换成上一份奖状的图**（2026-09-21 实测：先导「测试」再导「M3 测试奖状」，后者 PDF 从 118 KB 涨到 4.2 MB，里面装着前者的底图）。开启后以完整 URL 作 key，互不污染；单份 PDF 内同 URL 仍正常复用。
 14. **上传文件不要用 `req.file.originalname` 当对象名**：multipart 的 filename 被 multer/busboy 按 **latin1** 解码，中文会变成乱码（`QQ截图` → `QQæªå¾`，还夹着不可见的控制字符），对象名与 URL 从此永久失配。`/api/awards/upload-bg` 现在只取**扩展名**，主体用 `时间戳 + 随机串`（`bg_<ts>_<hex>.png`）。
+15. **实物材料（M4）的隐私红线**（2026-09-22 落地）：QSL 卡片照片**只能进私有桶 `ham-awards-evidence`**，**绝不放公开桶 `ham-awards`**（照片含地址/印章，公开桶是 `s3:GetObject` 对 `*`）。实现见 `server/routes/evidence.js`：
+   - **权限归属（按奖状）**：`admin` 看/审**全部**材料；`award_admin` 只能看/审**自己创建的奖状**（`awards.creator_id = 自己`）收到的材料——待审列表按 `creator_id` 过滤，审核接口在删除前会二次校验归属（越权返回 403）。
+   - 管理员查看走 **presigned GET**（15 分钟），URL 不落库、不返回给申请人；
+   - 审核 `approve`/`reject` 后**立即 `removeObject`**，DB 把 `object_key` 置空 + 记 `purged_at`，只留审核结论；
+   - 上传用 multer `memoryStorage`（5 MB 上限）+ PNG/JPEG **magic bytes** 校验，不落本地磁盘；
+   - 兜底：建议给私有桶配 MinIO ILM `expiry=7 天`（清理「审核中途放弃」的孤儿图），当前未自动配置，需运维手工加。
+   - ⚠️ presigned URL 的 host 取自 MinIO 客户端 `endPoint`：本机 `localhost` 无问题；**容器部署时 `endPoint=minio`（内部服务名）会导致 presigned URL 浏览器访问不了**，需单独用 `publicEndPoint` 客户端生成（待办）。
 
 ### 本仓库相对上游的改动
 
