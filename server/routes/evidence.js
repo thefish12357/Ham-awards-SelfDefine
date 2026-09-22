@@ -17,6 +17,7 @@
 import express from 'express';
 import multer from 'multer';
 import crypto from 'crypto';
+import { notifyUsers } from '../services/notifications.js';
 
 const EVIDENCE_BUCKET = 'ham-awards-evidence';
 const PRESIGN_TTL_SECONDS = 15 * 60;
@@ -38,10 +39,12 @@ const detectImageType = (buf) => {
   return null;
 };
 
-export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin, getConfig, getMinio }) {
+export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin, getConfig, getMinio, getMinioPublic }) {
   const router = express.Router();
   const db = () => getDbPool();
   const minio = () => getMinio();
+  // presigned URL 用对外客户端（浏览器可达的 host），未配置时退回内部客户端
+  const minioPublic = () => (getMinioPublic ? getMinioPublic() : getMinio());
   const bucket = () => (getConfig() && getConfig().evidenceBucket) || EVIDENCE_BUCKET;
 
   // ---- 上传实物材料 ----
@@ -57,7 +60,17 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
       if (!awardId) return res.status(400).json({ error: 'NO_AWARD', message: '缺少奖状 ID' });
       const note = String(req.body.note || '').slice(0, 500);
 
-      const aw = await db().query('SELECT id FROM awards WHERE id=$1', [awardId]);
+      // ★ 判定打通（2026-09-22）：卡片对应的通联信息，审核通过后据此匹配 QSO 打确认标记。
+      //   对方呼号必填；波段/模式/日期可选（用于进一步缩小匹配范围）。
+      const matchCallsign = String(req.body.match_callsign || '').trim().toUpperCase();
+      if (!/^[A-Z0-9]{2,20}$/.test(matchCallsign)) {
+        return res.status(400).json({ error: 'BAD_CALLSIGN', message: '请填写有效的对方呼号（2-20 位字母数字）' });
+      }
+      const matchBand = String(req.body.match_band || '').trim().slice(0, 10);
+      const matchMode = String(req.body.match_mode || '').trim().slice(0, 10);
+      const matchDate = String(req.body.match_date || '').trim().slice(0, 20);
+
+      const aw = await db().query('SELECT id, creator_id, name FROM awards WHERE id=$1', [awardId]);
       if (aw.rows.length === 0) return res.status(404).json({ error: 'AWARD_NOT_FOUND', message: '奖状不存在' });
 
       const ext = mime === 'image/png' ? 'png' : 'jpg';
@@ -67,11 +80,22 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
       await minio().putObject(bucket(), key, req.file.buffer, req.file.buffer.length, { 'Content-Type': mime });
 
       const ins = await db().query(
-        `INSERT INTO award_evidence (user_id, award_id, type, note, object_key, mime, bytes, sha256, status)
-         VALUES ($1, $2, 'qsl_card', $3, $4, $5, $6, $7, 'pending')
+        `INSERT INTO award_evidence (user_id, award_id, type, note, object_key, mime, bytes, sha256, status, match_callsign, match_band, match_mode, match_date)
+         VALUES ($1, $2, 'qsl_card', $3, $4, $5, $6, $7, 'pending', $8, $9, $10, $11)
          RETURNING id, status, created_at`,
-        [req.user.id, awardId, note, key, mime, req.file.buffer.length, sha],
+        [req.user.id, awardId, note, key, mime, req.file.buffer.length, sha, matchCallsign, matchBand || null, matchMode || null, matchDate || null],
       );
+
+      // 站内提醒（M4.1）：通知审核员（所有 admin + 该奖状创建者）有新材料待审
+      const admins = await db().query(`SELECT id FROM users WHERE role='admin'`);
+      const reviewerIds = admins.rows.map((r) => r.id);
+      if (aw.rows[0].creator_id) reviewerIds.push(aw.rows[0].creator_id);
+      await notifyUsers(db(), reviewerIds, {
+        type: 'evidence_pending',
+        title: '有新的实物材料待审核',
+        body: `用户 ${req.user.callsign} 为奖状「${aw.rows[0].name}」上传了 QSL 卡片材料，请及时审核。`,
+      });
+
       res.json({ success: true, id: ins.rows[0].id });
     } catch (e) {
       console.error('evidence upload error:', e);
@@ -84,7 +108,8 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
     try {
       const r = await db().query(
         `SELECT e.id, e.award_id, a.name AS award_name, e.type, e.note, e.status,
-                e.reject_reason, e.created_at, e.reviewed_at
+                e.reject_reason, e.created_at, e.reviewed_at,
+                e.match_callsign, e.match_band, e.match_mode, e.match_date
          FROM award_evidence e
          JOIN awards a ON a.id = e.award_id
          WHERE e.user_id = $1
@@ -105,6 +130,7 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
       const isAdmin = req.user.role === 'admin';
       const baseSql = `SELECT e.id, e.award_id, e.user_id, e.type, e.note, e.object_key, e.mime, e.bytes,
                 e.status, e.created_at,
+                e.match_callsign, e.match_band, e.match_mode, e.match_date,
                 u.callsign AS user_callsign, a.name AS award_name
          FROM award_evidence e
          JOIN users u ON u.id = e.user_id
@@ -118,7 +144,7 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
         let photo_url = null;
         if (row.object_key) {
           try {
-            photo_url = await minio().presignedGetObject(bucket(), row.object_key, PRESIGN_TTL_SECONDS);
+            photo_url = await minioPublic().presignedGetObject(bucket(), row.object_key, PRESIGN_TTL_SECONDS);
           } catch (err) {
             console.error('evidence presign error:', err.message);
           }
@@ -176,6 +202,23 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
         }
       }
 
+      // ★ 判定打通：审核通过后，按卡片填写的通联信息匹配该用户的 QSO，
+      //   把对应记录的 qsl_rcvd 置 'Y'，使「实物卡片确认」真正参与奖状判定。
+      let matchedQso = 0;
+      if (action === 'approve' && old.rows[0].match_callsign) {
+        const conds = ['user_id = $1', 'UPPER(callsign) = $2'];
+        const params = [old.rows[0].user_id, old.rows[0].match_callsign];
+        let n = 2;
+        if (old.rows[0].match_band) { n += 1; conds.push(`LOWER(band) = LOWER($${n})`); params.push(old.rows[0].match_band); }
+        if (old.rows[0].match_mode) { n += 1; conds.push(`LOWER(mode) = LOWER($${n})`); params.push(old.rows[0].match_mode); }
+        if (old.rows[0].match_date) { n += 1; conds.push(`REPLACE(qso_date, '-', '') = REPLACE($${n}, '-', '')`); params.push(old.rows[0].match_date); }
+        const upd = await client.query(
+          `UPDATE qsos SET adif_raw = jsonb_set(adif_raw, '{qsl_rcvd}', '"Y"', true) WHERE ${conds.join(' AND ')}`,
+          params,
+        );
+        matchedQso = upd.rowCount;
+      }
+
       await client.query(
         `UPDATE award_evidence
          SET status=$1, reviewer_id=$2, reviewed_at=NOW(), reject_reason=$3, object_key=NULL, purged_at=NOW()
@@ -183,7 +226,25 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
         [action === 'approve' ? 'approved' : 'rejected', req.user.id, String(reason || '').slice(0, 500) || null, id],
       );
       await client.query('COMMIT');
-      res.json({ success: true });
+
+      // 站内提醒（M4.1）：审核结果通知上传者
+      if (action === 'approve') {
+        await notifyUsers(db(), [old.rows[0].user_id], {
+          type: 'evidence_approved',
+          title: '实物材料已通过审核',
+          body: matchedQso > 0
+            ? `你的实物卡片材料已通过审核，${matchedQso} 条日志已标记为「已确认」。`
+            : '你的实物卡片材料已通过审核。',
+        });
+      } else {
+        await notifyUsers(db(), [old.rows[0].user_id], {
+          type: 'evidence_rejected',
+          title: '实物材料被驳回',
+          body: `你的实物卡片材料被驳回${reason ? '：' + reason : ''}。`,
+        });
+      }
+
+      res.json({ success: true, matched_qso: matchedQso });
     } catch (e) {
       await client.query('ROLLBACK');
       res.status(500).json({ error: e.message });

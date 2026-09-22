@@ -21,6 +21,7 @@ import { configureLotwSessions } from './server/services/lotwSessions.js';
 import { createLotwRouter } from './server/routes/lotw.js';
 import { createEvidenceRouter } from './server/routes/evidence.js';
 import { createOauthRouter } from './server/routes/oauth.js';
+import { createNotificationsRouter, notifyUsers } from './server/services/notifications.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +42,7 @@ otplib.authenticator.options = { window: 1 };
 
 let dbPool = null;
 let minioClient = null;
+let minioPublicClient = null; // 对外地址客户端（M4：presigned URL 需浏览器可达的 host）
 /**
  * LoTW 直连的默认参数（M1 新增）。
  * 全部可在 config.json 的 lotw 段覆盖，无需改代码。
@@ -98,9 +100,40 @@ async function initMinioBucket() {
             await minioClient.makeBucket(evidenceBucket, 'us-east-1');
             console.log(`Bucket '${evidenceBucket}' created successfully (private).`);
         }
+
+        // ★ 用户明确要求（2026-09-22）：**不自动删除**孤儿图（上传后一直没人审的照片）。
+        //   改为「站内提醒」——上传材料时会给审核员发站内通知，催他们来处理。
+        //   照片保留，直到管理员手动审核（通过/驳回后仍会立即 removeObject）。
     } catch (err) {
         console.error("MinIO Bucket init error:", err);
     }
+}
+
+/**
+ * 对外地址客户端（M4）：presigned URL 必须用**浏览器可达的 host** 生成，签名才能对得上。
+ * 容器部署时 `minioClient` 的 `endPoint` 是内部服务名（如 `minio:9000`），浏览器解析不了；
+ * 用 `publicEndPoint` 另建一个客户端（凭据相同），签出来的 URL host 才是对外地址。
+ * 未配置 publicEndPoint 时退化为 `minioClient`（本机 `localhost` 场景等价）。
+ */
+function initMinioPublicClient() {
+    minioPublicClient = null;
+    if (!appConfig.minio || !appConfig.minio.endPoint) return;
+    const mc = appConfig.minio;
+    const host = mc.publicEndPoint || process.env.MINIO_PUBLIC_ENDPOINT || mc.endPoint;
+    const port = Number(mc.publicPort || process.env.MINIO_PUBLIC_PORT || mc.port || 9000);
+    // 对外地址与内部完全一致 → 直接复用 minioClient，避免重复实例
+    if (host === mc.endPoint && port === Number(mc.port || 9000)) {
+        minioPublicClient = minioClient;
+        return;
+    }
+    minioPublicClient = new Minio.Client({
+        endPoint: host,
+        port,
+        useSSL: !!mc.useSSL,
+        accessKey: mc.accessKey,
+        secretKey: mc.secretKey,
+    });
+    console.log(`MinIO public client initialized (${host}:${port}).`);
 }
 
 /**
@@ -135,6 +168,7 @@ function loadConfig() {
       if (appConfig.minio && appConfig.minio.endPoint) {
         minioClient = new Minio.Client(appConfig.minio);
         console.log("MinIO client initialized.");
+        initMinioPublicClient();
         initMinioBucket();
       }
     } catch (e) { 
@@ -259,6 +293,27 @@ async function upgradeSchema() {
       );
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_award_evidence_status ON award_evidence(status, created_at)`);
+
+    // M4 判定打通（2026-09-22）：上传卡片时填对方呼号/波段/模式/日期，
+    // 审核通过后据此匹配该用户的 QSO 记录并打 qsl_rcvd='Y'，使「实物卡片确认」真正参与判定。
+    await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_callsign VARCHAR(20)`);
+    await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_band VARCHAR(10)`);
+    await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_mode VARCHAR(10)`);
+    await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_date VARCHAR(20)`);
+
+    // 站内通知（M4.1）：审核员待审提醒 + 申请人审核结果通知
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        type VARCHAR(32),
+        title TEXT,
+        body TEXT,
+        read BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, read)`);
 
     console.log("Database schema checked.");
   } catch (err) {
@@ -392,6 +447,13 @@ app.use('/api/evidence', createEvidenceRouter({
     verifyAwardAdmin,
     getConfig: () => appConfig,
     getMinio: () => minioClient,
+    getMinioPublic: () => minioPublicClient || minioClient,
+}));
+
+// --- 站内通知（M4.1 新增）---
+app.use('/api/notifications', createNotificationsRouter({
+    getDbPool: () => dbPool,
+    verifyToken,
 }));
 
 // --- HamCQ OAuth 登录（M5 新增）---
@@ -447,6 +509,7 @@ app.post('/api/install', async (req, res) => {
     
     if (appConfig.minio) {
         minioClient = new Minio.Client(appConfig.minio);
+        initMinioPublicClient();
         await initMinioBucket(); 
     }
     
@@ -727,7 +790,7 @@ app.post('/api/admin/awards/audit', verifyToken, verifyAdmin, async (req, res) =
     try {
         await client.query('BEGIN');
         
-        const old = await client.query('SELECT status, audit_log FROM awards WHERE id=$1', [id]);
+        const old = await client.query('SELECT status, audit_log, name, creator_id FROM awards WHERE id=$1', [id]);
         if(old.rows.length === 0) throw new Error("Award not found");
         
         let newStatus = '';
@@ -757,6 +820,19 @@ app.post('/api/admin/awards/audit', verifyToken, verifyAdmin, async (req, res) =
         );
         
         await client.query('COMMIT');
+
+        // 站内通知（M4.1）：奖状审核通过/退回 → 通知创建者
+        if (old.rows[0].creator_id) {
+            const approved = action === 'approve';
+            await notifyUsers(dbPool, [old.rows[0].creator_id], {
+                type: approved ? 'award_approved' : 'award_returned',
+                title: approved ? '奖状已通过审核' : '奖状被退回',
+                body: approved
+                    ? `你提交的奖状「${old.rows[0].name}」已通过审核并发布。`
+                    : `你提交的奖状「${old.rows[0].name}」被退回${reason ? '：' + reason : ''}。`,
+            });
+        }
+
         res.json({ success: true });
     } catch(e) {
         await client.query('ROLLBACK');

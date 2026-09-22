@@ -486,8 +486,8 @@ server/
 | M1 LoTW 免上传 | ✅ 完成（2026-09-21） | 新增 `server/services/{adif,awardEngine,lotwClient,lotwSessions}.js`、`server/routes/lotw.js`、`src/pages/LotwImportView.jsx`；`server.js` 去掉内联解析与判定逻辑改为复用引擎。验证：真实打 LoTW（错误凭据）→ 正确识别为 `LOTW_AUTH`；内存会话 TTL/容量生效；接口级与 UI 级均通过 |
 | M2 模板设计器 | ✅ 完成（2026-09-21） | 新增 `awardLayout.js` / `AwardRenderer.jsx` / `VisualDesigner.jsx`；Step 3 换成可视化拖拽编辑器（文字/形状/图片/二维码、属性面板、图层、撤销重做、底图上传）；删除旧裁剪逻辑；顺带修复需求⑤（上传按钮无响应）。验证：设计器三栏渲染、添加文字元素、上传底图到 MinIO、保存后 `layout.v=2 + 1 元素 + bg` 正确落库 |
 | M3 PDF + 校验页 | ✅ 完成（2026-09-21） | 新增 `exportAwardPdf.js`（离屏渲染 → 300 DPI 栅格化 → jsPDF，按需加载）、`VerifyView.jsx`（公开校验页，`App` 在登录前拦截 `#/verify/<serial>`）、服务端 `/api/verify/:serial` + `/qr` + `/api/media`（同源图片代理，绕开 canvas 跨域污染）。验证：校验接口返回脱敏信息、二维码为合法 PNG、非法 key 被拒 400、导出 PDF 为 109023 字节且 MediaBox=297×210mm（A4 横版、1 页） |
-| M4 实物材料 | ⬜ 未开始 | |
-| M5 HamCQ 登录 | ⬜ 待凭据 | 官方申请要求见 §1.6；**已按用户决策忽略备案，回调默认本地** |
+| M4 实物材料 | ✅ 完成（2026-09-22） | 私有桶 `ham-awards-evidence`（自动创建、不设公开读）+ `award_evidence` 表 + `server/routes/evidence.js`（上传 memoryStorage 5MB + magic bytes / mine / admin 待审+presigned 15min / 审核即删 removeObject）+ 前端上传区块与 `EvidenceAuditView` 审核页；审核权限按奖状归属（award_admin 只审自己创建的奖状）。**遗留 3 项见 §8** |
+| M5 HamCQ 登录 | ✅ 完成（2026-09-22，真实联调通过） | 通用 OAuth2 客户端 + `#/oauth/complete` 补全呼号流程（HamCQ 用户名≠呼号）+ logo；commit `8b42fcc` 已推存档仓库 |
 
 **M1 期间顺带修掉的一个上游遗留缺陷**：`apiFetch` 原本把**所有** 401 都当作「登录过期」并强制登出重载。而 `/api/user/password`（旧密码错误）、`requirePassword`（密码确认失败）、`/api/user/2fa/disable`（密码错误）都返回 401，导致这些**正常业务错误会把用户踢出登录**。现已改为只在 `TOKEN_MISSING` / `TOKEN_INVALID` 时登出。这也是 LoTW 凭据错误刻意返回 400 的原因。
 
@@ -553,8 +553,15 @@ server/
 
 ## 8. 下一步
 
-M0–M3 已完成并实测通过。剩余与待办：
+M0–M5 全部完成。剩余收尾与待办：
 
-- **M4 实物材料**：私有桶 + presigned URL + 审核即删 + ILM 7 天兜底 + `award_evidence` 表。已确认**只做资格认定，不寄实体**。
-- **M5 HamCQ 登录**：代码按通用 OAuth2/OIDC 客户端写好并 `enabled:false` 挂着，等真实 `client_id` / `client_secret`（已按用户决策忽略备案，回调默认本地）。
+**M4 实物材料收尾（3 项）**
+
+1. **✅ 判定打通（已完成 2026-09-22）**：`award_evidence` 加 `match_callsign/band/mode/date` 四列；上传时填对方呼号（必填）+ 波段/模式（选取框）/日期（自填）；审核 `approve` 时据此匹配该用户 QSO 并 `jsonb_set` 打 `qsl_rcvd='Y'`，使实物卡片确认真正参与 `qslRequired` 判定。
+2. **✅ ILM 7 天兜底（已完成 2026-09-22）**：启动时对私有桶 `setBucketLifecycle` 设 `expiry=7 天`，自动清理「审核中途放弃」的孤儿图。
+3. **✅ presigned URL 的 publicEndPoint（已完成 2026-09-22）**：新增 `minioPublicClient`（用 `publicEndPoint`/`MINIO_PUBLIC_ENDPOINT` 另建，凭据相同），presigned 一律走它；容器部署浏览器即可访问，未配置时退化为 `minioClient`。
+
+**其他**
+
+- M5 真实回调域名：本地联调已通；部署到公网后需在 HamCQ 后台把回调地址改成正式域名。
 - **路线图池（§7）**按需挑选，其中「第 11 项 外站图片提示」因实机已踩坑，建议优先。

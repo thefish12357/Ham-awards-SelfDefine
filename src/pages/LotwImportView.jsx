@@ -277,7 +277,7 @@ export default function LotwImportView() {
               <li>申请奖状时只保存「申请记录 + 成绩快照」，<b>一条 QSO 都不会入库</b>。</li>
             </ol>
             <p className="text-xs">
-              你仍可选择不用本功能，改用「日志上传」自行导入 ADIF 文件（那条路径会把日志存在本机数据库里）。
+              你仍可选择不用本功能，改用「日志上传」自行导入 ADIF 文件（那条路径会把 QSO 记录保存到<b>本站服务器的数据库</b>，会占用服务器存储； LoTW 直连则一条都不落库）。
             </p>
           </div>
           <button

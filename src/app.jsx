@@ -576,6 +576,10 @@ const MyAwardsView = ({ user }) => {
     );
 };
 
+// 实物卡片（M4 判定打通）：波段/模式选取框的常用选项（ADIF 标准值）
+const QSL_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m', '10m', '6m', '2m', '1.25m', '70cm', '23cm'];
+const QSL_MODES = ['CW', 'SSB', 'AM', 'FM', 'RTTY', 'PSK31', 'FT8', 'FT4', 'JT65', 'JT9', 'MFSK', 'SSTV', 'MSK144', 'DIGITALVOICE'];
+
 // Common Award Detail Modal (UPDATED: Multi-level)
 const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
     const [checkResult, setCheckResult] = useState(null);
@@ -592,6 +596,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
     const [evUploading, setEvUploading] = useState(false);
     const [myEvidence, setMyEvidence] = useState([]);
     const evidenceFileRef = useRef(null);
+    const [evForm, setEvForm] = useState({ callsign: '', band: '', mode: '', date: '' });
 
     const previewData = {
         callsign: (() => {
@@ -683,11 +688,16 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
         if (!file) return;
         if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return; }
         if (file.size > 5 * 1024 * 1024) { alert('图片不能超过 5 MB'); return; }
+        if (!evForm.callsign.trim()) { alert('请先填写对方呼号'); return; }
         setEvUploading(true);
         try {
             const fd = new FormData();
             fd.append('photo', file);
             fd.append('award_id', award.id);
+            fd.append('match_callsign', evForm.callsign.trim());
+            if (evForm.band) fd.append('match_band', evForm.band);
+            if (evForm.mode) fd.append('match_mode', evForm.mode);
+            if (evForm.date) fd.append('match_date', evForm.date);
             await apiFetch('/evidence', { method: 'POST', body: fd });
             const list = await apiFetch('/evidence/mine');
             setMyEvidence((list || []).filter((x) => x.award_id === award.id));
@@ -922,8 +932,32 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
                                 <ImageIcon size={14}/> 实物卡片材料
                             </h4>
                             <p className="text-xs text-slate-400 mb-3">
-                                若该奖状需要 QSL 实物确认，可上传卡片照片供管理员审核；审核通过后计入资格，照片会立即从服务器删除。
+                                上传 QSL 卡片照片并填写卡面对应的通联信息；管理员审核通过后，会自动把匹配的日志记录标记为「已确认」，照片立即从服务器删除。
                             </p>
+                            <div className="grid grid-cols-2 gap-2 mb-3">
+                                <label className="block col-span-2">
+                                    <span className="text-xs text-slate-500">对方呼号（必填）</span>
+                                    <input value={evForm.callsign} onChange={(e) => setEvForm({ ...evForm, callsign: e.target.value.toUpperCase() })} placeholder="例如: JA1ABC" className="w-full mt-1 p-2 border rounded-lg uppercase text-sm" />
+                                </label>
+                                <label className="block">
+                                    <span className="text-xs text-slate-500">波段</span>
+                                    <select value={evForm.band} onChange={(e) => setEvForm({ ...evForm, band: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm">
+                                        <option value="">不限</option>
+                                        {QSL_BANDS.map((b) => <option key={b} value={b}>{b}</option>)}
+                                    </select>
+                                </label>
+                                <label className="block">
+                                    <span className="text-xs text-slate-500">操作模式</span>
+                                    <select value={evForm.mode} onChange={(e) => setEvForm({ ...evForm, mode: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm">
+                                        <option value="">不限</option>
+                                        {QSL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+                                    </select>
+                                </label>
+                                <label className="block col-span-2">
+                                    <span className="text-xs text-slate-500">通联日期</span>
+                                    <input type="date" value={evForm.date} onChange={(e) => setEvForm({ ...evForm, date: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm" />
+                                </label>
+                            </div>
                             <input ref={evidenceFileRef} type="file" accept="image/*" className="hidden" onChange={handleEvidenceUpload} />
                             <button
                                 type="button"
@@ -938,7 +972,13 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
                                 <ul className="mt-3 space-y-1 text-xs">
                                     {myEvidence.map((ev) => (
                                         <li key={ev.id} className="flex justify-between items-center bg-slate-50 px-3 py-2 rounded border">
-                                            <span className="text-slate-600">{ev.note || 'QSL 卡片'} · {new Date(ev.created_at).toLocaleDateString('zh-CN')}</span>
+                                            <span className="text-slate-600">
+                                                {ev.match_callsign || 'QSL 卡片'}
+                                                {ev.match_band ? ` · ${ev.match_band}` : ''}
+                                                {ev.match_mode ? ` · ${ev.match_mode}` : ''}
+                                                {ev.match_date ? ` · ${ev.match_date}` : ''}
+                                                {ev.note ? ` · ${ev.note}` : ''}
+                                            </span>
                                             {ev.status === 'pending' && <span className="text-amber-600 font-bold">待审核</span>}
                                             {ev.status === 'approved' && <span className="text-green-600 font-bold">已通过</span>}
                                             {ev.status === 'rejected' && <span className="text-red-500 font-bold">已驳回{ev.reject_reason ? '：' + ev.reject_reason : ''}</span>}
@@ -2100,6 +2140,8 @@ export default function App() {
   // New States for Menu and Notifications
   const [expandedMenus, setExpandedMenus] = useState({});
   const [notifications, setNotifications] = useState({ pending: 0, returned: 0 });
+  const [notifData, setNotifData] = useState({ list: [], unread: 0 });
+  const [notifPanel, setNotifPanel] = useState(false);
 
   useEffect(() => {
     // OAuth 回调/绑定（M5）：后端 302 跳回，URL 带 token 或 bind_token，
@@ -2201,6 +2243,24 @@ export default function App() {
 
       return () => clearInterval(intervalId);
   }, [view, user]);
+
+  // 站内通知（M4.1）：每 10 秒拉一次未读数 + 列表
+  useEffect(() => {
+      if (view !== 'main' || !user) return;
+      const poll = () => {
+          apiFetch('/notifications').then((d) => setNotifData({ list: d.list || [], unread: d.unread || 0 })).catch(() => {});
+      };
+      poll();
+      const t = setInterval(poll, 10000);
+      return () => clearInterval(t);
+  }, [view, user]);
+
+  const markAllRead = async () => {
+      try {
+          await apiFetch('/notifications/read', { method: 'POST', body: JSON.stringify({ all: true }) });
+          setNotifData((prev) => ({ list: prev.list.map((n) => ({ ...n, read: true })), unread: 0 }));
+      } catch (e) { /* ignore */ }
+  };
 
   const refreshUser = async () => {
     try {
@@ -2435,7 +2495,17 @@ export default function App() {
           <div className="flex h-screen bg-slate-50 overflow-hidden">
               <aside className="w-64 bg-slate-900 text-white flex flex-col shrink-0">
                   <div className="p-6 border-b border-slate-800">
-                      <h1 className="font-black text-xl tracking-wider">HAM AWARDS</h1>
+                      <div className="flex items-center justify-between">
+                          <h1 className="font-black text-xl tracking-wider">HAM AWARDS</h1>
+                          <button onClick={() => setNotifPanel(!notifPanel)} className="relative p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors" title="站内通知">
+                              <Bell size={18} />
+                              {notifData.unread > 0 && (
+                                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center">
+                                      {notifData.unread > 99 ? '99+' : notifData.unread}
+                                  </span>
+                              )}
+                          </button>
+                      </div>
                       <div className="text-xs text-slate-500 mt-1 flex items-center gap-2"><div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>{user.callsign} ({user.role})</div>
                   </div>
                   <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
@@ -2480,6 +2550,32 @@ export default function App() {
                       <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-3 text-red-400 hover:bg-red-900/20 rounded-lg"><LogOut size={18} /> <span className="font-medium text-sm">退出登录</span></button>
                   </div>
               </aside>
+              {/* 站内通知面板（M4.1） */}
+              {notifPanel && (
+                  <div className="fixed inset-0 z-[90]" onClick={() => setNotifPanel(false)}>
+                      <div className="absolute top-16 right-4 w-96 max-w-[90vw] bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+                              <h3 className="font-bold text-sm text-slate-800">站内通知</h3>
+                              {notifData.unread > 0 && (
+                                  <button onClick={markAllRead} className="text-xs text-blue-600 hover:underline">全部已读</button>
+                              )}
+                          </div>
+                          <div className="max-h-96 overflow-y-auto">
+                              {notifData.list.length === 0 ? (
+                                  <div className="text-center py-10 text-slate-400 text-sm">暂无通知</div>
+                              ) : (
+                                  notifData.list.map((n) => (
+                                      <div key={n.id} className={`px-4 py-3 border-b border-slate-50 ${n.read ? 'opacity-60' : 'bg-blue-50/40'}`}>
+                                          <div className="text-sm font-bold text-slate-800">{n.title}</div>
+                                          <div className="text-xs text-slate-500 mt-0.5">{n.body}</div>
+                                          <div className="text-[10px] text-slate-400 mt-1">{new Date(n.created_at).toLocaleString('zh-CN')}</div>
+                                      </div>
+                                  ))
+                              )}
+                          </div>
+                      </div>
+                  </div>
+              )}
               <main className="flex-1 overflow-y-auto p-8 relative">
                   <div className="max-w-6xl mx-auto">
                       {subView === 'dashboard' && <DashboardView user={user} />}

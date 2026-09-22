@@ -253,8 +253,15 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
    - 管理员查看走 **presigned GET**（15 分钟），URL 不落库、不返回给申请人；
    - 审核 `approve`/`reject` 后**立即 `removeObject`**，DB 把 `object_key` 置空 + 记 `purged_at`，只留审核结论；
    - 上传用 multer `memoryStorage`（5 MB 上限）+ PNG/JPEG **magic bytes** 校验，不落本地磁盘；
-   - 兜底：建议给私有桶配 MinIO ILM `expiry=7 天`（清理「审核中途放弃」的孤儿图），当前未自动配置，需运维手工加。
-   - ⚠️ presigned URL 的 host 取自 MinIO 客户端 `endPoint`：本机 `localhost` 无问题；**容器部署时 `endPoint=minio`（内部服务名）会导致 presigned URL 浏览器访问不了**，需单独用 `publicEndPoint` 客户端生成（待办）。
+   - 孤儿图**不自动删除**（用户拍板 2026-09-22，撤销了此前的 ILM 自动删除）：照片保留，靠**站内通知**催审核员处理；审核通过/驳回后仍立即 `removeObject`。
+   - **presigned URL 走对外客户端 `minioPublicClient`**（2026-09-22 落地）：容器部署时 `minioClient.endPoint` 是内部服务名（`minio:9000`），浏览器解析不了，且 SigV4 签名绑定 host，改 URL host 会验签失败。故启动时用 `publicEndPoint`/`MINIO_PUBLIC_ENDPOINT`（+ `publicPort`/`MINIO_PUBLIC_PORT`）另建 `minioPublicClient`（凭据相同），`evidence.js` 生成 presigned 一律走它；未配置时退化为 `minioClient`（本机 `localhost` 等价）。
+   - **★ 判定打通（2026-09-22 落地）**：上传卡片时填**对方呼号（必填）/ 波段 / 模式 / 日期**（存 `match_callsign/band/mode/date`）；审核 `approve` 时据此匹配该用户的 QSO 并 `jsonb_set(adif_raw, '{qsl_rcvd}', '"Y"')`，使「实物卡片确认」真正参与 `qslRequired` 判定（`awardEngine` 只读 `adif_raw.qsl_rcvd` / `lotw_qsl_rcvd`）。匹配规则：呼号 `UPPER(callsign)` 等值；波段/模式 `LOWER()` 等值（可选）；日期 `REPLACE(qso_date,'-','')` 去横线比较（可选，兼容 `YYYYMMDD` 与 `YYYY-MM-DD`）。审核接口返回 `matched_qso` 供前端提示打了几条。
+16. **站内通知（M4.1，2026-09-22 落地）**：`server/services/notifications.js` 提供 `notifyUsers(pool, userIds, {type,title,body})`（去重）+ `createNotificationsRouter`（`GET /api/notifications` 返回 `{list,unread}`、`POST /api/notifications/read` 支持 `{all:true}` 或 `{id}`）。`notifications` 表：`id/user_id/type/title/body/read/created_at`。已接入的事件：
+   - 用户上传实物材料 → 通知所有 `admin` + 该奖状 `creator_id`（`evidence_pending`）
+   - 实物材料审核通过/驳回 → 通知上传者（`evidence_approved` / `evidence_rejected`）
+   - 奖状审核通过/退回 → 通知创建者（`award_approved` / `award_returned`）
+   - 前端侧边栏顶部铃铛 + 未读红点 + 通知面板（10 秒轮询 `/notifications`）。
+   - **只做站内，不接邮件**（邮件成本另议）。将来加新事件：在业务路由里 `notifyUsers` 一行即可。
 
 ### 本仓库相对上游的改动
 

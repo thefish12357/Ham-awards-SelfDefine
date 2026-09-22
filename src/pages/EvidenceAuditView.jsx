@@ -31,10 +31,15 @@ const EvidenceAuditView = () => {
         }
         setReviewingId(id);
         try {
-            await apiFetch(`/evidence/admin/${id}/review`, {
+            const res = await apiFetch(`/evidence/admin/${id}/review`, {
                 method: 'POST',
                 body: JSON.stringify({ action, reason }),
             });
+            if (action === 'approve') {
+                alert(res.matched_qso > 0
+                    ? `已通过，并自动将 ${res.matched_qso} 条日志标记为「已确认」`
+                    : '已通过（未匹配到对应日志，未做确认标记）');
+            }
             load();
         } catch (err) {
             alert('操作失败: ' + (err.message || err.error || '未知错误'));
@@ -83,6 +88,12 @@ const EvidenceAuditView = () => {
                                 </div>
                                 <div className="text-xs text-slate-500">
                                     奖状：<span className="font-semibold text-slate-700">{ev.award_name}</span>
+                                </div>
+                                <div className="text-xs text-slate-700 bg-blue-50 rounded p-2">
+                                    卡片通联：<b>{ev.match_callsign || '—'}</b>
+                                    {ev.match_band ? ` · ${ev.match_band}` : ''}
+                                    {ev.match_mode ? ` · ${ev.match_mode}` : ''}
+                                    {ev.match_date ? ` · ${ev.match_date}` : ''}
                                 </div>
                                 {ev.note && <div className="text-xs text-slate-500 bg-slate-50 rounded p-2">备注：{ev.note}</div>}
                                 <div className="text-[11px] text-slate-400">
