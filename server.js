@@ -20,6 +20,7 @@ import { evaluateAward as evaluateAwardCore } from './server/services/awardEngin
 import { configureLotwSessions } from './server/services/lotwSessions.js';
 import { createLotwRouter } from './server/routes/lotw.js';
 import { createEvidenceRouter } from './server/routes/evidence.js';
+import { createOauthRouter } from './server/routes/oauth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -167,6 +168,15 @@ async function upgradeSchema() {
         await client.query("ALTER TABLE users ADD COLUMN last_seen TIMESTAMP DEFAULT NOW()");
     }
 
+    // OAuth 登录（M5）：users 加 oauth 字段，password_hash 可空（纯 OAuth 用户无密码）
+    const userCols = await client.query("SELECT column_name FROM information_schema.columns WHERE table_name='users'");
+    const userColNames = userCols.rows.map(r => r.column_name);
+    if (!userColNames.includes('oauth_provider')) await client.query("ALTER TABLE users ADD COLUMN oauth_provider VARCHAR(32)");
+    if (!userColNames.includes('oauth_sub')) await client.query("ALTER TABLE users ADD COLUMN oauth_sub VARCHAR(128)");
+    if (!userColNames.includes('oauth_raw')) await client.query("ALTER TABLE users ADD COLUMN oauth_raw JSONB");
+    await client.query("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL");
+    await client.query("CREATE UNIQUE INDEX IF NOT EXISTS users_oauth_uniq ON users(oauth_provider, oauth_sub) WHERE oauth_provider IS NOT NULL");
+
     // QSO 表
     await client.query(`
       CREATE TABLE IF NOT EXISTS qsos (
@@ -304,7 +314,7 @@ const verifyToken = async (req, res, next) => {
   // 公开路径（M3 新增）：
   //   /api/verify/*  奖状真伪校验 + 二维码，供拿到纸质/PDF 奖状的人扫码查验，必须免登录
   //   /api/media     同源图片代理，供前端 canvas 导出 PDF 时避免跨域污染画布
-  if (req.path.startsWith('/api/verify') || req.path.startsWith('/api/media')) return next();
+  if (req.path.startsWith('/api/verify') || req.path.startsWith('/api/media') || req.path.startsWith('/api/auth/oauth')) return next();
 
   const token = req.headers['authorization'];
   if (!token) return res.status(401).json({ error: 'TOKEN_MISSING', message: '未提供验证令牌' });
@@ -382,6 +392,12 @@ app.use('/api/evidence', createEvidenceRouter({
     verifyAwardAdmin,
     getConfig: () => appConfig,
     getMinio: () => minioClient,
+}));
+
+// --- HamCQ OAuth 登录（M5 新增）---
+app.use('/api/auth/oauth', createOauthRouter({
+    getDbPool: () => dbPool,
+    getConfig: () => appConfig,
 }));
 
 // --- 基础 & 认证 ---

@@ -1681,6 +1681,12 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
     const [code, setCode] = useState('');
     const [passForm, setPassForm] = useState({ oldPassword: '', newPassword: '', confirmPassword: '' });
     const [confirmActionPass, setConfirmActionPass] = useState('');
+    const [qsoCount, setQsoCount] = useState(null);
+
+    const loadStats = () => {
+        apiFetch('/stats/dashboard').then((s) => setQsoCount(Number(s.qsos) || 0)).catch(() => {});
+    };
+    useEffect(loadStats, []);
 
     const start2FASetup = async () => {
         try {
@@ -1735,6 +1741,7 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
             } else {
                 alert('操作成功');
                 setModal(null);
+                if (action === 'clear_logs') loadStats();
             }
         } catch (err) { alert(err.message); }
     };
@@ -1772,9 +1779,18 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-red-100">
                     <h4 className="font-bold text-lg mb-4 flex items-center gap-2 text-red-600"><AlertCircle/> 危险区域</h4>
                     <div className="space-y-4">
-                        <div className="flex items-center justify-between p-4 bg-red-50/50 rounded-xl">
-                            <div><div className="font-bold text-red-800">清空所有日志</div><div className="text-xs text-red-600">将永久删除您上传的所有 QSO 记录</div></div>
-                            <button onClick={() => setModal('clear_logs')} className="bg-red-100 text-red-700 hover:bg-red-200 px-4 py-2 rounded-lg text-sm font-bold">清空日志</button>
+                        <div className={`flex items-center justify-between p-4 rounded-xl ${qsoCount > 0 ? 'bg-red-50/50' : 'bg-slate-50'}`}>
+                            <div>
+                                <div className={`font-bold ${qsoCount > 0 ? 'text-red-800' : 'text-slate-500'}`}>清空所有日志</div>
+                                <div className={`text-xs ${qsoCount > 0 ? 'text-red-600' : 'text-slate-400'}`}>
+                                    {qsoCount == null ? '加载中…' : (qsoCount > 0 ? `将永久删除您上传的 ${qsoCount} 条 QSO 记录` : '当前没有日志记录')}
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setModal('clear_logs')}
+                                disabled={!qsoCount}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold ${qsoCount > 0 ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                            >清空日志</button>
                         </div>
                         <div className="flex items-center justify-between p-4 bg-red-50/50 rounded-xl">
                             <div><div className="font-bold text-red-800">注销账号</div><div className="text-xs text-red-600">将永久删除您的账号及所有数据，无法恢复</div></div>
@@ -2076,12 +2092,48 @@ export default function App() {
   const [show2FAInput, setShow2FAInput] = useState(false);
   const [loginForm, setLoginForm] = useState({});
   const [authMode, setAuthMode] = useState('login'); // Added for in-page register
+  // OAuth（M5）：登录页按钮显隐 + 授权后「补全呼号」会话
+  const [oauthProviders, setOauthProviders] = useState([]);
+  const [oauthPendingToken, setOauthPendingToken] = useState(null);
+  const [oauthPendingUsername, setOauthPendingUsername] = useState('');
   
   // New States for Menu and Notifications
   const [expandedMenus, setExpandedMenus] = useState({});
   const [notifications, setNotifications] = useState({ pending: 0, returned: 0 });
 
   useEffect(() => {
+    // OAuth 回调/绑定（M5）：后端 302 跳回，URL 带 token 或 bind_token，
+    // 必须在 system-status 初始化之前处理，避免竞态覆盖。
+    const hash = window.location.hash || '';
+    if (hash.startsWith('#/oauth/callback')) {
+      const q = new URLSearchParams(hash.split('?')[1] || '');
+      const token = q.get('token');
+      const userStr = q.get('user');
+      if (token && userStr) {
+        try {
+          const u = JSON.parse(userStr);
+          localStorage.setItem('ham_token', token);
+          localStorage.setItem('ham_user', JSON.stringify(u));
+          setUser(u);
+          setView('main');
+          setSubView(DEFAULT_ROUTE);
+          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/dashboard`);
+          return;
+        } catch (e) { /* 落到正常初始化 */ }
+      }
+    }
+    if (hash.startsWith('#/oauth/complete')) {
+      const q = new URLSearchParams(hash.split('?')[1] || '');
+      const pt = q.get('pending_token');
+      if (pt) {
+        setOauthPendingToken(pt);
+        setOauthPendingUsername(q.get('username') || '');
+        setAuthMode('oauth_complete');
+        setView('auth');
+        return;
+      }
+    }
+
     apiFetch('/system-status').then(status => {
         if (!status.installed) {
             setView('install');
@@ -2095,6 +2147,14 @@ export default function App() {
             }
         }
     }).catch(() => setView('auth'));
+  }, []);
+
+  // OAuth 提供方查询（M5）：登录页据此决定是否显示「使用 HamCQ 登录」
+  useEffect(() => {
+    fetch('/api/auth/oauth/providers')
+      .then((r) => r.json())
+      .then((d) => setOauthProviders(d.providers || []))
+      .catch(() => {});
   }, []);
 
   // ===================== Hash 路由同步（新增） =====================
@@ -2187,6 +2247,26 @@ export default function App() {
       } catch (err) { alert(err.message); }
   };
 
+  // OAuth 授权后补全呼号（M5）：HamCQ 的 username 不一定是呼号（可能是昵称），
+  // 由用户确认/输入呼号 —— 已注册则验密绑定（防冒名接管），未注册则创建新账号。
+  const handleOauthComplete = async (e) => {
+      e.preventDefault();
+      const callsign = e.target.callsign.value;
+      const password = e.target.password.value;
+      try {
+          const res = await apiFetch('/auth/oauth/complete', { method: 'POST', body: JSON.stringify({ pending_token: oauthPendingToken, callsign, password }) });
+          localStorage.setItem('ham_token', res.token);
+          localStorage.setItem('ham_user', JSON.stringify(res.user));
+          setUser(res.user);
+          setView('main');
+          setSubView(DEFAULT_ROUTE);
+          setOauthPendingToken(null);
+          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/dashboard`);
+      } catch (err) {
+          alert(err.message || '登录失败');
+      }
+  };
+
   const handleLogout = () => {
       localStorage.clear();
       // 顺手清掉 URL 里的页面 hash，避免下次带着上一个账号的路由进来
@@ -2227,7 +2307,27 @@ export default function App() {
             <button onClick={()=>setAuthMode('register')} className={`flex-1 py-4 font-bold text-sm ${authMode==='register'?'text-blue-600 bg-blue-50/50':'text-slate-400'}`}>注册新账号</button>
         </div>
 
-        {authMode === 'login' ? (
+        {authMode === 'oauth_complete' ? (
+            <div className="p-8">
+                <div className="text-center mb-6">
+                    <h2 className="text-xl font-bold text-slate-800">完成 HamCQ 登录</h2>
+                    <p className="text-xs text-slate-500 mt-1">已通过 HamCQ 账号「{oauthPendingUsername}」授权。请确认你的呼号（HamCQ 用户名不一定是呼号），再继续。</p>
+                </div>
+                <form onSubmit={handleOauthComplete} className="space-y-4">
+                    <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-500 uppercase">本站呼号</label>
+                        <input name="callsign" required defaultValue={oauthPendingUsername} className="w-full border rounded-lg p-3 uppercase outline-none focus:ring-2 ring-blue-100 transition-all" placeholder="例如: BH7CSA" />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-xs font-bold text-slate-500 uppercase">本站密码（可选）</label>
+                        <PasswordInput name="password" autoComplete="new-password" className="w-full border rounded-lg p-3 outline-none focus:ring-2 ring-blue-100 transition-all" />
+                        <span className="text-[10px] text-slate-400">若该呼号已注册，必须填写其本站密码完成绑定；若是新账号，可设置密码以便日后密码登录，留空则只能用 HamCQ 登录。</span>
+                    </div>
+                    <button className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold shadow-lg shadow-slate-200 transition-transform active:scale-95 hover:bg-black">确认并登录</button>
+                    <button type="button" onClick={() => { setAuthMode('login'); setOauthPendingToken(null); window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }} className="w-full text-slate-400 text-sm text-center">返回登录</button>
+                </form>
+            </div>
+        ) : authMode === 'login' ? (
             <div className="p-8">
                 {/* Merged Login: No more Admin/User toggle */}
                 <form onSubmit={handleLogin} className="space-y-4">
@@ -2250,6 +2350,23 @@ export default function App() {
                         {show2FAInput ? '验证并登录' : '登录系统'}
                     </button>
                 </form>
+
+                {oauthProviders.length > 0 && (
+                    <div className="mt-4">
+                        <div className="flex items-center gap-3 mb-3">
+                            <div className="flex-1 h-px bg-slate-200" />
+                            <span className="text-xs text-slate-400">或</span>
+                            <div className="flex-1 h-px bg-slate-200" />
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => { window.location.href = '/api/auth/oauth/start'; }}
+                            className="w-full py-3 rounded-xl border-2 border-slate-200 text-slate-700 font-bold text-sm hover:bg-slate-50 transition-colors"
+                        >
+                            {oauthProviders[0].label || '使用 HamCQ 登录'}
+                        </button>
+                    </div>
+                )}
             </div>
         ) : (
             <div className="p-8">
