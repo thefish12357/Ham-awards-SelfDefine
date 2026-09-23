@@ -277,6 +277,15 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - **角色是单一字段、互斥的**；「申请奖状」能力不再限 role——菜单 `my_awards/logbook/lotw_import/all_logs` 对所有角色开放，`AwardDetailModal` 用 `canApply` prop 控制是否显示「申领」按钮（奖状大厅传 `canApply`，审核预览不传）。
 - 升级通过后用户需**重新登录**才生效（token 里 role 是旧的）。
 
+18. **全站操作审计（2026-09-23 落地）**：`server/services/audit.js` 提供 `logAudit(pool, req, {action,targetType,targetId,detail,actor})` 与 `createAuditRouter`（`GET /api/admin/audit-logs`，**仅 `admin`**）。表 `audit_logs` 由 `upgradeSchema()` 启动时自动创建，无需手工迁移。
+
+- **只记敏感操作**，命名空间：`auth.*`（登录成功/失败/注册）、`user.*`（改密、2FA 开关、清日志、注销）、`role.*`（升级申请与审核）、`admin.*`（建/改/删账号、系统设置）、`award.*`（保存、审核、删除、申领、撤销颁发）、`evidence.*`（材料上传与审核）。新增敏感接口时**顺手加一行 `await logAudit(dbPool, req, {...})`**。
+- **绝不记录凭据**：密码 / TOTP secret / LoTW 账号密码只记"是否发生过"（如 `password_reset: true`），不进 `detail`。
+- 写入是 **best-effort**：审计失败只打 `console.error`，绝不阻断业务；`actor_id` 用 `ON DELETE SET NULL` + 冗余 `actor_callsign`，删号后仍能追溯。
+- **与「单奖状审核流水」分清**：`awards.audit_log`（JSONB）是**单张奖状**的业务时间线，可见范围 = 该奖状的管理员 + `admin`；`audit_logs` 表是**全站**记录，只有 `admin` 能查（页面 `#/admin_logs`）。
+- ⚠️ **`/api/awards/all_approved` 必须用显式列名**（已剔除 `audit_log` / `reject_reason`）：它是任何登录用户都能调的公开大厅接口，**不要改回 `SELECT *`**，否则每个奖状的审核流水都会泄露。
+- 前端：侧边栏按菜单项的 `group` 字段输出分组标题，`admin` 的「后台管理」分组集中了用户管理 / 奖状审核 / 实物材料审核 / 审计日志 / 颁发管理 / 奖状总览。
+
 ### 本仓库相对上游的改动
 
 **A. 容器化改动（向后兼容，仅为 Docker 部署）**

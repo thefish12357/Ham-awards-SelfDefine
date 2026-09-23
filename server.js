@@ -22,6 +22,10 @@ import { createLotwRouter } from './server/routes/lotw.js';
 import { createEvidenceRouter } from './server/routes/evidence.js';
 import { createOauthRouter } from './server/routes/oauth.js';
 import { createNotificationsRouter, notifyUsers } from './server/services/notifications.js';
+// 全站操作审计（仅最高级管理员可查）：敏感操作留痕，写入 best-effort 不阻断业务
+import { createAuditRouter, logAudit } from './server/services/audit.js';
+// 内测邀请码（门禁只加在"新账号产生"这一步，见 server/services/invites.js）
+import { INVITE_TABLE_SQL, consumeInviteCode, genInviteCode, inviteError, isInviteRequired } from './server/services/invites.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -63,7 +67,9 @@ let appConfig = {
     minioBucket: 'ham-awards',
     jwtSecret: 'default_secret_change_on_install',
     adminPath: 'admin',
-    lotw: { ...DEFAULT_LOTW_CONFIG }
+    lotw: { ...DEFAULT_LOTW_CONFIG },
+    // 内测门禁：requireInvite=false 时注册/建号完全不看邀请码（默认关闭，不影响存量用户）
+    beta: { requireInvite: false }
 };
 
 /**
@@ -334,6 +340,34 @@ async function upgradeSchema() {
     await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS experience TEXT`);
     await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS contact VARCHAR(200)`);
 
+    // 全站操作审计（2026-09-23）：全站级敏感操作留痕，仅最高级管理员可查。
+    // 与 awards.audit_log（单个奖状的业务流水）分工不同，详见 server/services/audit.js。
+    // actor_id 用 ON DELETE SET NULL：账号注销后仍保留 actor_callsign，能追溯"当时是谁"。
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS audit_logs (
+        id BIGSERIAL PRIMARY KEY,
+        actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        actor_callsign VARCHAR(32),
+        actor_role VARCHAR(20),
+        action VARCHAR(64) NOT NULL,
+        target_type VARCHAR(32),
+        target_id VARCHAR(64),
+        detail JSONB,
+        ip VARCHAR(64),
+        ua TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action, created_at DESC)`);
+
+    // 内测邀请码（2026-09-23）：门禁只作用于"新账号产生"，存量账号登录不受影响。
+    // 总开关是 config.json 的 beta.requireInvite，内测结束在后台一键关掉即可。
+    await client.query(INVITE_TABLE_SQL);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_codes_code ON invite_codes(code)`);
+    // 记住"这个账号是用哪个邀请码进来的"，管理页可直接按码看使用者
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_code VARCHAR(32)`);
+
     // 修复旧表（award_evidence）reviewer_id 外键删除行为：应 ON DELETE SET NULL
     // （否则删除「审核过材料」的管理员账号会报外键约束错误，见 2026-09-22 联调）
     try {
@@ -486,6 +520,7 @@ app.use('/api/evidence', createEvidenceRouter({
     getConfig: () => appConfig,
     getMinio: () => minioClient,
     getMinioPublic: () => minioPublicClient || minioClient,
+    logAudit,
 }));
 
 // --- 站内通知（M4.1 新增）---
@@ -494,10 +529,18 @@ app.use('/api/notifications', createNotificationsRouter({
     verifyToken,
 }));
 
+// --- 全站操作审计（仅 admin 可查）---
+app.use('/api/admin/audit-logs', createAuditRouter({
+    getDbPool: () => dbPool,
+    verifyToken,
+    verifyAdmin,
+}));
+
 // --- HamCQ OAuth 登录（M5 新增）---
 app.use('/api/auth/oauth', createOauthRouter({
     getDbPool: () => dbPool,
     getConfig: () => appConfig,
+    logAudit,
 }));
 
 // --- 基础 & 认证 ---
@@ -507,7 +550,9 @@ app.get('/api/system-status', (req, res) => {
         installed: appConfig.installed, 
         useHttps: appConfig.useHttps,
         adminPath: appConfig.adminPath || 'admin',
-        minioConfigured: !!appConfig.minio
+        minioConfigured: !!appConfig.minio,
+        // 内测开关：登录/注册页据此决定是否显示邀请码输入框（公开信息，无敏感内容）
+        requireInvite: isInviteRequired(appConfig)
     });
 });
 
@@ -560,30 +605,74 @@ app.post('/api/auth/login', async (req, res) => {
     const { callsign, password, code } = req.body;
     try {
         const result = await dbPool.query(`SELECT * FROM users WHERE callsign = $1`, [callsign.toUpperCase()]);
-        if (result.rows.length === 0) return res.status(401).json({ error: 'AUTH_FAILED', message: '用户不存在' });
+        if (result.rows.length === 0) {
+            // 登录失败也留痕（爆破排查用）：只记呼号与原因，不记密码
+            await logAudit(dbPool, req, { action: 'auth.login_failed', detail: { callsign: String(callsign || '').slice(0, 32), reason: 'NO_USER' } });
+            return res.status(401).json({ error: 'AUTH_FAILED', message: '用户不存在' });
+        }
         const user = result.rows[0];
 
         const passMatch = await bcrypt.compare(password, user.password_hash);
-        if (!passMatch) return res.status(401).json({ error: 'AUTH_FAILED', message: '密码错误' });
+        if (!passMatch) {
+            await logAudit(dbPool, req, { action: 'auth.login_failed', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, reason: 'BAD_PASSWORD' } });
+            return res.status(401).json({ error: 'AUTH_FAILED', message: '密码错误' });
+        }
 
         // Removed role guard to allow merged login
         // if (loginType === 'admin' && user.role === 'user') { ... }
 
         if (user.totp_secret) {
             if (!code) return res.status(403).json({ error: '2FA_REQUIRED', message: '请输入两步验证码' });
-            if (!otplib.authenticator.check(code, user.totp_secret)) return res.status(403).json({ error: 'INVALID_2FA', message: '验证码无效' });
+            if (!otplib.authenticator.check(code, user.totp_secret)) {
+                await logAudit(dbPool, req, { action: 'auth.login_failed', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, reason: 'BAD_2FA' } });
+                return res.status(403).json({ error: 'INVALID_2FA', message: '验证码无效' });
+            }
         }
 
         const token = jwt.sign({ id: user.id, role: user.role, callsign: user.callsign }, appConfig.jwtSecret, { expiresIn: '24h' });
+        await logAudit(dbPool, req, { action: 'auth.login', targetType: 'user', targetId: user.id, actor: { id: user.id, callsign: user.callsign, role: user.role } });
         res.json({ token, user: { id: user.id, callsign: user.callsign, role: user.role, has2fa: !!user.totp_secret } });
     } catch (e) { console.error(e); res.status(500).json({ error: 'SERVER_ERROR' }); }
 });
 
 app.post('/api/auth/register', async (req, res) => {
-    const { callsign, password } = req.body;
+    const { callsign, password, invite_code: inviteCode } = req.body;
+    const callsignUp = String(callsign || '').toUpperCase();
     try {
+        // 先查重再消费邀请码：否则撞呼号时会把码白白用掉一次
+        const dup = await dbPool.query('SELECT id FROM users WHERE callsign = $1', [callsignUp]);
+        if (dup.rows.length > 0) return res.status(400).json({ error: 'EXISTS', message: '呼号已被注册' });
+
+        // 内测门禁（默认关闭）：只在开启时校验，存量用户登录完全不受影响
+        let usedCode = null;
+        if (isInviteRequired(appConfig)) {
+            const check = await consumeInviteCode(dbPool, inviteCode);
+            if (!check.ok) {
+                const { status, body } = inviteError(check.reason, 'register');
+                return res.status(status).json(body);
+            }
+            usedCode = check.code;
+        }
+
         const hash = await bcrypt.hash(password, 10);
-        await dbPool.query(`INSERT INTO users (callsign, password_hash, role) VALUES ($1, $2, 'user')`, [callsign.toUpperCase(), hash]);
+        const ins = await dbPool.query(
+            `INSERT INTO users (callsign, password_hash, role, invite_code) VALUES ($1, $2, 'user', $3) RETURNING id`,
+            [callsignUp, hash, usedCode],
+        );
+        await logAudit(dbPool, req, {
+            action: 'auth.register',
+            targetType: 'user',
+            targetId: ins.rows[0]?.id,
+            detail: { callsign: callsignUp.slice(0, 32), role: 'user', invite_code: usedCode || undefined },
+        });
+        if (usedCode) {
+            await logAudit(dbPool, req, {
+                action: 'invite.use',
+                targetType: 'invite',
+                targetId: usedCode,
+                detail: { callsign: callsignUp.slice(0, 32), channel: 'register' },
+            });
+        }
         res.json({ success: true });
     } catch (e) {
         if (e.code === '23505') res.status(400).json({ error: 'EXISTS', message: '呼号已被注册' });
@@ -678,6 +767,7 @@ app.post('/api/user/2fa/enable', verifyToken, async (req, res) => {
     const { secret, token } = req.body;
     if (otplib.authenticator.check(token, secret)) {
         await dbPool.query('UPDATE users SET totp_secret = $1 WHERE id = $2', [secret, req.user.id]);
+        await logAudit(dbPool, req, { action: 'user.2fa_enable', targetType: 'user', targetId: req.user.id });
         res.json({ success: true });
     } else {
         res.status(400).json({ error: '验证码无效' });
@@ -692,6 +782,7 @@ app.post('/api/user/2fa/disable', verifyToken, async (req, res) => {
         const match = await bcrypt.compare(password, r.rows[0].password_hash);
         if(!match) return res.status(401).json({error: '密码错误'});
         await client.query('UPDATE users SET totp_secret=NULL WHERE id=$1', [req.user.id]);
+        await logAudit(dbPool, req, { action: 'user.2fa_disable', targetType: 'user', targetId: req.user.id });
         res.json({ success: true });
     } finally { client.release(); }
 });
@@ -705,12 +796,14 @@ app.post('/api/user/password', verifyToken, require2FA, async (req, res) => {
         if(!match) return res.status(401).json({error: '旧密码错误'});
         const hash = await bcrypt.hash(newPassword, 10);
         await client.query('UPDATE users SET password_hash=$1 WHERE id=$2', [hash, req.user.id]);
+        await logAudit(dbPool, req, { action: 'user.password_change', targetType: 'user', targetId: req.user.id });
         res.json({ success: true });
     } finally { client.release(); }
 });
 
 app.delete('/api/user/logs', verifyToken, requirePassword, require2FA, async (req, res) => {
-    await dbPool.query('DELETE FROM qsos WHERE user_id=$1', [req.user.id]);
+    const deleted = await dbPool.query('DELETE FROM qsos WHERE user_id=$1', [req.user.id]);
+    await logAudit(dbPool, req, { action: 'user.logs_clear', targetType: 'user', targetId: req.user.id, detail: { deleted: deleted.rowCount } });
     res.json({ success: true });
 });
 
@@ -720,6 +813,9 @@ app.delete('/api/user/account', verifyToken, requirePassword, require2FA, async 
         await client.query('BEGIN');
         // 将该用户创建的奖状设置为无主 (避免外键约束错误)
         await client.query('UPDATE awards SET creator_id = NULL WHERE creator_id = $1', [req.user.id]);
+        // 审计要在删除前写：audit_logs.actor_id 是 ON DELETE SET NULL，
+        // 用户被删后该字段自动置空，但 actor_callsign 仍保留，可追溯。
+        await logAudit(dbPool, req, { action: 'user.account_delete', targetType: 'user', targetId: req.user.id });
         // 删除用户 (QSOS 和 user_awards 会自动级联删除)
         await client.query('DELETE FROM users WHERE id=$1', [req.user.id]);
         await client.query('COMMIT');
@@ -783,8 +879,17 @@ app.get('/api/awards/my', verifyToken, verifyAwardAdmin, async (req, res) => {
 });
 
 // 获取所有已发布的奖状 (公共大厅 / 系统总览)
+// ★ 权限收口（2026-09-23）：这里是**任何登录用户**都能调的公开大厅接口，
+//   因此不再返回 `audit_log` / `reject_reason` —— 单个奖状的审核流水
+//   （谁提交、谁打回、原因）只给「该奖状的管理员 + 最高级管理员」看：
+//     · 该奖状的管理员 → `/api/awards/my`（只查 creator_id = 自己）
+//     · 最高级管理员   → `/api/admin/awards/pending|approved`
+//   改成显式列名（而非 `*`）就是为了避免以后加敏感列时又被顺手带出去。
 app.get('/api/awards/all_approved', verifyToken, async (req, res) => {
-    const r = await dbPool.query(`SELECT * FROM awards WHERE status = 'approved' ORDER BY id DESC`);
+    const r = await dbPool.query(
+        `SELECT id, name, description, bg_url, rules, layout, status, creator_id, tracking_id, created_at
+           FROM awards WHERE status = 'approved' ORDER BY id DESC`,
+    );
     res.json(r.rows);
 });
 
@@ -816,7 +921,24 @@ app.get('/api/admin/issued-awards', verifyToken, verifyAdmin, async (req, res) =
 
 // 系统管理员：删除/撤销已颁发的奖状 (New)
 app.delete('/api/admin/issued-awards/:id', verifyToken, verifyAdmin, async (req, res) => {
+    // 撤销颁发是最具破坏性的操作之一：先把被删的对象信息抓下来留痕，再删
+    const old = await dbPool.query(
+        `SELECT ua.serial_number, ua.level, u.callsign AS applicant_call, a.name AS award_name
+           FROM user_awards ua
+           JOIN users u ON ua.user_id = u.id
+           JOIN awards a ON ua.award_id = a.id
+          WHERE ua.id = $1`,
+        [req.params.id],
+    );
     await dbPool.query('DELETE FROM user_awards WHERE id=$1', [req.params.id]);
+    await logAudit(dbPool, req, {
+        action: 'award.issued_delete',
+        targetType: 'award_issued',
+        targetId: req.params.id,
+        detail: old.rows[0]
+            ? { serial: old.rows[0].serial_number, level: old.rows[0].level, applicant: old.rows[0].applicant_call, award: old.rows[0].award_name }
+            : null,
+    });
     res.json({ success: true });
 });
 
@@ -858,6 +980,13 @@ app.post('/api/admin/awards/audit', verifyToken, verifyAdmin, async (req, res) =
         );
         
         await client.query('COMMIT');
+
+        await logAudit(dbPool, req, {
+            action: 'award.audit',
+            targetType: 'award',
+            targetId: id,
+            detail: { award: old.rows[0].name, creator_id: old.rows[0].creator_id, op: action, result: newStatus, reason: reason || '' },
+        });
 
         // 站内通知（M4.1）：奖状审核通过/退回 → 通知创建者
         if (old.rows[0].creator_id) {
@@ -918,6 +1047,12 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
             params.push(id);
             
             await client.query(updateSql, params);
+            await logAudit(dbPool, req, {
+                action: 'award.save',
+                targetType: 'award',
+                targetId: id,
+                detail: { award: name, status, mode: 'update' },
+            });
             res.json({ success: true, id });
         } else {
             // 新建
@@ -928,6 +1063,12 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
                 [name, description, JSON.stringify(rules), JSON.stringify(layout), bg_url, status, req.user.id, trackingId, JSON.stringify([logEntry])]
             );
+            await logAudit(dbPool, req, {
+                action: 'award.save',
+                targetType: 'award',
+                targetId: inserted.rows[0].id,
+                detail: { award: name, status, mode: 'create' },
+            });
             res.json({ success: true, id: inserted.rows[0].id });
         }
         await client.query('COMMIT');
@@ -941,7 +1082,11 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
 
 app.delete('/api/awards/:id', verifyToken, verifyAwardAdmin, async (req, res) => {
     // 只能删除自己的 Draft 或 Returned
-    await dbPool.query(`DELETE FROM awards WHERE id=$1 AND creator_id=$2 AND status IN ('draft', 'returned')`, [req.params.id, req.user.id]);
+    const del = await dbPool.query(`DELETE FROM awards WHERE id=$1 AND creator_id=$2 AND status IN ('draft', 'returned')`, [req.params.id, req.user.id]);
+    // 只有真的删掉了才记账（否则是越权/状态不符，空记录反而误导）
+    if (del.rowCount > 0) {
+        await logAudit(dbPool, req, { action: 'award.delete', targetType: 'award', targetId: req.params.id });
+    }
     res.json({ success: true });
 });
 
@@ -1003,6 +1148,12 @@ app.post('/api/awards/:id/apply', verifyToken, async (req, res) => {
             'INSERT INTO user_awards (user_id, award_id, level, score_snapshot, serial_number) VALUES ($1, $2, $3, $4, $5)', 
             [req.user.id, req.params.id, levelName, current_score, serial]
         );
+        await logAudit(dbPool, req, {
+            action: 'award.apply',
+            targetType: 'award',
+            targetId: req.params.id,
+            detail: { level: levelName, score: current_score, serial },
+        });
         res.json({ success: true, serial, level: levelName });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1219,7 +1370,13 @@ app.post('/api/admin/users', verifyToken, verifyAdmin, require2FA, async (req, r
     const { callsign, password, role } = req.body;
     try {
         const hash = await bcrypt.hash(password, 10);
-        await dbPool.query(`INSERT INTO users (callsign, password_hash, role) VALUES ($1, $2, $3)`, [callsign.toUpperCase(), hash, role || 'user']);
+        const ins = await dbPool.query(`INSERT INTO users (callsign, password_hash, role) VALUES ($1, $2, $3) RETURNING id`, [callsign.toUpperCase(), hash, role || 'user']);
+        await logAudit(dbPool, req, {
+            action: 'admin.user_create',
+            targetType: 'user',
+            targetId: ins.rows[0]?.id,
+            detail: { callsign: String(callsign || '').toUpperCase().slice(0, 32), role: role || 'user' },
+        });
         res.json({ success: true });
     } catch (e) {
         if (e.code === '23505') res.status(400).json({ error: 'EXISTS', message: '呼号已存在' });
@@ -1229,6 +1386,8 @@ app.post('/api/admin/users', verifyToken, verifyAdmin, require2FA, async (req, r
 
 app.put('/api/admin/users/:id', verifyToken, verifyAdmin, require2FA, async (req, res) => {
     const { role, password } = req.body;
+    // 记下改前的角色，审计里能看到"从什么角色改成了什么角色"
+    const before = await dbPool.query('SELECT callsign, role FROM users WHERE id=$1', [req.params.id]);
     const updates = [];
     const values = [];
     let idx = 1;
@@ -1236,6 +1395,17 @@ app.put('/api/admin/users/:id', verifyToken, verifyAdmin, require2FA, async (req
     if (password) { const hash = await bcrypt.hash(password, 10); updates.push(`password_hash=$${idx++}`); values.push(hash); }
     values.push(req.params.id);
     await dbPool.query(`UPDATE users SET ${updates.join(',')} WHERE id=$${idx}`, values);
+    await logAudit(dbPool, req, {
+        action: 'admin.user_update',
+        targetType: 'user',
+        targetId: req.params.id,
+        detail: {
+            callsign: before.rows[0]?.callsign,
+            role_from: before.rows[0]?.role,
+            role_to: role || undefined,
+            password_reset: !!password, // 只记"重置过"，绝不记密码内容
+        },
+    });
     res.json({ success: true });
 });
 
@@ -1243,11 +1413,19 @@ app.delete('/api/admin/users/:id', verifyToken, verifyAdmin, require2FA, async (
     const client = await dbPool.connect();
     try {
         await client.query('BEGIN');
+        // 存档呼号供审计用（删掉就查不到了）
+        const victim = await client.query('SELECT callsign, role FROM users WHERE id=$1', [req.params.id]);
         // 将该用户创建的奖状设置为无主 (避免外键约束错误)
         await client.query('UPDATE awards SET creator_id = NULL WHERE creator_id = $1', [req.params.id]);
         // 删除用户 (QSOS 和 user_awards 会自动级联删除)
         await client.query('DELETE FROM users WHERE id=$1', [req.params.id]);
         await client.query('COMMIT');
+        await logAudit(dbPool, req, {
+            action: 'admin.user_delete',
+            targetType: 'user',
+            targetId: req.params.id,
+            detail: { callsign: victim.rows[0]?.callsign, role: victim.rows[0]?.role },
+        });
         res.json({ success: true });
     } catch (e) {
         await client.query('ROLLBACK');
@@ -1292,6 +1470,12 @@ app.post('/api/user/role-request', verifyToken, async (req, res) => {
             title: '有新的角色升级申请',
             body: `用户 ${req.user.callsign} 申请成为奖状管理员（拟创建奖状「${awardName}」），请到「用户管理」审核。`,
         });
+        await logAudit(dbPool, req, {
+            action: 'role.request',
+            targetType: 'role_request',
+            targetId: ins.rows[0].id,
+            detail: { award_name: awardName },
+        });
         res.json({ success: true, id: ins.rows[0].id });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -1333,6 +1517,13 @@ app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async 
         );
         await client.query('COMMIT');
 
+        await logAudit(dbPool, req, {
+            action: 'role.review',
+            targetType: 'role_request',
+            targetId: id,
+            detail: { user_id: old.rows[0].user_id, op: approved ? 'approve' : 'reject', role_to: approved ? 'award_admin' : undefined, reason: reason || '' },
+        });
+
         await notifyUsers(dbPool, [old.rows[0].user_id], {
             type: approved ? 'role_approved' : 'role_rejected',
             title: approved ? '升级申请已通过' : '升级申请被驳回',
@@ -1349,11 +1540,98 @@ app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async 
     }
 });
 
+// --- 内测邀请码管理（仅 admin）---
+// 生成 / 停用 / 删除邀请码 + 总开关。门禁只作用于"新账号产生"，
+// 详情见 server/services/invites.js。
+app.get('/api/admin/invite-codes', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        // 顺便把"这个码被谁用了"聚合出来，省得管理员再翻审计
+        const r = await dbPool.query(
+            `SELECT c.id, c.code, c.max_uses, c.used_count, c.note, c.expires_at, c.disabled, c.created_at,
+                    COALESCE(array_agg(u.callsign ORDER BY u.id) FILTER (WHERE u.id IS NOT NULL), '{}') AS used_by
+               FROM invite_codes c
+               LEFT JOIN users u ON u.invite_code = c.code
+              GROUP BY c.id
+              ORDER BY c.created_at DESC, c.id DESC`,
+        );
+        res.json({ requireInvite: isInviteRequired(appConfig), list: r.rows });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/admin/invite-codes', verifyToken, verifyAdmin, async (req, res) => {
+    const { max_uses: maxUses, note, expires_in_days: expiresInDays } = req.body || {};
+    const uses = Math.min(999, Math.max(1, Number(maxUses) || 1));
+    const days = Number(expiresInDays) || 0; // 0 / 空 = 不过期
+    try {
+        // 极小概率撞码：撞了就换一个再试（唯一索引兜底）
+        let row = null;
+        for (let i = 0; i < 5 && !row; i += 1) {
+            const code = genInviteCode();
+            const ins = await dbPool.query(
+                `INSERT INTO invite_codes (code, max_uses, note, expires_at, created_by)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (code) DO NOTHING
+                 RETURNING id, code, max_uses, used_count, note, expires_at, disabled, created_at`,
+                [
+                    code,
+                    uses,
+                    String(note || '').slice(0, 200) || null,
+                    days > 0 ? new Date(Date.now() + days * 86400000) : null,
+                    req.user.id,
+                ],
+            );
+            row = ins.rows[0] || null;
+        }
+        if (!row) throw new Error('生成邀请码失败，请重试');
+        await logAudit(dbPool, req, { action: 'invite.create', targetType: 'invite', targetId: row.code, detail: { max_uses: uses, days: days || undefined, note: row.note || undefined } });
+        res.json({ success: true, code: row });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/admin/invite-codes/:id/toggle', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const r = await dbPool.query(
+            `UPDATE invite_codes SET disabled = NOT disabled WHERE id=$1 RETURNING code, disabled`,
+            [req.params.id],
+        );
+        if (r.rows.length === 0) return res.status(404).json({ error: 'NOT_FOUND', message: '邀请码不存在' });
+        await logAudit(dbPool, req, { action: 'invite.toggle', targetType: 'invite', targetId: r.rows[0].code, detail: { disabled: r.rows[0].disabled } });
+        res.json({ success: true, disabled: r.rows[0].disabled });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete('/api/admin/invite-codes/:id', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const r = await dbPool.query(`DELETE FROM invite_codes WHERE id=$1 RETURNING code, used_count`, [req.params.id]);
+        if (r.rows.length === 0) return res.status(404).json({ error: 'NOT_FOUND', message: '邀请码不存在' });
+        await logAudit(dbPool, req, { action: 'invite.delete', targetType: 'invite', targetId: r.rows[0].code, detail: { used_count: r.rows[0].used_count } });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 内测总开关：写进 config.json，重启也保留；关闭后注册不再要求邀请码
+app.post('/api/admin/invite-settings', verifyToken, verifyAdmin, async (req, res) => {
+    const enabled = !!(req.body || {}).requireInvite;
+    appConfig.beta = { ...(appConfig.beta || {}), requireInvite: enabled };
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(appConfig, null, 2));
+    await logAudit(dbPool, req, { action: 'invite.settings', detail: { requireInvite: enabled } });
+    res.json({ success: true, requireInvite: enabled });
+});
+
 app.post('/api/admin/settings', verifyToken, verifyAdmin, require2FA, async (req, res) => {
     const { useHttps, adminPath } = req.body;
     appConfig.useHttps = useHttps;
     appConfig.adminPath = adminPath;
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(appConfig, null, 2));
+    await logAudit(dbPool, req, { action: 'admin.settings_update', detail: { useHttps, adminPath } });
     res.json({ success: true });
 });
 

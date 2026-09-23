@@ -25,6 +25,8 @@ import express from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+// 内测门禁：OAuth 首次建号也要邀请码，否则会绕过注册关（绑定已有账号不需要）
+import { consumeInviteCode, inviteError, isInviteRequired } from '../services/invites.js';
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -64,9 +66,11 @@ const publicUser = (u) => ({
   has2fa: !!u.totp_secret,
 });
 
-export function createOauthRouter({ getDbPool, getConfig }) {
+export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   const router = express.Router();
   const db = () => getDbPool();
+  // 审计由 server.js 注入；未注入时静默跳过（best-effort）
+  const audit = (req, entry) => (typeof logAudit === 'function' ? logAudit(db(), req, entry) : Promise.resolve());
 
   // 一次性 state 与「待绑定」会话，进程内存即可（重启即清，不落盘）
   const states = new Map(); // state -> expiresAt
@@ -176,7 +180,7 @@ export function createOauthRouter({ getDbPool, getConfig }) {
 
   // ---- 补全信息：确认呼号 → 绑定已有账号（需密码）或创建新账号 ----
   router.post('/complete', async (req, res) => {
-    const { pending_token: pendingToken, callsign, password } = req.body || {};
+    const { pending_token: pendingToken, callsign, password, invite_code: inviteCode } = req.body || {};
     if (!pendingToken) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少参数' });
     const pending = pendingBinds.get(pendingToken);
     if (!pending || pending.expiresAt < Date.now()) {
@@ -213,14 +217,29 @@ export function createOauthRouter({ getDbPool, getConfig }) {
     }
 
     // 新账号：呼号用用户输入的值；填了密码就一并设置（以后也能密码登录）
+    // ★ 内测门禁（默认关闭）：新建账号需要邀请码；「绑定已有账号」在上面就返回了，不受影响
+    let usedCode = null;
+    if (isInviteRequired(getConfig())) {
+      const check = await consumeInviteCode(db(), inviteCode);
+      if (!check.ok) {
+        const { status, body } = inviteError(check.reason, 'oauth');
+        return res.status(status).json(body);
+      }
+      usedCode = check.code;
+    }
+
     const hash = password ? await bcrypt.hash(password, 10) : null;
     const created = await db().query(
-      `INSERT INTO users (callsign, password_hash, role, oauth_provider, oauth_sub, oauth_raw)
-       VALUES ($1, $2, 'user', $3, $4, $5) RETURNING *`,
-      [cs, hash, pending.provider, pending.sub, JSON.stringify(pending.profile)],
+      `INSERT INTO users (callsign, password_hash, role, oauth_provider, oauth_sub, oauth_raw, invite_code)
+       VALUES ($1, $2, 'user', $3, $4, $5, $6) RETURNING *`,
+      [cs, hash, pending.provider, pending.sub, JSON.stringify(pending.profile), usedCode],
     );
     pendingBinds.delete(pendingToken);
     const u = created.rows[0];
+    await audit(req, { action: 'auth.register', targetType: 'user', targetId: u.id, detail: { callsign: u.callsign, channel: 'hamcq', invite_code: usedCode || undefined } });
+    if (usedCode) {
+      await audit(req, { action: 'invite.use', targetType: 'invite', targetId: usedCode, detail: { callsign: u.callsign, channel: 'hamcq' } });
+    }
     return res.json({ token: signToken(u), user: publicUser(u) });
   });
 
