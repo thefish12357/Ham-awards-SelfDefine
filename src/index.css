@@ -5,3 +5,381 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ============================================================================
+   全局兜底：禁止横向滚动
+   ----------------------------------------------------------------------------
+   窄窗口下长中文标题、以及未收窄的 flex 子项容易撑出横向滚动条（表现为
+   "右边多出一条滑块、内容被推到视口外"）。这里统一兜底。
+   ⚠️ 用 `clip` 而不是 `hidden`：`hidden` 会让祖先变成滚动容器，从而**使
+   `position: sticky` 失效**（首页顶栏就是 sticky）；`clip` 不创建滚动容器。
+   纵向滚动完全不受影响。
+   ============================================================================ */
+body { overflow-x: clip; }
+
+/* ============================================================================
+   双主题（作用域映射层）
+   ----------------------------------------------------------------------------
+   【2026-09-23 改版】两套主题各对应一种设计方向：
+     · 深色 `.app-dark`  = 「A 极简深空」：实色近黑底 + 1px 细边框 + 单一强调色。
+       **刻意去掉大面积光晕 / 毛玻璃 / 满屏渐变** —— 这三件套是"廉价感"的来源，
+       参考 Dribbble 人气作品的做法：靠明度层次与细边框分层，而非特效。
+     · 亮色 `.app-light` = 「B 亮色精品」：白底 + 细边框 + 克制的蓝紫点缀。
+
+   为什么用「作用域映射」而不是逐组件重写：
+     上游遗留大量浅色工具类（bg-white / text-slate-800 / border-slate-200 …），
+     逐处改风险高、收益低。这里集中映射，只影响带 .app-dark / .app-light 的容器。
+
+   安全边界：奖状 `AwardRenderer` 的底色与文字全部写在内联 style，类覆盖命中不到，
+     奖状白底不受任何主题影响 —— **不要把它改成 Tailwind 类名**。
+   新增页面：根容器按主题挂 `.app-dark`（配 bg-slate-950）或 `.app-light` 即可继承。
+   ============================================================================ */
+
+/* ---------- 设计令牌 ---------- */
+:root {
+  /* A 极简深空 */
+  --dk-bg: #0a0a0b;
+  --dk-panel: #141416;
+  --dk-subtle: #101012;
+  --dk-border: rgba(255, 255, 255, 0.07);
+  --dk-text: #e5e7eb;
+  --dk-text-dim: #9ca3af;
+  --dk-accent: #22d3ee;
+
+  /* B 亮色精品 */
+  --lt-bg: #fafafa;
+  --lt-panel: #ffffff;
+  --lt-subtle: #f4f4f5;
+  --lt-border: rgba(15, 23, 42, 0.08);
+  --lt-text: #0f172a;
+  --lt-text-dim: #64748b;
+  --lt-accent: #4f46e5;
+}
+
+/* ---------- 登录页右侧品牌展示区 ----------
+   两套主题下都保持深色，与左侧表单构成经典分屏对比
+   （参考 Dribbble「Mix Certificate — Sign In & Landing Page UI」）。
+   固定深色，因此**刻意不参与** .app-dark / .app-light 映射。 */
+.auth-brand {
+  background-color: #0e0e11;
+  background-image:
+    radial-gradient(ellipse 70% 55% at 80% 0%, rgba(34, 211, 238, 0.10), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 0% 100%, rgba(99, 102, 241, 0.10), transparent 60%);
+}
+
+/* ======================= 深色主题：A 极简深空 ======================= */
+/* color / background-color 必须直接设在容器上：
+   ① color 不设 → 未显式设色的文字继承浏览器默认黑色，深底上看不见；
+   ② background 不设 → 根容器自带的 bg-slate-950（#020617，偏蓝）会盖住令牌色，
+      而后代选择器 .app-dark .bg-slate-950 匹配不到元素自身。 */
+.app-dark {
+  color-scheme: dark;
+  color: var(--dk-text);
+  background-color: var(--dk-bg) !important;
+}
+
+/* 面板：实色，**不加 backdrop-blur**（毛玻璃是廉价感来源之一） */
+.app-dark .bg-white,
+.app-dark .bg-white\/90,
+.app-dark .bg-white\/80,
+.app-dark .bg-white\/70,
+.app-dark .bg-white\/60,
+.app-dark .bg-white\/50,
+.app-dark .bg-white\/40,
+.app-dark .bg-white\/30 {
+  background-color: var(--dk-panel) !important;
+}
+/* 次级底（表头、内嵌区、hover 区） */
+.app-dark .bg-slate-50,
+.app-dark .bg-slate-50\/50,
+.app-dark .bg-slate-50\/40,
+.app-dark .bg-slate-100,
+.app-dark .bg-slate-100\/80,
+.app-dark .bg-slate-100\/50 {
+  background-color: var(--dk-subtle) !important;
+}
+.app-dark .bg-slate-200 { background-color: rgba(255, 255, 255, 0.09) !important; }
+.app-dark .bg-slate-300 { background-color: rgba(255, 255, 255, 0.13) !important; }
+
+/* 半透明深底（侧边栏 bg-slate-900/70、顶栏 bg-slate-950/60）统一为**实色**近黑，
+   并强制关闭毛玻璃 —— 毛玻璃是本次要消除的"廉价感"来源之一 */
+.app-dark [class*="bg-slate-950/"],
+.app-dark [class*="bg-slate-900/"] {
+  background-color: #0f0f11 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+/* 其余残留的模糊一并关闭（背景已是实色，模糊无视觉意义、只拖性能） */
+.app-dark .backdrop-blur,
+.app-dark .backdrop-blur-sm,
+.app-dark .backdrop-blur-md,
+.app-dark .backdrop-blur-lg,
+.app-dark .backdrop-blur-xl,
+.app-dark .backdrop-blur-2xl,
+.app-dark .backdrop-blur-3xl {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 主按钮：实色强调，**去掉渐变** */
+.app-dark .bg-slate-900,
+.app-dark .bg-blue-600,
+.app-dark .bg-blue-500 {
+  background-color: var(--dk-accent) !important;
+  background-image: none !important;
+}
+.app-dark .bg-green-600 {
+  background-color: #10b981 !important;
+  background-image: none !important;
+}
+/* 强调底按钮上的白字改为深色，保证对比度（仅当同一元素同时带 text-white） */
+.app-dark .bg-slate-900.text-white,
+.app-dark .bg-blue-600.text-white,
+.app-dark .bg-blue-500.text-white,
+.app-dark .bg-green-600.text-white { color: #041016 !important; }
+
+/* 侧边栏菜单的激活项：一整块高饱和实心色在近黑底上过重，
+   改为「低饱和淡底 + 明亮强调字」（这是 Linear / Vercel 后台的常见做法）。
+   注意用 aside 限定作用域，避免影响正文里的实心主按钮。 */
+.app-dark aside .bg-blue-600,
+.app-dark aside .bg-blue-600.text-white {
+  background-color: rgba(34, 211, 238, 0.13) !important;
+  color: #67e8f9 !important;
+  box-shadow: none !important;
+}
+
+/* 文字 */
+.app-dark .text-black,
+.app-dark .text-slate-900,
+.app-dark .text-slate-800,
+.app-dark .text-slate-950 { color: #f4f4f5 !important; }
+.app-dark .text-slate-700,
+.app-dark .text-slate-600 { color: #d4d4d8 !important; }
+.app-dark .text-slate-500 { color: #a1a1aa !important; }
+.app-dark .text-slate-400 { color: #8b8b94 !important; }
+.app-dark .text-blue-600,
+.app-dark .text-blue-700 { color: #67e8f9 !important; }
+.app-dark .text-green-600,
+.app-dark .text-green-700,
+.app-dark .text-emerald-600,
+.app-dark .text-emerald-700 { color: #6ee7b7 !important; }
+.app-dark .text-red-600,
+.app-dark .text-red-700 { color: #fca5a5 !important; }
+.app-dark .text-amber-600,
+.app-dark .text-amber-700,
+.app-dark .text-yellow-600,
+.app-dark .text-yellow-700 { color: #fcd34d !important; }
+.app-dark .text-indigo-600,
+.app-dark .text-violet-600,
+.app-dark .text-purple-600,
+.app-dark .text-indigo-700,
+.app-dark .text-violet-700,
+.app-dark .text-purple-700 { color: #c4b5fd !important; }
+
+/* 边框 / 分隔线：统一 1px 细线（分层的主要手段） */
+.app-dark .border,
+.app-dark .border-slate-50,
+.app-dark .border-slate-100,
+.app-dark .border-slate-200,
+.app-dark .border-slate-300 { border-color: var(--dk-border) !important; }
+.app-dark .divide-slate-50 > :not([hidden]) ~ :not([hidden]),
+.app-dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+.app-dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]),
+.app-dark .divide-y > :not([hidden]) ~ :not([hidden]) { border-color: var(--dk-border) !important; }
+.app-dark hr { border-color: var(--dk-border) !important; }
+
+/* 浅色状态底 -> 半透明彩底（比原方案更淡，避免"花"） */
+.app-dark .bg-blue-50, .app-dark .bg-blue-50\/50, .app-dark .bg-blue-50\/40, .app-dark .bg-blue-100 { background-color: rgba(34, 211, 238, 0.10) !important; }
+.app-dark .bg-green-50, .app-dark .bg-green-100, .app-dark .bg-emerald-50, .app-dark .bg-emerald-100 { background-color: rgba(16, 185, 129, 0.10) !important; }
+.app-dark .bg-red-50, .app-dark .bg-red-100 { background-color: rgba(248, 113, 113, 0.10) !important; }
+.app-dark .bg-amber-50, .app-dark .bg-amber-100, .app-dark .bg-yellow-50, .app-dark .bg-yellow-100 { background-color: rgba(251, 191, 36, 0.10) !important; }
+.app-dark .bg-orange-50, .app-dark .bg-orange-100 { background-color: rgba(251, 146, 60, 0.10) !important; }
+.app-dark .bg-indigo-50, .app-dark .bg-indigo-100 { background-color: rgba(129, 140, 248, 0.10) !important; }
+.app-dark .bg-violet-50, .app-dark .bg-violet-100, .app-dark .bg-purple-50, .app-dark .bg-purple-100 { background-color: rgba(167, 139, 250, 0.10) !important; }
+.app-dark .bg-cyan-50, .app-dark .bg-cyan-100 { background-color: rgba(34, 211, 238, 0.10) !important; }
+.app-dark .bg-teal-50, .app-dark .bg-teal-100 { background-color: rgba(45, 212, 191, 0.10) !important; }
+
+/* hover 变体（否则悬停会闪回浅色） */
+.app-dark .hover\:bg-white:hover,
+.app-dark .hover\:bg-slate-50:hover,
+.app-dark .hover\:bg-slate-100:hover { background-color: rgba(255, 255, 255, 0.06) !important; }
+/* ⚠️ 带透明度后缀的 hover 变体（如 `hover:bg-slate-50/60`）是**独立类名**，
+   上面那条 `:hover` 规则命中不到它 —— 深色下会悬停出一块近白底 + 浅色文字，
+   表现为"鼠标放上去看不见内容"。凡是新写 hover 底色，优先用不带 `/xx` 的类；
+   若必须带后缀，在这里补一条映射。 */
+.app-dark .hover\:bg-slate-50\/60:hover { background-color: rgba(255, 255, 255, 0.06) !important; }
+.app-dark .hover\:bg-slate-200:hover { background-color: rgba(255, 255, 255, 0.13) !important; }
+.app-dark .hover\:bg-blue-50:hover,
+.app-dark .hover\:bg-blue-100:hover { background-color: rgba(34, 211, 238, 0.16) !important; }
+.app-dark .hover\:bg-red-50:hover,
+.app-dark .hover\:bg-red-100:hover { background-color: rgba(248, 113, 113, 0.16) !important; }
+.app-dark .hover\:bg-green-50:hover,
+.app-dark .hover\:bg-green-100:hover,
+.app-dark .hover\:bg-emerald-50:hover { background-color: rgba(16, 185, 129, 0.16) !important; }
+.app-dark .hover\:bg-amber-50:hover,
+.app-dark .hover\:bg-amber-100:hover { background-color: rgba(251, 191, 36, 0.16) !important; }
+
+/* 表单控件（浏览器 UA 默认白底） */
+.app-dark input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+.app-dark textarea,
+.app-dark select {
+  background-color: var(--dk-subtle) !important;
+  color: var(--dk-text) !important;
+  border-color: var(--dk-border) !important;
+}
+.app-dark input::placeholder,
+.app-dark textarea::placeholder { color: #6b7280 !important; }
+.app-dark select option { background-color: var(--dk-panel); color: var(--dk-text); }
+
+/* 关闭彩色发光阴影（彩色 glow 同属"廉价感"来源；中性的细阴影保留） */
+.app-dark [class*="shadow-cyan-"],
+.app-dark [class*="shadow-indigo-"],
+.app-dark [class*="shadow-fuchsia-"],
+.app-dark [class*="shadow-blue-"],
+.app-dark [class*="shadow-green-"],
+.app-dark [class*="shadow-emerald-"],
+.app-dark [class*="shadow-violet-"] { box-shadow: none !important; }
+
+/* 滚动条 */
+.app-dark ::-webkit-scrollbar { width: 10px; height: 10px; }
+.app-dark ::-webkit-scrollbar-track { background: transparent; }
+.app-dark ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 9999px; }
+.app-dark ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.20); }
+
+/* ======================= 亮色主题：B 亮色精品 ======================= */
+html.theme-dark body { background-color: var(--dk-bg); color: var(--dk-text); }
+html.theme-light body { background-color: var(--lt-bg); color: var(--lt-text); }
+
+/* 注意：根容器本身同时带 app-light 与 bg-slate-950 两个类，
+   后代选择器匹配不到自身，所以这里直接给容器设底色（!important 压过 .bg-slate-950）。 */
+.app-light { color-scheme: light; color: var(--lt-text); background-color: var(--lt-bg) !important; }
+
+/* 深色底 -> 浅色底 */
+.app-light .bg-slate-950 { background-color: var(--lt-bg) !important; }
+.app-light [class*="bg-slate-950/"] { background-color: rgba(255, 255, 255, 0.9) !important; }
+.app-light [class*="bg-slate-900/"] { background-color: rgba(255, 255, 255, 0.92) !important; }
+.app-light .bg-slate-900 { background-color: var(--lt-subtle) !important; }
+
+/* 亮色主题同样关闭毛玻璃（亮色精品风靠细边框与浅阴影分层，不靠模糊） */
+.app-light .backdrop-blur,
+.app-light .backdrop-blur-sm,
+.app-light .backdrop-blur-md,
+.app-light .backdrop-blur-lg,
+.app-light .backdrop-blur-xl,
+.app-light .backdrop-blur-2xl,
+.app-light .backdrop-blur-3xl {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* 主界面侧边栏：亮色主题下由"深色面板"翻转为"浅色面板"
+   （上游用 bg-slate-900/70 + text-white + hover:bg-slate-800 这一套深色写法） */
+.app-light .bg-slate-800 { background-color: var(--lt-subtle) !important; }
+.app-light .hover\:bg-slate-800:hover,
+.app-light .hover\:bg-slate-700:hover { background-color: rgba(15, 23, 42, 0.055) !important; }
+.app-light .hover\:text-white:hover { color: var(--lt-text) !important; }
+.app-light .border-slate-800,
+.app-light .border-slate-700 { border-color: var(--lt-border) !important; }
+.app-light .text-red-400 { color: #dc2626 !important; }
+.app-light .bg-red-900\/20 { background-color: rgba(220, 38, 38, 0.08) !important; }
+/* 侧边栏"激活项"在亮色下用实心靛蓝 + 白字（由上方 .bg-blue-600 规则统一处理） */
+
+/* 白色半透明（卡片/分隔线）-> 浅底上的极浅灰 */
+.app-light [class*="bg-white/"] { background-color: rgba(255, 255, 255, 0.72) !important; }
+.app-light [class*="border-white/"] { border-color: var(--lt-border) !important; }
+
+/* 文字：深色页面上的浅色文字在亮色主题下必须翻转为深色 */
+.app-light .text-white,
+.app-light .text-slate-50,
+.app-light .text-slate-100,
+.app-light .text-slate-200 { color: var(--lt-text) !important; }
+.app-light .text-slate-300 { color: #334155 !important; }
+.app-light .text-slate-400 { color: #64748b !important; }
+.app-light .text-slate-500 { color: #94a3b8 !important; }
+
+/* 渐变文字（Hero 标题）在浅底上改为实心深色，保证可读 */
+.app-light .text-transparent { color: var(--lt-text) !important; -webkit-text-fill-color: var(--lt-text) !important; }
+
+/* 亮色主题下浅青/浅天蓝文字在浅底上对比度不足，压深为可读的深青 */
+.app-light .text-cyan-200,
+.app-light .text-cyan-300,
+.app-light .text-cyan-400,
+.app-light .text-sky-300 { color: #0e7490 !important; }
+
+/* 其余"浅色状态文字"（-100 ~ -400 档）同理：在浅底上几乎与底色同色（如
+   text-amber-200 on #fffbeb → 全黄一片，字看不见），统一压深到同色系深色档。
+   与深色主题把 -600/-700 提亮为 -300 的做法对称。
+   典型场景：内容规范页合规提示条、首页奖状等级徽标、设计器"仅影响该等级"提示。 */
+.app-light .text-amber-100,
+.app-light .text-amber-200,
+.app-light .text-amber-300,
+.app-light .text-yellow-200,
+.app-light .text-yellow-300,
+.app-light .text-orange-200,
+.app-light .text-orange-300 { color: #b45309 !important; }
+.app-light .text-emerald-200,
+.app-light .text-emerald-300,
+.app-light .text-emerald-400,
+.app-light .text-green-300 { color: #047857 !important; }
+.app-light .text-rose-300,
+.app-light .text-red-300 { color: #b91c1c !important; }
+/* 页脚链接的 hover:text-cyan-300 是独立类名，不在上面的 text-cyan-* 映射里 */
+.app-light .hover\:text-cyan-300:hover { color: #0e7490 !important; }
+
+/* 深色强调底在亮色主题下换成亮色主题的强调色。
+   注意区分用法：带 text-white 的深色块 = 主按钮（→ indigo 实色）；
+   不带 text-white 的深色块（侧边栏、深色面板）= 浅灰面板（由上方 .bg-slate-900 规则处理）。 */
+.app-light .bg-slate-900.text-white,
+.app-light .bg-blue-600.text-white,
+.app-light .bg-blue-500.text-white {
+  background-color: var(--lt-accent) !important;
+  color: #ffffff !important;
+}
+.app-light .bg-blue-600,
+.app-light .bg-blue-500 { background-color: var(--lt-accent) !important; color: #ffffff !important; }
+
+/* 背景光晕（若页面仍保留）在浅色下极淡，避免脏 */
+.app-light [class*="bg-cyan-500/"] { background-color: rgba(6, 182, 212, 0.08) !important; }
+.app-light [class*="bg-indigo-500/"] { background-color: rgba(99, 102, 241, 0.08) !important; }
+.app-light [class*="bg-fuchsia-500/"] { background-color: rgba(217, 70, 239, 0.06) !important; }
+
+/* 状态色底（浅色下用更淡的彩底 + 深色文字） */
+.app-light .bg-blue-50, .app-light .bg-blue-100 { background-color: #eef2ff !important; }
+.app-light .bg-green-50, .app-light .bg-green-100, .app-light .bg-emerald-50 { background-color: #ecfdf5 !important; }
+.app-light .bg-red-50, .app-light .bg-red-100 { background-color: #fef2f2 !important; }
+.app-light .bg-amber-50, .app-light .bg-amber-100, .app-light .bg-yellow-50 { background-color: #fffbeb !important; }
+
+/* 边框：亮色下用浅灰细线 */
+.app-light .border-white\/10,
+.app-light .border-white\/15,
+.app-light .border-white\/20 { border-color: var(--lt-border) !important; }
+
+/* 表单控件 */
+.app-light input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+.app-light textarea,
+.app-light select {
+  background-color: var(--lt-panel) !important;
+  color: var(--lt-text) !important;
+  border-color: var(--lt-border) !important;
+}
+.app-light input::placeholder,
+.app-light textarea::placeholder { color: #94a3b8 !important; }
+
+/* 滚动条 */
+.app-light ::-webkit-scrollbar { width: 10px; height: 10px; }
+.app-light ::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.14); border-radius: 9999px; }
+.app-light ::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.26); }
+
+/* ---------- 登录页右侧品牌区：固定深色，需反向覆盖亮色主题的映射 ----------
+   否则 .app-light 会把这里的 text-white 压成深色、把 border-white/10 变浅灰，
+   在深色品牌底上直接失效。用更高具体性（.app-light .auth-brand ...）拉回来。 */
+.app-light .auth-brand .text-white,
+.app-light .auth-brand .text-slate-50,
+.app-light .auth-brand .text-slate-100 { color: #f4f4f5 !important; }
+.app-light .auth-brand .text-slate-300 { color: #cbd5e1 !important; }
+.app-light .auth-brand .text-slate-400 { color: #94a3b8 !important; }
+.app-light .auth-brand .text-slate-500 { color: #64748b !important; }
+.app-light .auth-brand .text-cyan-300,
+.app-light .auth-brand .text-cyan-400 { color: #67e8f9 !important; }
+.app-light .auth-brand [class*="border-white/"] { border-color: rgba(255, 255, 255, 0.10) !important; }
+.app-light .auth-brand [class*="bg-white/"] { background-color: rgba(255, 255, 255, 0.05) !important; }

@@ -20,6 +20,7 @@ export default function PasswordInput({
   autoFocus = false,
   value,
   onChange,
+  variant = 'light',
   ...rest
 }) {
   const [visible, setVisible] = useState(false);
@@ -44,7 +45,7 @@ export default function PasswordInput({
         onClick={() => setVisible((v) => !v)}
         title={visible ? '隐藏密码' : '显示密码'}
         aria-label={visible ? '隐藏密码' : '显示密码'}
-        className="absolute right-1.5 top-1/2 -translate-y-1/2 p-2 rounded-md text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+        className={`absolute right-1.5 top-1/2 -translate-y-1/2 p-2 rounded-md transition-colors ${variant === 'dark' ? 'text-slate-500 hover:text-white hover:bg-white/10' : 'text-slate-400 hover:text-slate-700 hover:bg-slate-100'}`}
       >
         {visible ? <EyeOff size={17} /> : <Eye size={17} />}
       </button>

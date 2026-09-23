@@ -84,13 +84,15 @@ export const parseVerifyHash = () => {
 };
 
 /**
- * 公开静态页（关于 / 隐私政策）
+ * 公开静态页（关于 / 隐私政策 / 用户协议 / 内容规范）
  * 与 subView 体系无关：不需要登录，也不参与角色守卫。
  * `App` 在渲染前拦截这些 hash，单独渲染对应页面。
  */
 export const PUBLIC_PAGES = {
   '#/about': 'about',
   '#/privacy': 'privacy',
+  '#/terms': 'terms',
+  '#/protocol': 'protocol',
 };
 
 export const readPublicPage = () => {

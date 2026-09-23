@@ -14,6 +14,7 @@ import {
   CalendarRange,
 } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch.js';
+import { confirmDialog } from '../lib/confirm.jsx';
 
 /**
  * LoTW 直连页（需求①）
@@ -184,6 +185,14 @@ export default function LotwImportView() {
   };
 
   const handleClear = async () => {
+    const ok = await confirmDialog({
+      title: '清除临时日志',
+      message: '确认立即清除服务器内存里的这份临时日志？',
+      detail: '清除后需要重新连接 LoTW 才能继续判定/申请；服务端本来也会在到期后自动清除。',
+      confirmText: '清除',
+      danger: true,
+    });
+    if (!ok) return;
     const sid = sessionIdRef.current;
     sessionIdRef.current = null;
     setSession(null);
@@ -223,6 +232,14 @@ export default function LotwImportView() {
 
   const handleApply = async () => {
     if (!sessionIdRef.current || !awardId) return;
+    const picked = awards.find((a) => String(a.id) === String(awardId));
+    const ok = await confirmDialog({
+      title: '申领奖状',
+      message: `确认申领「${picked?.name || '所选奖状'}」？`,
+      detail: '系统会用刚才读取的临时日志判定等级；同一等级只能领取一次，领取后会生成公开可校验的序列号。申请记录会入库，但一条 QSO 都不会保存。',
+      confirmText: '确认申领',
+    });
+    if (!ok) return;
     setApplying(true);
     setError(null);
     try {
@@ -252,11 +269,15 @@ export default function LotwImportView() {
         <h2 className="text-2xl font-black text-slate-800 flex items-center gap-3">
           <Globe className="text-blue-600" /> LoTW 直连
         </h2>
-        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-6 space-y-4">
-          <div className="flex items-center gap-2 font-bold text-amber-900">
+        {/* ⚠️ 深色主题下「大面积淡琥珀底 + text-amber-900 文字」会糊成一片脏棕色：
+            amber-800/900 不在深色映射表里（只映射了 600/700），10% 琥珀底配暗褐字看不清。
+            改为「中性面板 + 左侧琥珀色条 + 琥珀标题」，两套主题都干净。 */}
+        <div className="relative overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 pl-7 space-y-4">
+          <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 w-1 bg-amber-400" />
+          <div className="flex items-center gap-2 font-bold text-amber-700">
             <ShieldAlert size={20} /> 数据出境提示（请先阅读并确认）
           </div>
-          <div className="text-sm text-amber-900/90 space-y-3 leading-relaxed">
+          <div className="text-sm text-slate-600 space-y-3 leading-relaxed">
             <p>
               本功能会使用你填写的 LoTW 账号，直接从 <b>ARRL（美国）</b> 的 Logbook of The World
               读取你的通联记录。相当于把你的<b>呼号与通联日志</b>出境到美国。
@@ -276,13 +297,13 @@ export default function LotwImportView() {
               <li>精简记录只存在服务器内存里，默认 30 分钟后自动清除，期间可随时手动清除；</li>
               <li>申请奖状时只保存「申请记录 + 成绩快照」，<b>一条 QSO 都不会入库</b>。</li>
             </ol>
-            <p className="text-xs">
+            <p className="text-xs text-slate-500">
               你仍可选择不用本功能，改用「日志上传」自行导入 ADIF 文件（那条路径会把 QSO 记录保存到<b>本站服务器的数据库</b>，会占用服务器存储； LoTW 直连则一条都不落库）。
             </p>
           </div>
           <button
             onClick={acceptConsent}
-            className="px-6 py-3 bg-amber-600 hover:bg-amber-700 text-white rounded-xl font-bold transition-colors"
+            className="px-6 py-3 bg-slate-900 text-white rounded-xl font-bold transition-all hover:-translate-y-0.5 active:scale-95"
           >
             我已理解并同意，继续使用
           </button>
@@ -419,7 +440,7 @@ export default function LotwImportView() {
 
       {/* 临时会话状态 */}
       {session && (
-        <div className="bg-slate-900 text-white rounded-2xl p-6 space-y-4">
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
           <div className="flex items-center justify-between">
             <div className="font-bold flex items-center gap-2">
               <Clock size={18} className="text-emerald-400" />
