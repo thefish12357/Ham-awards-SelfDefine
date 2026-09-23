@@ -8,17 +8,20 @@ import {
   Search, ShieldCheck, UserPlus, Info, ExternalLink, Image as ImageIcon,
   Users, Activity, Radio, FileText, HardDrive, Clock, FileWarning,
   Target, Calculator, Filter, Layers, Trophy, Crop, ZoomIn, ZoomOut, Grid, ChevronDown, ChevronRight, Bell,
-  Loader2, Monitor
+  Loader2, Monitor, Sun, Moon
 } from 'lucide-react';
 
 // ================= 公共模块 =================
 // 统一请求封装（原 apiFetch 定义就在这里）与 Hash 路由已抽到独立模块，
 // 行为与原先保持一致，新功能请直接从这里 import，不要再写一份。
 import { apiFetch } from './lib/apiFetch.js';
-import { DEFAULT_ROUTE, isPublicHashRoute, isRouteAllowed, parseVerifyHash, readRoute, writeRoute } from './lib/routes.js';
+import { DEFAULT_ROUTE, isPublicHashRoute, isRouteAllowed, parseVerifyHash, readPublicPage, readRoute, writeRoute } from './lib/routes.js';
 import LotwImportView from './pages/LotwImportView.jsx';
 import VerifyView from './pages/VerifyView.jsx';
 import EvidenceAuditView from './pages/EvidenceAuditView.jsx';
+import LandingView from './pages/LandingView.jsx';
+import AboutView from './pages/AboutView.jsx';
+import PrivacyView from './pages/PrivacyView.jsx';
 import { normalizeLayout } from './lib/awardLayout.js';
 import { collectExternalImages } from './lib/media.js';
 import VisualDesigner from './components/VisualDesigner.jsx';
@@ -581,7 +584,7 @@ const QSL_BANDS = ['160m', '80m', '60m', '40m', '30m', '20m', '17m', '15m', '12m
 const QSL_MODES = ['CW', 'SSB', 'AM', 'FM', 'RTTY', 'PSK31', 'FT8', 'FT4', 'JT65', 'JT9', 'MFSK', 'SSTV', 'MSK144', 'DIGITALVOICE'];
 
 // Common Award Detail Modal (UPDATED: Multi-level)
-const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
+const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply }) => {
     const [checkResult, setCheckResult] = useState(null);
     const [checking, setChecking] = useState(false);
     const [applying, setApplying] = useState(false);
@@ -995,7 +998,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode }) => {
                                 已颁发奖状查看模式
                             </div>
                         ) : (
-                            userRole === 'user' ? (
+                            canApply ? (
                                 <button 
                                     onClick={handleApplyClick} 
                                     disabled={!checkResult?.eligible || applying || checkResult?.claimed_levels?.includes(checkResult?.achieved_level?.name)}
@@ -1065,7 +1068,7 @@ const AwardCenterView = ({ user }) => {
                     </div>
                 ))}
             </div>
-            {selectedAward && <AwardDetailModal award={selectedAward} onClose={() => setSelectedAward(null)} onApply={handleApply} userRole={user.role} />}
+            {selectedAward && <AwardDetailModal award={selectedAward} onClose={() => setSelectedAward(null)} onApply={handleApply} userRole={user.role} canApply />}
         </div>
     );
 };
@@ -1722,11 +1725,36 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
     const [passForm, setPassForm] = useState({ oldPassword: '', newPassword: '', confirmPassword: '' });
     const [confirmActionPass, setConfirmActionPass] = useState('');
     const [qsoCount, setQsoCount] = useState(null);
+    const [roleReq, setRoleReq] = useState(null);
+    const [roleReqSubmitting, setRoleReqSubmitting] = useState(false);
+    const [showRoleReqForm, setShowRoleReqForm] = useState(false);
+    const [roleReqForm, setRoleReqForm] = useState({ award_name: '', reason: '', experience: '', contact: '' });
 
     const loadStats = () => {
         apiFetch('/stats/dashboard').then((s) => setQsoCount(Number(s.qsos) || 0)).catch(() => {});
     };
     useEffect(loadStats, []);
+
+    const loadRoleReq = () => {
+        apiFetch('/user/role-request').then(setRoleReq).catch(() => {});
+    };
+    useEffect(() => { if (user.role === 'user') loadRoleReq(); }, [user.role]);
+
+    const handleRoleRequest = async (e) => {
+        e.preventDefault();
+        setRoleReqSubmitting(true);
+        try {
+            await apiFetch('/user/role-request', { method: 'POST', body: JSON.stringify(roleReqForm) });
+            setRoleReq({ status: 'pending' });
+            setShowRoleReqForm(false);
+            setRoleReqForm({ award_name: '', reason: '', experience: '', contact: '' });
+            alert('申请已提交，请等待管理员审核');
+        } catch (err) {
+            alert(err.message || '提交失败');
+        } finally {
+            setRoleReqSubmitting(false);
+        }
+    };
 
     const start2FASetup = async () => {
         try {
@@ -1815,6 +1843,49 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                     </div>
                 </div>
             </div>
+            {user.role === 'user' && (
+                <div className="bg-white p-6 rounded-2xl shadow-sm border">
+                    <h4 className="font-bold text-lg mb-2 flex items-center gap-2"><Trophy className="text-purple-600"/> 角色权限</h4>
+                    <p className="text-xs text-slate-400 mb-4">当前为「普通用户」。申请成为「奖状管理员」后可创建与管理奖状，需系统管理员审核。</p>
+                    {!roleReq || roleReq.status === 'rejected' ? (
+                        <button onClick={() => setShowRoleReqForm(true)} className="bg-purple-600 text-white px-5 py-2.5 rounded-lg text-sm font-bold hover:bg-purple-700">
+                            申请成为奖状管理员
+                        </button>
+                    ) : roleReq.status === 'pending' ? (
+                        <div className="text-sm text-amber-600 bg-amber-50 px-4 py-2.5 rounded-lg">申请已提交，等待管理员审核…</div>
+                    ) : (
+                        <div className="text-sm text-green-600 bg-green-50 px-4 py-2.5 rounded-lg">申请已通过，重新登录后生效。</div>
+                    )}
+                </div>
+            )}
+            {showRoleReqForm && (
+                <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
+                    <form onSubmit={handleRoleRequest} className="bg-white rounded-2xl w-full max-w-lg p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+                        <h4 className="font-bold text-lg text-slate-800">申请成为奖状管理员</h4>
+                        <p className="text-xs text-slate-400">请填写以下信息，系统管理员会据此审核你的申请。</p>
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-500 uppercase">拟创建的奖状名称 *</label>
+                            <input value={roleReqForm.award_name} onChange={(e) => setRoleReqForm({ ...roleReqForm, award_name: e.target.value })} required placeholder="例如: 中国通联成就奖" className="w-full border rounded-lg p-3" />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-500 uppercase">申请理由 *</label>
+                            <textarea value={roleReqForm.reason} onChange={(e) => setRoleReqForm({ ...roleReqForm, reason: e.target.value })} required rows={3} placeholder="说明你为什么想创建这个奖状、规则设想等" className="w-full border rounded-lg p-3" />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-500 uppercase">经验 / 背景说明</label>
+                            <textarea value={roleReqForm.experience} onChange={(e) => setRoleReqForm({ ...roleReqForm, experience: e.target.value })} rows={2} placeholder="例如: 业余无线电操作年限、参与过的活动、组织经验等" className="w-full border rounded-lg p-3" />
+                        </div>
+                        <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-500 uppercase">联系方式</label>
+                            <input value={roleReqForm.contact} onChange={(e) => setRoleReqForm({ ...roleReqForm, contact: e.target.value })} placeholder="邮箱 / 微信 / 电话，便于必要时沟通" className="w-full border rounded-lg p-3" />
+                        </div>
+                        <button type="submit" disabled={roleReqSubmitting} className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700 disabled:opacity-60">
+                            {roleReqSubmitting ? '提交中…' : '提交申请'}
+                        </button>
+                        <button type="button" onClick={() => setShowRoleReqForm(false)} className="w-full text-slate-400 text-sm text-center">取消</button>
+                    </form>
+                </div>
+            )}
             {user.role === 'user' && (
                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-red-100">
                     <h4 className="font-bold text-lg mb-4 flex items-center gap-2 text-red-600"><AlertCircle/> 危险区域</h4>
@@ -2043,8 +2114,10 @@ const UserManage = () => {
     const [creating, setCreating] = useState(false);
     const [twoFaCode, setTwoFaCode] = useState('');
     const [newUserInfo, setNewUserInfo] = useState({ callsign: '', password: '', role: 'user' });
+    const [roleRequests, setRoleRequests] = useState([]);
+    const [reviewingReqId, setReviewingReqId] = useState(null);
     
-    useEffect(() => { loadUsers(); }, []);
+    useEffect(() => { loadUsers(); loadRoleRequests(); }, []);
     
     const loadUsers = async () => { 
         try { 
@@ -2054,6 +2127,29 @@ const UserManage = () => {
             console.error("Failed to load users:", e);
             if (e.status !== 401 && e.status !== 403) alert("加载用户列表失败: " + e.message);
         } 
+    };
+
+    const loadRoleRequests = () => {
+        apiFetch('/admin/role-requests').then(setRoleRequests).catch(() => {});
+    };
+
+    const reviewRoleRequest = async (id, action) => {
+        let reason = '';
+        if (action === 'reject') {
+            const r = window.prompt('请输入驳回原因：');
+            if (!r || !r.trim()) return;
+            reason = r.trim();
+        }
+        setReviewingReqId(id);
+        try {
+            await apiFetch(`/admin/role-requests/${id}/review`, { method: 'POST', body: JSON.stringify({ action, reason }) });
+            loadRoleRequests();
+            loadUsers();
+        } catch (err) {
+            alert(err.message || '操作失败');
+        } finally {
+            setReviewingReqId(null);
+        }
     };
 
     const handleAction = async (method, url, body = {}) => {
@@ -2076,6 +2172,29 @@ const UserManage = () => {
                 <h3 className="font-bold text-xl flex items-center gap-2"><User size={24}/> 用户管理</h3>
                 <button onClick={()=>setCreating(true)} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2"><UserPlus size={18}/> 添加用户</button>
             </div>
+            {roleRequests.length > 0 && (
+                <div className="bg-white rounded-xl shadow border border-purple-100 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-100 bg-purple-50/50">
+                        <h4 className="font-bold text-sm text-purple-700 flex items-center gap-2"><Trophy size={16}/> 角色升级申请</h4>
+                    </div>
+                    {roleRequests.map((r) => (
+                        <div key={r.id} className="flex items-center justify-between px-4 py-3 border-b border-slate-50 last:border-0">
+                            <div className="flex-1 min-w-0">
+                                <div className="font-bold text-sm text-slate-800">{r.callsign}</div>
+                                <div className="text-xs text-slate-400">申请成为「奖状管理员」 · {new Date(r.created_at).toLocaleDateString('zh-CN')}</div>
+                                {r.award_name && <div className="text-xs text-slate-700 mt-1">拟创建奖状：<b>{r.award_name}</b></div>}
+                                {r.reason && <div className="text-xs text-slate-500 mt-1 bg-slate-50 rounded p-2">理由：{r.reason}</div>}
+                                {r.experience && <div className="text-xs text-slate-500 mt-1">经验/背景：{r.experience}</div>}
+                                {r.contact && <div className="text-xs text-slate-500 mt-1">联系方式：{r.contact}</div>}
+                            </div>
+                            <div className="flex gap-2">
+                                <button onClick={() => reviewRoleRequest(r.id, 'approve')} disabled={reviewingReqId === r.id} className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 disabled:opacity-60">通过</button>
+                                <button onClick={() => reviewRoleRequest(r.id, 'reject')} disabled={reviewingReqId === r.id} className="px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-bold hover:bg-red-200 disabled:opacity-60">驳回</button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
             {users.length === 0 ? (
                 <div className="text-center p-8 bg-white rounded-xl shadow border border-slate-100 text-slate-400">暂无用户数据或加载失败</div>
             ) : (
@@ -2127,6 +2246,16 @@ const UserManage = () => {
 export default function App() {
   const [view, setView] = useState('loading'); 
   const [user, setUser] = useState(null);
+  // 公开静态页（关于 / 隐私政策）：与 view 无关、独立于登录态
+  const [publicPage, setPublicPage] = useState(() => readPublicPage());
+  // 主题：'dark'（默认）| 'light'；持久化到 localStorage 并同步到 <html>
+  const [theme, setTheme] = useState(() => (localStorage.getItem('ham_theme') === 'light' ? 'light' : 'dark'));
+  const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
+  useEffect(() => {
+      document.documentElement.classList.toggle('theme-dark', theme === 'dark');
+      document.documentElement.classList.toggle('theme-light', theme === 'light');
+      localStorage.setItem('ham_theme', theme);
+  }, [theme]);
   // 初始页面从 URL 读取；非法路由回落默认页，角色可见性由下方守卫校正
   const [subView, setSubView] = useState(() => readRoute() || DEFAULT_ROUTE);
   const [show2FAInput, setShow2FAInput] = useState(false);
@@ -2185,10 +2314,10 @@ export default function App() {
                 setUser(JSON.parse(savedUser));
                 setView('main');
             } else {
-                setView('auth'); // Changed from 'login' to 'auth'
+                setView('landing'); // 已安装未登录：先展示网站首页，由 CTA 进入 auth
             }
         }
-    }).catch(() => setView('auth'));
+    }).catch(() => setView('landing'));
   }, []);
 
   // OAuth 提供方查询（M5）：登录页据此决定是否显示「使用 HamCQ 登录」
@@ -2203,6 +2332,7 @@ export default function App() {
   // 1) 手改地址栏 / 浏览器前进后退时，把 URL 变化同步回 subView
   useEffect(() => {
       const onHashChange = () => {
+          setPublicPage(readPublicPage());
           const route = readRoute();
           if (route) setSubView(route);
       };
@@ -2213,8 +2343,9 @@ export default function App() {
   // 2) subView 变化时写回 URL，使刷新能停在当前页、链接可分享。
   //    公开校验页 #/verify/<serial> 不归 subView 管，不能覆盖它的 URL。
   useEffect(() => {
-      if (view === 'main' && !isPublicHashRoute()) writeRoute(subView);
-  }, [view, subView]);
+      // 公开页（校验页 / 关于 / 隐私）时不写 hash，否则会把 #/about 之类顶回 #/dashboard
+      if (view === 'main' && !isPublicHashRoute() && !publicPage) writeRoute(subView);
+  }, [view, subView, publicPage]);
 
   // 3) 角色守卫：URL 指向当前角色看不到的页面时回落默认页，避免"所有分支都不满足"的白屏
   useEffect(() => {
@@ -2259,6 +2390,17 @@ export default function App() {
       try {
           await apiFetch('/notifications/read', { method: 'POST', body: JSON.stringify({ all: true }) });
           setNotifData((prev) => ({ list: prev.list.map((n) => ({ ...n, read: true })), unread: 0 }));
+      } catch (e) { /* ignore */ }
+  };
+
+  // 点单条通知即视为已读
+  const markRead = async (id) => {
+      try {
+          await apiFetch('/notifications/read', { method: 'POST', body: JSON.stringify({ id }) });
+          setNotifData((prev) => ({
+              list: prev.list.map((n) => (n.id === id ? { ...n, read: true } : n)),
+              unread: Math.max(0, prev.unread - 1),
+          }));
       } catch (e) { /* ignore */ }
   };
 
@@ -2355,58 +2497,113 @@ export default function App() {
   // 公开校验页（奖状 PDF / 纸质件上的二维码指向这里）：必须免登录，
   // 所以在任何登录态判断之前拦截。
   const verifySerial = parseVerifyHash();
-  if (verifySerial) return <VerifyView serial={verifySerial} />;
+  if (verifySerial) return <VerifyView serial={verifySerial} theme={theme} />;
+
+  // 公开静态页（关于 / 隐私政策）：同样免登录，返回时清掉 hash 回到原视图。
+  const closePublicPage = () => {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+      setPublicPage(null);
+  };
+  if (publicPage === 'about') return <AboutView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
+  if (publicPage === 'privacy') return <PrivacyView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
 
   if (view === 'install') return <InstallView onComplete={() => window.location.reload()} />;
 
-  if (view === 'auth') return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden relative">
-        <div className="flex border-b">
-            <button onClick={()=>setAuthMode('login')} className={`flex-1 py-4 font-bold text-sm ${authMode==='login'?'text-blue-600 bg-blue-50/50':'text-slate-400'}`}>登录</button>
-            <button onClick={()=>setAuthMode('register')} className={`flex-1 py-4 font-bold text-sm ${authMode==='register'?'text-blue-600 bg-blue-50/50':'text-slate-400'}`}>注册新账号</button>
+  if (view === 'landing') return (
+    <LandingView
+      onLogin={() => { setAuthMode('login'); setView('auth'); }}
+      onRegister={() => { setAuthMode('register'); setView('auth'); }}
+      theme={theme}
+      onToggleTheme={toggleTheme}
+    />
+  );
+
+  if (view === 'auth') {
+    const field = 'w-full rounded-lg border border-white/10 bg-white/5 p-3 text-white placeholder-slate-500 outline-none transition-all focus:border-cyan-400/60 focus:ring-2 focus:ring-cyan-400/30';
+    const labelCls = 'text-xs font-bold uppercase text-slate-400';
+    const primaryBtn = 'w-full rounded-xl bg-gradient-to-r from-cyan-400 to-indigo-400 py-3.5 font-bold text-slate-950 shadow-lg shadow-cyan-500/25 transition-all hover:-translate-y-0.5 hover:from-cyan-300 hover:to-indigo-300 active:scale-95';
+    return (
+    <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-4 antialiased`}>
+      {/* 背景光晕：与首页保持一致的深色科技风 */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at top, rgba(56,189,248,0.16), transparent 55%)' }} />
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at bottom right, rgba(99,102,241,0.20), transparent 55%)' }} />
+        <div className="absolute -left-24 -top-24 h-96 w-96 animate-float-slow rounded-full bg-cyan-500/20 blur-3xl" />
+        <div className="absolute -right-24 bottom-0 h-96 w-96 animate-float rounded-full bg-indigo-500/20 blur-3xl" />
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setView('landing')}
+        className="absolute left-6 top-6 z-10 inline-flex items-center gap-1.5 text-sm font-bold text-slate-400 transition-colors hover:text-white"
+      >
+        <span className="text-base leading-none">←</span> 返回首页
+      </button>
+
+      <button
+        type="button"
+        onClick={toggleTheme}
+        title={theme === 'dark' ? '切换到白天模式' : '切换到夜间模式'}
+        className="absolute right-6 top-6 z-10 inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-bold text-slate-300 transition-colors hover:text-white"
+      >
+        {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+        <span className="hidden sm:inline">{theme === 'dark' ? '白天' : '夜间'}</span>
+      </button>
+
+      <div className="relative z-10 w-full max-w-md animate-scale-in overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-2xl shadow-slate-950/60 backdrop-blur-xl">
+        <div className="flex items-center gap-2.5 border-b border-white/10 px-8 pb-5 pt-7">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/30">
+                <Award size={20} strokeWidth={2.5} />
+            </span>
+            <div>
+                <div className="text-sm font-black tracking-[0.2em]">HAM<span className="text-cyan-400">AWARDS</span></div>
+                <div className="text-[11px] text-slate-500">业余无线电奖状管理平台</div>
+            </div>
+        </div>
+        <div className="flex border-b border-white/10">
+            <button onClick={()=>setAuthMode('login')} className={`flex-1 py-3.5 font-bold text-sm transition-colors ${authMode==='login'?'bg-white/5 text-cyan-300':'text-slate-500 hover:text-slate-300'}`}>登录</button>
+            <button onClick={()=>setAuthMode('register')} className={`flex-1 py-3.5 font-bold text-sm transition-colors ${authMode==='register'?'bg-white/5 text-cyan-300':'text-slate-500 hover:text-slate-300'}`}>注册新账号</button>
         </div>
 
         {authMode === 'oauth_complete' ? (
             <div className="p-8">
                 <div className="text-center mb-6">
-                    <h2 className="text-xl font-bold text-slate-800">完成 HamCQ 登录</h2>
-                    <p className="text-xs text-slate-500 mt-1">已通过 HamCQ 账号「{oauthPendingUsername}」授权。请确认你的呼号（HamCQ 用户名不一定是呼号），再继续。</p>
+                    <h2 className="text-xl font-bold text-white">完成 HamCQ 登录</h2>
+                    <p className="text-xs text-slate-400 mt-1">已通过 HamCQ 账号「{oauthPendingUsername}」授权。请确认你的呼号（HamCQ 用户名不一定是呼号），再继续。</p>
                 </div>
                 <form onSubmit={handleOauthComplete} className="space-y-4">
                     <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-500 uppercase">本站呼号</label>
-                        <input name="callsign" required defaultValue={oauthPendingUsername} className="w-full border rounded-lg p-3 uppercase outline-none focus:ring-2 ring-blue-100 transition-all" placeholder="例如: BH7CSA" />
+                        <label className={labelCls}>本站呼号</label>
+                        <input name="callsign" required defaultValue={oauthPendingUsername} className={`${field} uppercase`} placeholder="例如: BH7CSA" />
                     </div>
                     <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-500 uppercase">本站密码（可选）</label>
-                        <PasswordInput name="password" autoComplete="new-password" className="w-full border rounded-lg p-3 outline-none focus:ring-2 ring-blue-100 transition-all" />
-                        <span className="text-[10px] text-slate-400">若该呼号已注册，必须填写其本站密码完成绑定；若是新账号，可设置密码以便日后密码登录，留空则只能用 HamCQ 登录。</span>
+                        <label className={labelCls}>本站密码（可选）</label>
+                        <PasswordInput variant="dark" name="password" autoComplete="new-password" className={field} />
+                        <span className="text-[10px] text-slate-500">若该呼号已注册，必须填写其本站密码完成绑定；若是新账号，可设置密码以便日后密码登录，留空则只能用 HamCQ 登录。</span>
                     </div>
-                    <button className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold shadow-lg shadow-slate-200 transition-transform active:scale-95 hover:bg-black">确认并登录</button>
-                    <button type="button" onClick={() => { setAuthMode('login'); setOauthPendingToken(null); window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }} className="w-full text-slate-400 text-sm text-center">返回登录</button>
+                    <button className={primaryBtn}>确认并登录</button>
+                    <button type="button" onClick={() => { setAuthMode('login'); setOauthPendingToken(null); window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }} className="w-full text-center text-sm text-slate-500 transition-colors hover:text-slate-300">返回登录</button>
                 </form>
             </div>
         ) : authMode === 'login' ? (
             <div className="p-8">
-                {/* Merged Login: No more Admin/User toggle */}
                 <form onSubmit={handleLogin} className="space-y-4">
                     {!show2FAInput ? (
                         <>
-                            <div className="space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">呼号 (用户名)</label><input name="callsign" required className="w-full border rounded-lg p-3 outline-none focus:ring-2 ring-blue-100 transition-all" /></div>
+                            <div className="space-y-1"><label className={labelCls}>呼号 (用户名)</label><input name="callsign" required className={field} /></div>
                             <div className="space-y-1">
-                                <label className="text-xs font-bold text-slate-500 uppercase">密码</label>
-                                <PasswordInput name="password" required autoComplete="current-password" className="w-full border rounded-lg p-3 outline-none focus:ring-2 ring-blue-100 transition-all" />
+                                <label className={labelCls}>密码</label>
+                                <PasswordInput variant="dark" name="password" required autoComplete="current-password" className={field} />
                             </div>
                         </>
                     ) : (
                         <div className="space-y-1 animate-in fade-in slide-in-from-right duration-300">
-                            <label className="text-xs font-bold text-blue-600 uppercase flex items-center gap-2"><Lock size={12}/> 二步验证码 (2FA)</label>
-                            <input name="code" autoFocus className="w-full border-2 border-blue-500 rounded-lg p-3 text-center tracking-[1em] font-mono font-bold text-xl" placeholder="000000" maxLength={6} />
-                            <button type="button" onClick={()=>setShow2FAInput(false)} className="text-xs text-slate-400 hover:text-slate-600 underline w-full text-center block mt-2">返回重新输入账号</button>
+                            <label className="flex items-center gap-2 text-xs font-bold uppercase text-cyan-300"><Lock size={12}/> 二步验证码 (2FA)</label>
+                            <input name="code" autoFocus className={`${field} text-center font-mono font-bold tracking-[1em] text-xl`} placeholder="000000" maxLength={6} />
+                            <button type="button" onClick={()=>setShow2FAInput(false)} className="mt-2 block w-full text-center text-xs text-slate-500 underline transition-colors hover:text-slate-300">返回重新输入账号</button>
                         </div>
                     )}
-                    <button className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold shadow-lg shadow-slate-200 transition-transform active:scale-95 hover:bg-black">
+                    <button className={primaryBtn}>
                         {show2FAInput ? '验证并登录' : '登录系统'}
                     </button>
                 </form>
@@ -2414,14 +2611,14 @@ export default function App() {
                 {oauthProviders.length > 0 && (
                     <div className="mt-4">
                         <div className="flex items-center gap-3 mb-3">
-                            <div className="flex-1 h-px bg-slate-200" />
-                            <span className="text-xs text-slate-400">或</span>
-                            <div className="flex-1 h-px bg-slate-200" />
+                            <div className="flex-1 h-px bg-white/10" />
+                            <span className="text-xs text-slate-500">或</span>
+                            <div className="flex-1 h-px bg-white/10" />
                         </div>
                         <button
                             type="button"
                             onClick={() => { window.location.href = '/api/auth/oauth/start'; }}
-                            className="w-full py-3 rounded-xl border-2 border-slate-200 text-slate-700 font-bold text-sm hover:bg-slate-50 transition-colors"
+                            className="w-full rounded-xl border border-white/15 py-3 font-bold text-sm text-slate-200 transition-colors hover:bg-white/5"
                         >
                             {oauthProviders[0].label || '使用 HamCQ 登录'}
                         </button>
@@ -2431,26 +2628,27 @@ export default function App() {
         ) : (
             <div className="p-8">
                 <div className="text-center mb-6">
-                    <h2 className="text-xl font-bold text-slate-800">欢迎加入 HAM AWARDS</h2>
+                    <h2 className="text-xl font-bold text-white">欢迎加入 HAM AWARDS</h2>
                     <p className="text-xs text-slate-400 mt-1">创建您的账户以申请奖状和管理日志</p>
                 </div>
                 <form onSubmit={handleRegister} className="space-y-4">
-                    <div className="space-y-1"><label className="text-xs font-bold text-slate-500 uppercase">注册呼号</label><input name="callsign" required className="w-full border rounded-lg p-3" placeholder="例如: BA1AA" /></div>
+                    <div className="space-y-1"><label className={labelCls}>注册呼号</label><input name="callsign" required className={field} placeholder="例如: BA1AA" /></div>
                     <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-500 uppercase">设置密码</label>
-                        <PasswordInput name="password" required autoComplete="new-password" className="w-full border rounded-lg p-3" />
+                        <label className={labelCls}>设置密码</label>
+                        <PasswordInput variant="dark" name="password" required autoComplete="new-password" className={field} />
                     </div>
                     <div className="space-y-1">
-                        <label className="text-xs font-bold text-slate-500 uppercase">确认密码</label>
-                        <PasswordInput name="confirmPassword" required autoComplete="new-password" className="w-full border rounded-lg p-3" />
+                        <label className={labelCls}>确认密码</label>
+                        <PasswordInput variant="dark" name="confirmPassword" required autoComplete="new-password" className={field} />
                     </div>
-                    <button className="w-full py-4 bg-green-600 text-white rounded-xl font-bold shadow-lg shadow-green-200 hover:bg-green-700 transition-colors">立即注册</button>
+                    <button className="w-full rounded-xl bg-gradient-to-r from-emerald-400 to-teal-400 py-3.5 font-bold text-slate-950 shadow-lg shadow-emerald-500/25 transition-all hover:-translate-y-0.5 hover:from-emerald-300 hover:to-teal-300 active:scale-95">立即注册</button>
                 </form>
             </div>
         )}
       </div>
     </div>
-  );
+    );
+  }
 
   if (view === 'main') {
       const menu = [
@@ -2458,11 +2656,11 @@ export default function App() {
           { id: 'dashboard', label: '概览', icon: BarChart, show: true },
           { id: 'awards', label: '奖状大厅', icon: Award, show: true },
           
-          // User Only
-          { id: 'my_awards', label: '我的奖状', icon: CheckCircle, show: user.role === 'user' },
-          { id: 'logbook', label: '日志上传', icon: Upload, show: user.role === 'user' }, 
-          { id: 'lotw_import', label: 'LoTW 直连', icon: Globe, show: user.role === 'user' },
-          { id: 'all_logs', label: '全部日志', icon: List, show: user.role === 'user' }, 
+          // 日志与申请（所有角色都可用：管理员/审核员同样能申请奖状）
+          { id: 'my_awards', label: '我的奖状', icon: CheckCircle, show: true },
+          { id: 'logbook', label: '日志上传', icon: Upload, show: true }, 
+          { id: 'lotw_import', label: 'LoTW 直连', icon: Globe, show: true },
+          { id: 'all_logs', label: '全部日志', icon: List, show: true }, 
           
           // Award Admin Only (Split Views with Dropdown)
           { id: 'award_create', label: '新建奖状', icon: Plus, show: user.role === 'award_admin' },
@@ -2492,8 +2690,12 @@ export default function App() {
       ].filter(i => i.show);
 
       return (
-          <div className="flex h-screen bg-slate-50 overflow-hidden">
-              <aside className="w-64 bg-slate-900 text-white flex flex-col shrink-0">
+          <div className={`${theme === 'dark' ? 'app-dark bg-slate-950' : 'bg-slate-50'} relative flex h-screen overflow-hidden`}>
+              <div className="pointer-events-none absolute inset-0 overflow-hidden">
+                  <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at top, rgba(56,189,248,0.10), transparent 55%)' }} />
+                  <div className="absolute -right-32 top-1/3 h-96 w-96 animate-float rounded-full bg-indigo-500/10 blur-3xl" />
+              </div>
+              <aside className="relative z-10 w-64 bg-slate-900/70 backdrop-blur-xl text-white flex flex-col shrink-0 border-r border-white/10">
                   <div className="p-6 border-b border-slate-800">
                       <div className="flex items-center justify-between">
                           <h1 className="font-black text-xl tracking-wider">HAM AWARDS</h1>
@@ -2546,7 +2748,11 @@ export default function App() {
                           </div>
                       ))}
                   </nav>
-                  <div className="p-4 border-t border-slate-800">
+                  <div className="p-4 border-t border-slate-800 space-y-1">
+                      <button onClick={toggleTheme} className="w-full flex items-center gap-3 px-4 py-3 text-slate-400 hover:bg-slate-800 hover:text-white rounded-lg transition-colors">
+                          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+                          <span className="font-medium text-sm">{theme === 'dark' ? '白天模式' : '夜间模式'}</span>
+                      </button>
                       <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-3 text-red-400 hover:bg-red-900/20 rounded-lg"><LogOut size={18} /> <span className="font-medium text-sm">退出登录</span></button>
                   </div>
               </aside>
@@ -2565,8 +2771,15 @@ export default function App() {
                                   <div className="text-center py-10 text-slate-400 text-sm">暂无通知</div>
                               ) : (
                                   notifData.list.map((n) => (
-                                      <div key={n.id} className={`px-4 py-3 border-b border-slate-50 ${n.read ? 'opacity-60' : 'bg-blue-50/40'}`}>
-                                          <div className="text-sm font-bold text-slate-800">{n.title}</div>
+                                      <div
+                                          key={n.id}
+                                          onClick={() => !n.read && markRead(n.id)}
+                                          className={`px-4 py-3 border-b border-slate-50 ${n.read ? 'opacity-60' : 'bg-blue-50/40 cursor-pointer hover:bg-blue-50'} transition-colors`}
+                                      >
+                                          <div className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                                              {!n.read && <span className="w-1.5 h-1.5 bg-blue-500 rounded-full shrink-0"></span>}
+                                              {n.title}
+                                          </div>
                                           <div className="text-xs text-slate-500 mt-0.5">{n.body}</div>
                                           <div className="text-[10px] text-slate-400 mt-1">{new Date(n.created_at).toLocaleString('zh-CN')}</div>
                                       </div>
@@ -2576,7 +2789,7 @@ export default function App() {
                       </div>
                   </div>
               )}
-              <main className="flex-1 overflow-y-auto p-8 relative">
+              <main className="relative z-10 flex-1 overflow-y-auto p-8">
                   <div className="max-w-6xl mx-auto">
                       {subView === 'dashboard' && <DashboardView user={user} />}
                       {subView === 'awards' && <AwardCenterView user={user} />} 

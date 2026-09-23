@@ -5,3 +5,190 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ============================================================================
+   主界面深色主题（作用域限定：.app-dark）
+   ----------------------------------------------------------------------------
+   背景：主界面（登录后）与部分公开页沿用上游的浅色工具类（app.jsx 里 129+ 处
+   bg-white / text-slate-800 / border-slate-200 …），逐组件重写风险高、收益低。
+   这里用一层「作用域覆盖」把它统一映射为深色玻璃风，只影响 .app-dark 容器。
+
+   安全边界：奖状渲染器 AwardRenderer 的底色与文字全部写在内联 style
+   （background:'#fff' / color:…），类覆盖不会命中，奖状白底不受影响。
+   新增页面请把根容器加上 .app-dark + bg-slate-950 即可继承本套主题。
+   ============================================================================ */
+/* color 必填：否则未显式设色的文字会继承浏览器默认黑色，在深色底上看不见 */
+.app-dark { color-scheme: dark; color: #cbd5e1; }
+
+/* 中性浅底 -> 深色玻璃 */
+.app-dark .bg-white,
+.app-dark .bg-white\/90,
+.app-dark .bg-white\/80,
+.app-dark .bg-white\/70,
+.app-dark .bg-white\/60,
+.app-dark .bg-white\/50,
+.app-dark .bg-white\/40,
+.app-dark .bg-white\/30 {
+  background-color: rgba(30, 41, 59, 0.55) !important;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+.app-dark .bg-slate-50,
+.app-dark .bg-slate-50\/50,
+.app-dark .bg-slate-50\/40,
+.app-dark .bg-slate-100,
+.app-dark .bg-slate-100\/80,
+.app-dark .bg-slate-100\/50 {
+  background-color: rgba(255, 255, 255, 0.03) !important;
+}
+.app-dark .bg-slate-200 { background-color: rgba(255, 255, 255, 0.10) !important; }
+.app-dark .bg-slate-300 { background-color: rgba(255, 255, 255, 0.14) !important; }
+
+/* 主色按钮：深灰板 -> 品牌渐变（侧边栏已改成 bg-slate-900/70，不受影响） */
+.app-dark .bg-slate-900 {
+  background-image: linear-gradient(135deg, #22d3ee, #6366f1) !important;
+  background-color: transparent !important;
+}
+.app-dark .bg-blue-600,
+.app-dark .bg-blue-500 {
+  background-image: linear-gradient(135deg, #22d3ee, #6366f1) !important;
+  background-color: transparent !important;
+}
+.app-dark .bg-green-600 { background-image: linear-gradient(135deg, #34d399, #14b8a6) !important; background-color: transparent !important; }
+
+/* 文字 */
+.app-dark .text-black,
+.app-dark .text-slate-900,
+.app-dark .text-slate-800 { color: #f1f5f9 !important; }
+.app-dark .text-slate-700,
+.app-dark .text-slate-600 { color: #cbd5e1 !important; }
+.app-dark .text-slate-500 { color: #94a3b8 !important; }
+.app-dark .text-slate-400 { color: #7c8aa0 !important; }
+.app-dark .text-blue-600,
+.app-dark .text-blue-700 { color: #67e8f9 !important; }
+.app-dark .text-green-600,
+.app-dark .text-green-700,
+.app-dark .text-emerald-600,
+.app-dark .text-emerald-700 { color: #6ee7b7 !important; }
+.app-dark .text-red-600,
+.app-dark .text-red-700 { color: #fca5a5 !important; }
+.app-dark .text-amber-600,
+.app-dark .text-amber-700,
+.app-dark .text-yellow-600,
+.app-dark .text-yellow-700 { color: #fcd34d !important; }
+.app-dark .text-indigo-600,
+.app-dark .text-violet-600,
+.app-dark .text-purple-600 { color: #c4b5fd !important; }
+
+/* 边框 / 分隔线 */
+.app-dark .border,
+.app-dark .border-slate-50,
+.app-dark .border-slate-100,
+.app-dark .border-slate-200,
+.app-dark .border-slate-300 { border-color: rgba(255, 255, 255, 0.10) !important; }
+.app-dark .divide-slate-50 > :not([hidden]) ~ :not([hidden]),
+.app-dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+.app-dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]),
+.app-dark .divide-y > :not([hidden]) ~ :not([hidden]) { border-color: rgba(255, 255, 255, 0.08) !important; }
+.app-dark hr { border-color: rgba(255, 255, 255, 0.08) !important; }
+
+/* 浅色状态底 -> 半透明彩底 */
+.app-dark .bg-blue-50, .app-dark .bg-blue-50\/50, .app-dark .bg-blue-50\/40, .app-dark .bg-blue-100 { background-color: rgba(56, 189, 248, 0.14) !important; }
+.app-dark .bg-green-50, .app-dark .bg-green-100, .app-dark .bg-emerald-50, .app-dark .bg-emerald-100 { background-color: rgba(52, 211, 153, 0.14) !important; }
+.app-dark .bg-red-50, .app-dark .bg-red-100 { background-color: rgba(248, 113, 113, 0.14) !important; }
+.app-dark .bg-amber-50, .app-dark .bg-amber-100, .app-dark .bg-yellow-50, .app-dark .bg-yellow-100 { background-color: rgba(251, 191, 36, 0.14) !important; }
+.app-dark .bg-orange-50, .app-dark .bg-orange-100 { background-color: rgba(251, 146, 60, 0.14) !important; }
+.app-dark .bg-indigo-50, .app-dark .bg-indigo-100 { background-color: rgba(129, 140, 248, 0.14) !important; }
+.app-dark .bg-violet-50, .app-dark .bg-violet-100, .app-dark .bg-purple-50, .app-dark .bg-purple-100 { background-color: rgba(167, 139, 250, 0.14) !important; }
+.app-dark .bg-cyan-50, .app-dark .bg-cyan-100 { background-color: rgba(34, 211, 238, 0.14) !important; }
+.app-dark .bg-teal-50, .app-dark .bg-teal-100 { background-color: rgba(45, 212, 191, 0.14) !important; }
+
+/* hover 变体（否则悬停会闪回浅色） */
+.app-dark .hover\:bg-white:hover,
+.app-dark .hover\:bg-slate-50:hover,
+.app-dark .hover\:bg-slate-100:hover { background-color: rgba(255, 255, 255, 0.07) !important; }
+.app-dark .hover\:bg-blue-50:hover,
+.app-dark .hover\:bg-blue-100:hover { background-color: rgba(56, 189, 248, 0.20) !important; }
+.app-dark .hover\:bg-red-50:hover,
+.app-dark .hover\:bg-red-100:hover { background-color: rgba(248, 113, 113, 0.20) !important; }
+.app-dark .hover\:bg-green-50:hover,
+.app-dark .hover\:bg-green-100:hover,
+.app-dark .hover\:bg-emerald-50:hover { background-color: rgba(52, 211, 153, 0.20) !important; }
+.app-dark .hover\:bg-amber-50:hover,
+.app-dark .hover\:bg-amber-100:hover { background-color: rgba(251, 191, 36, 0.20) !important; }
+
+/* 表单控件（浏览器 UA 默认白底） */
+.app-dark input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+.app-dark textarea,
+.app-dark select {
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  color: #e2e8f0 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+}
+.app-dark input::placeholder,
+.app-dark textarea::placeholder { color: #64748b !important; }
+.app-dark select option { background-color: #0f172a; color: #e2e8f0; }
+
+/* 滚动条 */
+.app-dark ::-webkit-scrollbar { width: 10px; height: 10px; }
+.app-dark ::-webkit-scrollbar-track { background: transparent; }
+.app-dark ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 9999px; }
+.app-dark ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.22); }
+
+/* ============================================================================
+   浅色主题（作用域限定：.app-light）
+   ----------------------------------------------------------------------------
+   首页 / 登录页 / 关于 / 隐私政策 / 校验页是为深色设计的（bg-slate-950 等）。
+   这里把它们在「白天模式」下映射回浅色，避免逐组件重写。
+   使用处：这些页面的根容器在白天模式挂 .app-light 即可。
+   主界面（登录后）白天模式不需要它 —— 移除 .app-dark 即恢复上游原生浅色。
+   ============================================================================ */
+html.theme-dark body { background-color: #020617; color: #e2e8f0; }
+html.theme-light body { background-color: #f8fafc; color: #0f172a; }
+
+/* 注意：根容器本身同时带 app-light 与 bg-slate-950 两个类，
+   后代选择器匹配不到自身，所以这里直接给容器设底色（!important 压过 .bg-slate-950）。 */
+.app-light { color-scheme: light; color: #0f172a; background-color: #f8fafc !important; }
+
+/* 深色底 -> 浅色底 */
+.app-light .bg-slate-950 { background-color: #f8fafc !important; }
+.app-light [class*="bg-slate-950/"] { background-color: rgba(255, 255, 255, 0.82) !important; }
+.app-light [class*="bg-slate-900/"] { background-color: rgba(255, 255, 255, 0.80) !important; }
+.app-light .bg-slate-900 { background-color: #f1f5f9 !important; }
+
+/* 白色半透明（卡片/分隔线）-> 浅底上的极浅灰 */
+.app-light [class*="bg-white/"] { background-color: rgba(15, 23, 42, 0.045) !important; }
+.app-light [class*="border-white/"] { border-color: rgba(15, 23, 42, 0.10) !important; }
+
+/* 文字 */
+.app-light .text-white,
+.app-light .text-slate-50,
+.app-light .text-slate-100,
+.app-light .text-slate-200 { color: #0f172a !important; }
+.app-light .text-slate-300 { color: #334155 !important; }
+.app-light .text-slate-400 { color: #64748b !important; }
+.app-light .text-slate-500 { color: #94a3b8 !important; }
+
+/* 渐变文字（Hero 标题）在浅底上改为实心深色，保证可读 */
+.app-light .text-transparent { color: #0f172a !important; -webkit-text-fill-color: #0f172a !important; }
+
+/* 背景光晕在浅色下减淡 */
+.app-light [class*="bg-cyan-500/"] { background-color: rgba(6, 182, 212, 0.14) !important; }
+.app-light [class*="bg-indigo-500/"] { background-color: rgba(99, 102, 241, 0.14) !important; }
+.app-light [class*="bg-fuchsia-500/"] { background-color: rgba(217, 70, 239, 0.10) !important; }
+
+/* 表单控件 */
+.app-light input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']):not([type='file']),
+.app-light textarea,
+.app-light select {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: rgba(15, 23, 42, 0.12) !important;
+}
+.app-light input::placeholder,
+.app-light textarea::placeholder { color: #94a3b8 !important; }
+
+/* 滚动条 */
+.app-light ::-webkit-scrollbar { width: 10px; height: 10px; }
+.app-light ::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.15); border-radius: 9999px; }
+.app-light ::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.28); }

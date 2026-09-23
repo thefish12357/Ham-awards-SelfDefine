@@ -12,7 +12,7 @@ import { BadgeCheck, XCircle, Loader2, Award } from 'lucide-react';
  *
  * 隐私：接口只返回脱敏后的呼号（BH2VSQ → BH***Q）。
  */
-export default function VerifyView({ serial }) {
+export default function VerifyView({ serial, theme = 'dark' }) {
   const [state, setState] = useState({ loading: true });
 
   useEffect(() => {
@@ -38,8 +38,8 @@ export default function VerifyView({ serial }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 flex items-center justify-center p-6">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg overflow-hidden">
+    <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-6`}>
+      <div className="relative z-10 bg-white rounded-2xl shadow-2xl shadow-slate-950/60 w-full max-w-lg overflow-hidden">
         <div className="p-6 border-b flex items-center gap-3">
           <Award className="text-blue-600" />
           <div>
