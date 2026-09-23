@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:all": "node scripts/dev.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server.js"
+    "start": "node server.js",
+    "serve": "vite build && node server.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

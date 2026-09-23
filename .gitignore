@@ -21,6 +21,10 @@ pnpm-debug.log*
 # Playwright MCP 调试产物
 .playwright-mcp/
 
+# UI 设计参考稿 / 调试截图（临时素材，不入库；只忽略根目录截图，不影响 public/ 资源）
+design-drafts/
+/*.png
+
 # IDE 与编辑器
 .vscode/
 .idea/

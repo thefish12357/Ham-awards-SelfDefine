@@ -36,28 +36,30 @@ export const ALL_ROUTES = [
 
 const ROUTE_SET = new Set(ALL_ROUTES);
 
-/** 各角色可见的路由（与 app.jsx 的 menu.show 条件保持一致） */
+/**
+ * 各角色可见的路由（与 app.jsx 的 menu.show 条件保持一致）。
+ * 「我的奖状 / 日志上传 / LoTW 直连 / 全部日志」对全部角色开放（菜单 show:true），
+ * 因此 admin / award_admin 也必须包含这四项，否则点击会被守卫踢回 dashboard。
+ */
+const COMMON_ROUTES = ['dashboard', 'awards', 'my_awards', 'logbook', 'lotw_import', 'all_logs', 'userCenter'];
+
 export const ROUTES_BY_ROLE = {
-  user: ['dashboard', 'awards', 'my_awards', 'logbook', 'lotw_import', 'all_logs', 'userCenter'],
+  user: COMMON_ROUTES,
   award_admin: [
-    'dashboard',
-    'awards',
+    ...COMMON_ROUTES,
     'award_create',
     'award_drafts',
     'award_returned',
     'award_audit_list',
     'evidence_audit',
-    'userCenter',
   ],
   admin: [
-    'dashboard',
-    'awards',
+    ...COMMON_ROUTES,
     'admin_audit',
     'admin_overview',
     'issuanceManager',
     'users',
     'evidence_audit',
-    'userCenter',
   ],
 };
 
@@ -77,6 +79,22 @@ export const parseVerifyHash = () => {
   if (typeof window === 'undefined') return null;
   const m = VERIFY_HASH_RE.exec(window.location.hash || '');
   return m ? m[1] : null;
+};
+
+/**
+ * 公开静态页（关于 / 隐私政策）
+ * 与 subView 体系无关：不需要登录，也不参与角色守卫。
+ * `App` 在渲染前拦截这些 hash，单独渲染对应页面。
+ */
+export const PUBLIC_PAGES = {
+  '#/about': 'about',
+  '#/privacy': 'privacy',
+};
+
+export const readPublicPage = () => {
+  if (typeof window === 'undefined') return null;
+  const h = (window.location.hash || '').split('?')[0];
+  return PUBLIC_PAGES[h] || null;
 };
 
 /** 是否处于「公开路由」，此时不要用 subView 覆盖 URL */

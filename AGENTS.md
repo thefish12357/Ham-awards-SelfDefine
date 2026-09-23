@@ -22,17 +22,17 @@
 
 ## 2. 技术栈
 
-| 层 | 技术 | 备注 |
-|---|---|---|
-| 前端 | React 18 + Vite 4 | JSX（**非 TypeScript**） |
-| 样式 | **Tailwind CSS 3 本地构建** | 入口 `src/index.css`（`@tailwind` 三条指令），配置 `tailwind.config.cjs` / `postcss.config.cjs`。**必须用 `.cjs` 后缀**，因为 `package.json` 是 `type: module` |
-| 图标 | lucide-react | |
-| 路由 | **轻量 Hash 路由** | 无 react-router。`App` 的 `subView` 与 `location.hash` 双向同步（`src/lib/routes.js`），刷新可停留当前页、链接可分享；`adminPath` 仍未被前端使用 |
-| 后端 | Express 4 单体（`server.js`） | |
-| 数据库 | PostgreSQL（`pg`） | ADIF 记录存 JSONB |
-| 对象存储 | MinIO + multer | 存奖状背景图 |
-| 认证 | JWT + bcryptjs + TOTP(otplib/qrcode) | 支持 Google Authenticator 2FA |
-| 运行环境 | Node.js v16+ | 实测环境 Node v24 |
+| 层       | 技术                                 | 备注                                                                                                                                                           |
+| -------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 前端     | React 18 + Vite 4                    | JSX（**非 TypeScript**）                                                                                                                                       |
+| 样式     | **Tailwind CSS 3 本地构建**          | 入口 `src/index.css`（`@tailwind` 三条指令），配置 `tailwind.config.cjs` / `postcss.config.cjs`。**必须用 `.cjs` 后缀**，因为 `package.json` 是 `type: module` |
+| 图标     | lucide-react                         |                                                                                                                                                                |
+| 路由     | **轻量 Hash 路由**                   | 无 react-router。`App` 的 `subView` 与 `location.hash` 双向同步（`src/lib/routes.js`），刷新可停留当前页、链接可分享；`adminPath` 仍未被前端使用               |
+| 后端     | Express 4 单体（`server.js`）        |                                                                                                                                                                |
+| 数据库   | PostgreSQL（`pg`）                   | ADIF 记录存 JSONB                                                                                                                                              |
+| 对象存储 | MinIO + multer                       | 存奖状背景图                                                                                                                                                   |
+| 认证     | JWT + bcryptjs + TOTP(otplib/qrcode) | 支持 Google Authenticator 2FA                                                                                                                                  |
+| 运行环境 | Node.js v16+                         | 实测环境 Node v24                                                                                                                                              |
 
 ## 3. 目录结构
 
@@ -87,10 +87,10 @@
 
 ## 4. ⚠️ 端口：README 是错的，以此处为准
 
-| 服务 | 端口 | 依据 |
-|---|---|---|
-| 前端 Vite 开发服务器 | **5173**（默认） | `vite.config.js` 未配 `server.port` |
-| 后端 API | **9993** | `server.js` 末尾 `Number(process.env.PORT) \|\| 9993` |
+| 服务                 | 端口             | 依据                                                  |
+| -------------------- | ---------------- | ----------------------------------------------------- |
+| 前端 Vite 开发服务器 | **5173**（默认） | `vite.config.js` 未配 `server.port`                   |
+| 后端 API             | **9993**         | `server.js` 末尾 `Number(process.env.PORT) \|\| 9993` |
 
 - README 里写的 `3003` **已过时，不要使用**。
 - `vite.config.js` 的注释 `Corrected port to match server.js` 已确认以 9993 为准。
@@ -185,24 +185,24 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 主要模块：
 
-| 前缀 | 用途 | 权限 |
-|---|---|---|
-| `/api/system-status` | 系统状态（是否已安装、adminPath） | 公开 |
-| `/api/install` | 首次安装向导 | 未安装时公开 |
-| `/api/auth/login`、`/api/auth/register` | 登录 / 注册 | 公开 |
-| `/api/stats/dashboard` | 仪表盘统计 | 登录 |
-| `/api/user/*` | 个人中心：profile、`2fa/setup|enable|disable`、password、logs、account、my-awards、qsos | 登录 |
-| `/api/logbook/upload` | ADIF 日志上传 | 登录 |
-| `/api/lotw/connect` | 读取 LoTW 报表到**内存会话**（不落库、不落盘） | 登录 |
-| `/api/lotw/evaluate` | 用内存会话判定奖状进度 | 登录 |
-| `/api/lotw/apply` | 用内存会话申请奖状（**只落申请记录，不落 QSO**） | 登录 |
-| `/api/lotw/session` | GET 查状态；DELETE/POST 清除（支持 `?id=sessionId` 能力令牌，供 `sendBeacon` 无法带 Auth 头时使用） | 登录 |
-| `/api/verify/:serial` | 奖状真伪校验，呼号脱敏（BH2VSQ → BH***Q） | **公开** |
-| `/api/verify/:serial/qr` | 校验二维码 PNG（内容 = 本站 `/#/verify/<serial>`） | **公开** |
-| `/api/media?key=awards/…` | 同源图片代理。底图在 MinIO 属跨域，canvas 导出会被污染，走这里规避 | **公开**（仅限 `awards/` 一级前缀，禁穿越） |
-| `/api/awards/*` | 奖状：my、all_approved、`:id/check`、`:id/apply`、增删改、upload-bg | 登录 / 奖状管理员 |
-| `/api/qsos/:id/awards` | 查某条 QSO 参与哪些奖状 | 登录 |
-| `/api/admin/*` | users、awards/pending、awards/approved、awards/audit、issued-awards、settings | **系统管理员** |
+| 前缀                                    | 用途                                                                                                | 权限                                        |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------- | ---- |
+| `/api/system-status`                    | 系统状态（是否已安装、adminPath）                                                                   | 公开                                        |
+| `/api/install`                          | 首次安装向导                                                                                        | 未安装时公开                                |
+| `/api/auth/login`、`/api/auth/register` | 登录 / 注册                                                                                         | 公开                                        |
+| `/api/stats/dashboard`                  | 仪表盘统计                                                                                          | 登录                                        |
+| `/api/user/*`                           | 个人中心：profile、`2fa/setup                                                                       | enable                                      | disable`、password、logs、account、my-awards、qsos | 登录 |
+| `/api/logbook/upload`                   | ADIF 日志上传                                                                                       | 登录                                        |
+| `/api/lotw/connect`                     | 读取 LoTW 报表到**内存会话**（不落库、不落盘）                                                      | 登录                                        |
+| `/api/lotw/evaluate`                    | 用内存会话判定奖状进度                                                                              | 登录                                        |
+| `/api/lotw/apply`                       | 用内存会话申请奖状（**只落申请记录，不落 QSO**）                                                    | 登录                                        |
+| `/api/lotw/session`                     | GET 查状态；DELETE/POST 清除（支持 `?id=sessionId` 能力令牌，供 `sendBeacon` 无法带 Auth 头时使用） | 登录                                        |
+| `/api/verify/:serial`                   | 奖状真伪校验，呼号脱敏（BH2VSQ → BH\*\*\*Q）                                                        | **公开**                                    |
+| `/api/verify/:serial/qr`                | 校验二维码 PNG（内容 = 本站 `/#/verify/<serial>`）                                                  | **公开**                                    |
+| `/api/media?key=awards/…`               | 同源图片代理。底图在 MinIO 属跨域，canvas 导出会被污染，走这里规避                                  | **公开**（仅限 `awards/` 一级前缀，禁穿越） |
+| `/api/awards/*`                         | 奖状：my、all_approved、`:id/check`、`:id/apply`、增删改、upload-bg                                 | 登录 / 奖状管理员                           |
+| `/api/qsos/:id/awards`                  | 查某条 QSO 参与哪些奖状                                                                             | 登录                                        |
+| `/api/admin/*`                          | users、awards/pending、awards/approved、awards/audit、issued-awards、settings                       | **系统管理员**                              |
 
 ## 7. 编码约定与雷区
 
@@ -232,36 +232,50 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     新增渲染路径时**不要绕过 `AwardRenderer`**，否则多等级会失效。
 11. **密码输入一律用 `src/components/PasswordInput.jsx`**（自带显隐切换 + `autoComplete`）。裸 `<input type="password">` 会缺眼睛图标，也会触发浏览器控制台警告、并可能让 Chrome 的自动填充下拉挡住按钮。
 12. **★ 字体有版权红线**（2026-09-21 定）：奖状字体列表 `src/lib/awardLayout.js` 的 `FONTS` **只允许**开源可商用授权（**SIL OFL** / **Apache-2.0** / 官方明确免费商用）与**操作系统自带**字体。**严禁**加入方正、汉仪、造字工房、华文、长城等商业字体 —— 用于生成对外发布的奖状会收到律师函。新增字体时必须在 `label` 里标出授权来源。
-   - **系统字体（微软雅黑/宋体/楷体等）可以放进 `font-family`**：CSS 里只是**引用本机已安装的字体**，属于常规引用，不涉及复制/再分发；且 PDF 走**栅格化**（渲染成位图）而非嵌入字体文件，不受字体 EULA 的「嵌入分发」条款约束。仍建议优先选开源字体。
-   - **★ 已自托管思源黑体 + 思源宋体**（2026-09-21）：`public/fonts/` 放 **404 个 woff2 分片**（400 / 700 字重，共 **10.78 MB**），`src/styles/fonts.css` 有 **404 条 `@font-face`**（由 `scripts/build-fonts.mjs` 生成，**勿手改**）。这两款在 `FONTS` 里标 `★已内置`，**任何设备渲染都一致**。
-     - 中文按 `unicode-range` 切成 101 片，浏览器**只下载实际用到的那几片** —— 实测渲染「业余无线电奖状AWARD」仅下载 4 片 / 125 KB，所以仓库虽大、首屏不受影响。
-     - **更新字体**：`npm install --no-save @fontsource/noto-sans-sc @fontsource/noto-serif-sc && node scripts/build-fonts.mjs`。这两个包**刻意不写进 `package.json`** —— 字体文件已入库，写进去会让 Docker 构建白白下载 160 MB+。
-     - OFL 要求随字体分发许可证，已放在 `public/fonts/LICENSE-*.txt`，**不要删**。
-   - ⚠️ **其余字体仍有前提**：除思源黑体 / 宋体外，能否生效仍取决于渲染机器装没装，未装会静默回退。因此 `FONTS[*].value` 一律写成**完整兜底栈**：`开源字体 → 同风格系统字体 → 通用族`（如 `"Noto Serif SC","Source Han Serif SC","Noto Serif CJK SC","SimSun",serif`）。
-   - ⚠️ **导出 PDF 前必须 `await document.fonts.ready`**：`@font-face` 用 `font-display: swap`，字体没加载完就栅格化会拿到回退字体，导致「PDF ≠ 设计」。
-   - 已知代价：字体声明让 CSS 从 ~27 KB 涨到 **400 KB（gzip 131 KB）**。若后续嫌大，可把 `fonts.css` 从主入口拆出、在奖状渲染页按需动态 `import`。
+
+- **系统字体（微软雅黑/宋体/楷体等）可以放进 `font-family`**：CSS 里只是**引用本机已安装的字体**，属于常规引用，不涉及复制/再分发；且 PDF 走**栅格化**（渲染成位图）而非嵌入字体文件，不受字体 EULA 的「嵌入分发」条款约束。仍建议优先选开源字体。
+- **★ 已自托管思源黑体 + 思源宋体**（2026-09-21）：`public/fonts/` 放 **404 个 woff2 分片**（400 / 700 字重，共 **10.78 MB**），`src/styles/fonts.css` 有 **404 条 `@font-face`**（由 `scripts/build-fonts.mjs` 生成，**勿手改**）。这两款在 `FONTS` 里标 `★已内置`，**任何设备渲染都一致**。
+  - 中文按 `unicode-range` 切成 101 片，浏览器**只下载实际用到的那几片** —— 实测渲染「业余无线电奖状AWARD」仅下载 4 片 / 125 KB，所以仓库虽大、首屏不受影响。
+  - **更新字体**：`npm install --no-save @fontsource/noto-sans-sc @fontsource/noto-serif-sc && node scripts/build-fonts.mjs`。这两个包**刻意不写进 `package.json`** —— 字体文件已入库，写进去会让 Docker 构建白白下载 160 MB+。
+  - OFL 要求随字体分发许可证，已放在 `public/fonts/LICENSE-*.txt`，**不要删**。
+- ⚠️ **其余字体仍有前提**：除思源黑体 / 宋体外，能否生效仍取决于渲染机器装没装，未装会静默回退。因此 `FONTS[*].value` 一律写成**完整兜底栈**：`开源字体 → 同风格系统字体 → 通用族`（如 `"Noto Serif SC","Source Han Serif SC","Noto Serif CJK SC","SimSun",serif`）。
+- ⚠️ **导出 PDF 前必须 `await document.fonts.ready`**：`@font-face` 用 `font-display: swap`，字体没加载完就栅格化会拿到回退字体，导致「PDF ≠ 设计」。
+- 已知代价：字体声明让 CSS 从 ~27 KB 涨到 **400 KB（gzip 131 KB）**。若后续嫌大，可把 `fonts.css` 从主入口拆出、在奖状渲染页按需动态 `import`。
+
 13. **★ 导出 PDF 的三条硬约束**（`src/lib/exportAwardPdf.js`，2026-09-21 修过一轮「一直转圈」，**别踩回去**）：
-   - **判断图片是否加载完，只看 `img.complete`**，不要写 `complete && naturalWidth > 0`。图片**加载失败**时正是 `complete=true` 且 `naturalWidth=0`，此时若还去监听 `load`/`error`，就是在等一个**永远不会再触发**的事件 → Promise 永久挂起（表现就是按钮卡在「生成中…」）。
-   - **加载失败的 `<img>` 必须在栅格化前从 DOM 移除**（用同尺寸占位 div 顶替）。`html-to-image` 会逐张 fetch 并内联图片，拉不动就抛一个**没有 message 的 `Event`**，上层只能看到「[object Event]」，**整个导出直接失败**。移除后 PDF 仍能生成，只是缺这几张图，再由 `failedImages` 提示用户。
-   - **`URL.pathname` 保留 percent-encoding**。拿它直接 `encodeURIComponent` 会**二次编码**（`%C3%A6` → `%25C3%25A6`），`/api/media?key=` 必然 404。必须先 `decodeURIComponent` 还原成真实 key 再编码一次。
-   - 另外：`waitForImages` 与 `toPng` 都要有**超时兜底**（否则任何一次网络挂起都会永久卡住 UI）；栅格化前要 `await document.fonts.ready`。
-   - 报错信息要用 `describeError()` 提取 —— `e.message || e` 遇到 Event 会输出「[object Event]」。
-   - **★ `toPng` 必须开 `includeQueryParams: true`**：html-to-image 的资源缓存 key 默认会 `url.replace(/\?.*/, '')` **剥掉 query string**。而底图统一走 `/api/media?key=<对象名>`，不同奖状只有 key 不同 —— 剥掉 query 后缓存 key 全部退化成同一个 `/api/media`，**连续导出多份奖状时第二份会命中第一份的缓存，底图被替换成上一份奖状的图**（2026-09-21 实测：先导「测试」再导「M3 测试奖状」，后者 PDF 从 118 KB 涨到 4.2 MB，里面装着前者的底图）。开启后以完整 URL 作 key，互不污染；单份 PDF 内同 URL 仍正常复用。
+
+- **判断图片是否加载完，只看 `img.complete`**，不要写 `complete && naturalWidth > 0`。图片**加载失败**时正是 `complete=true` 且 `naturalWidth=0`，此时若还去监听 `load`/`error`，就是在等一个**永远不会再触发**的事件 → Promise 永久挂起（表现就是按钮卡在「生成中…」）。
+- **加载失败的 `<img>` 必须在栅格化前从 DOM 移除**（用同尺寸占位 div 顶替）。`html-to-image` 会逐张 fetch 并内联图片，拉不动就抛一个**没有 message 的 `Event`**，上层只能看到「[object Event]」，**整个导出直接失败**。移除后 PDF 仍能生成，只是缺这几张图，再由 `failedImages` 提示用户。
+- **`URL.pathname` 保留 percent-encoding**。拿它直接 `encodeURIComponent` 会**二次编码**（`%C3%A6` → `%25C3%25A6`），`/api/media?key=` 必然 404。必须先 `decodeURIComponent` 还原成真实 key 再编码一次。
+- 另外：`waitForImages` 与 `toPng` 都要有**超时兜底**（否则任何一次网络挂起都会永久卡住 UI）；栅格化前要 `await document.fonts.ready`。
+- 报错信息要用 `describeError()` 提取 —— `e.message || e` 遇到 Event 会输出「[object Event]」。
+- **★ `toPng` 必须开 `includeQueryParams: true`**：html-to-image 的资源缓存 key 默认会 `url.replace(/\?.*/, '')` **剥掉 query string**。而底图统一走 `/api/media?key=<对象名>`，不同奖状只有 key 不同 —— 剥掉 query 后缓存 key 全部退化成同一个 `/api/media`，**连续导出多份奖状时第二份会命中第一份的缓存，底图被替换成上一份奖状的图**（2026-09-21 实测：先导「测试」再导「M3 测试奖状」，后者 PDF 从 118 KB 涨到 4.2 MB，里面装着前者的底图）。开启后以完整 URL 作 key，互不污染；单份 PDF 内同 URL 仍正常复用。
+
 14. **上传文件不要用 `req.file.originalname` 当对象名**：multipart 的 filename 被 multer/busboy 按 **latin1** 解码，中文会变成乱码（`QQ截图` → `QQæªå¾`，还夹着不可见的控制字符），对象名与 URL 从此永久失配。`/api/awards/upload-bg` 现在只取**扩展名**，主体用 `时间戳 + 随机串`（`bg_<ts>_<hex>.png`）。
 15. **实物材料（M4）的隐私红线**（2026-09-22 落地）：QSL 卡片照片**只能进私有桶 `ham-awards-evidence`**，**绝不放公开桶 `ham-awards`**（照片含地址/印章，公开桶是 `s3:GetObject` 对 `*`）。实现见 `server/routes/evidence.js`：
-   - **权限归属（按奖状）**：`admin` 看/审**全部**材料；`award_admin` 只能看/审**自己创建的奖状**（`awards.creator_id = 自己`）收到的材料——待审列表按 `creator_id` 过滤，审核接口在删除前会二次校验归属（越权返回 403）。
-   - 管理员查看走 **presigned GET**（15 分钟），URL 不落库、不返回给申请人；
-   - 审核 `approve`/`reject` 后**立即 `removeObject`**，DB 把 `object_key` 置空 + 记 `purged_at`，只留审核结论；
-   - 上传用 multer `memoryStorage`（5 MB 上限）+ PNG/JPEG **magic bytes** 校验，不落本地磁盘；
-   - 孤儿图**不自动删除**（用户拍板 2026-09-22，撤销了此前的 ILM 自动删除）：照片保留，靠**站内通知**催审核员处理；审核通过/驳回后仍立即 `removeObject`。
-   - **presigned URL 走对外客户端 `minioPublicClient`**（2026-09-22 落地）：容器部署时 `minioClient.endPoint` 是内部服务名（`minio:9000`），浏览器解析不了，且 SigV4 签名绑定 host，改 URL host 会验签失败。故启动时用 `publicEndPoint`/`MINIO_PUBLIC_ENDPOINT`（+ `publicPort`/`MINIO_PUBLIC_PORT`）另建 `minioPublicClient`（凭据相同），`evidence.js` 生成 presigned 一律走它；未配置时退化为 `minioClient`（本机 `localhost` 等价）。
-   - **★ 判定打通（2026-09-22 落地）**：上传卡片时填**对方呼号（必填）/ 波段 / 模式 / 日期**（存 `match_callsign/band/mode/date`）；审核 `approve` 时据此匹配该用户的 QSO 并 `jsonb_set(adif_raw, '{qsl_rcvd}', '"Y"')`，使「实物卡片确认」真正参与 `qslRequired` 判定（`awardEngine` 只读 `adif_raw.qsl_rcvd` / `lotw_qsl_rcvd`）。匹配规则：呼号 `UPPER(callsign)` 等值；波段/模式 `LOWER()` 等值（可选）；日期 `REPLACE(qso_date,'-','')` 去横线比较（可选，兼容 `YYYYMMDD` 与 `YYYY-MM-DD`）。审核接口返回 `matched_qso` 供前端提示打了几条。
+
+- **权限归属（按奖状）**：`admin` 看/审**全部**材料；`award_admin` 只能看/审**自己创建的奖状**（`awards.creator_id = 自己`）收到的材料——待审列表按 `creator_id` 过滤，审核接口在删除前会二次校验归属（越权返回 403）。
+- 管理员查看走 **presigned GET**（15 分钟），URL 不落库、不返回给申请人；
+- 审核 `approve`/`reject` 后**立即 `removeObject`**，DB 把 `object_key` 置空 + 记 `purged_at`，只留审核结论；
+- 上传用 multer `memoryStorage`（5 MB 上限）+ PNG/JPEG **magic bytes** 校验，不落本地磁盘；
+- 孤儿图**不自动删除**（用户拍板 2026-09-22，撤销了此前的 ILM 自动删除）：照片保留，靠**站内通知**催审核员处理；审核通过/驳回后仍立即 `removeObject`。
+- **presigned URL 走对外客户端 `minioPublicClient`**（2026-09-22 落地）：容器部署时 `minioClient.endPoint` 是内部服务名（`minio:9000`），浏览器解析不了，且 SigV4 签名绑定 host，改 URL host 会验签失败。故启动时用 `publicEndPoint`/`MINIO_PUBLIC_ENDPOINT`（+ `publicPort`/`MINIO_PUBLIC_PORT`）另建 `minioPublicClient`（凭据相同），`evidence.js` 生成 presigned 一律走它；未配置时退化为 `minioClient`（本机 `localhost` 等价）。
+- **★ 判定打通（2026-09-22 落地）**：上传卡片时填**对方呼号（必填）/ 波段 / 模式 / 日期**（存 `match_callsign/band/mode/date`）；审核 `approve` 时据此匹配该用户的 QSO 并 `jsonb_set(adif_raw, '{qsl_rcvd}', '"Y"')`，使「实物卡片确认」真正参与 `qslRequired` 判定（`awardEngine` 只读 `adif_raw.qsl_rcvd` / `lotw_qsl_rcvd`）。匹配规则：呼号 `UPPER(callsign)` 等值；波段/模式 `LOWER()` 等值（可选）；日期 `REPLACE(qso_date,'-','')` 去横线比较（可选，兼容 `YYYYMMDD` 与 `YYYY-MM-DD`）。审核接口返回 `matched_qso` 供前端提示打了几条。
+
 16. **站内通知（M4.1，2026-09-22 落地）**：`server/services/notifications.js` 提供 `notifyUsers(pool, userIds, {type,title,body})`（去重）+ `createNotificationsRouter`（`GET /api/notifications` 返回 `{list,unread}`、`POST /api/notifications/read` 支持 `{all:true}` 或 `{id}`）。`notifications` 表：`id/user_id/type/title/body/read/created_at`。已接入的事件：
-   - 用户上传实物材料 → 通知所有 `admin` + 该奖状 `creator_id`（`evidence_pending`）
-   - 实物材料审核通过/驳回 → 通知上传者（`evidence_approved` / `evidence_rejected`）
-   - 奖状审核通过/退回 → 通知创建者（`award_approved` / `award_returned`）
-   - 前端侧边栏顶部铃铛 + 未读红点 + 通知面板（10 秒轮询 `/notifications`）。
-   - **只做站内，不接邮件**（邮件成本另议）。将来加新事件：在业务路由里 `notifyUsers` 一行即可。
+
+- 用户上传实物材料 → 通知所有 `admin` + 该奖状 `creator_id`（`evidence_pending`）
+- 实物材料审核通过/驳回 → 通知上传者（`evidence_approved` / `evidence_rejected`）
+- 奖状审核通过/退回 → 通知创建者（`award_approved` / `award_returned`）
+- 前端侧边栏顶部铃铛 + 未读红点 + 通知面板（10 秒轮询 `/notifications`）。
+- **只做站内，不接邮件**（邮件提醒已确认不做，2026-09-22）。将来加新事件：在业务路由里 `notifyUsers` 一行即可。
+
+17. **角色升级申请（2026-09-22 落地）**：普通用户可在用户中心「角色权限」区块申请成为奖状管理员，需 `admin` 在「用户管理」审核。
+
+- `role_requests` 表（`requested_role/status/reviewer_id/reject_reason`）；`reviewer_id` 外键 **必须 `ON DELETE SET NULL`**（否则删除审核过的管理员会报外键错误）。
+- 接口：`GET/POST /api/user/role-request`（查/提交，防重复 pending）、`GET /api/admin/role-requests`（待审）、`POST /api/admin/role-requests/:id/review`（approve 时 `UPDATE users SET role='award_admin'`）。事件接站内通知。
+- **角色是单一字段、互斥的**；「申请奖状」能力不再限 role——菜单 `my_awards/logbook/lotw_import/all_logs` 对所有角色开放，`AwardDetailModal` 用 `canApply` prop 控制是否显示「申领」按钮（奖状大厅传 `canApply`，审核预览不传）。
+- 升级通过后用户需**重新登录**才生效（token 里 role 是旧的）。
 
 ### 本仓库相对上游的改动
 
@@ -341,9 +355,9 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 ## 9. 可用工具（MCP）
 
-| 服务 | 用途 |
-|---|---|
+| 服务         | 用途                                                                               |
+| ------------ | ---------------------------------------------------------------------------------- |
 | `playwright` | 打开本地页面、点击、填表、读 console / network、截图。用于 UI 改动后的**自我验证** |
-| `GitHub` | 读取上游仓库文件、查提交、搜代码、开 issue / PR。用于**对照上游实现** |
+| `GitHub`     | 读取上游仓库文件、查提交、搜代码、开 issue / PR。用于**对照上游实现**              |
 
 > 改完 UI 后**自行用 Playwright 验证再交付**，不要只描述"应该没问题"。

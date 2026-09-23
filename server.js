@@ -285,7 +285,7 @@ async function upgradeSchema() {
         bytes INTEGER,
         sha256 CHAR(64),
         status VARCHAR(20) DEFAULT 'pending',
-        reviewer_id INTEGER REFERENCES users(id),
+        reviewer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         reviewed_at TIMESTAMP,
         reject_reason TEXT,
         purged_at TIMESTAMP,
@@ -314,6 +314,44 @@ async function upgradeSchema() {
       );
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, read)`);
+
+    // 角色升级申请（普通用户 → 奖状管理员，需 admin 审核）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS role_requests (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        requested_role VARCHAR(20) DEFAULT 'award_admin',
+        status VARCHAR(20) DEFAULT 'pending',
+        reviewer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        reviewed_at TIMESTAMP,
+        reject_reason TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    // 升级申请表单字段（用户要求：填写拟创建的奖状名称、理由等）
+    await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS award_name VARCHAR(200)`);
+    await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS reason TEXT`);
+    await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS experience TEXT`);
+    await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS contact VARCHAR(200)`);
+
+    // 修复旧表（award_evidence）reviewer_id 外键删除行为：应 ON DELETE SET NULL
+    // （否则删除「审核过材料」的管理员账号会报外键约束错误，见 2026-09-22 联调）
+    try {
+        const fkRows = await client.query(`
+            SELECT conname AS constraint_name
+            FROM pg_constraint
+            WHERE conrelid = 'award_evidence'::regclass
+              AND contype = 'f'
+              AND confdeltype <> 'n'
+              AND conname LIKE '%reviewer_id%'
+        `);
+        for (const row of fkRows.rows) {
+            await client.query(`ALTER TABLE award_evidence DROP CONSTRAINT ${row.constraint_name}`);
+            await client.query(`ALTER TABLE award_evidence ADD CONSTRAINT ${row.constraint_name} FOREIGN KEY (reviewer_id) REFERENCES users(id) ON DELETE SET NULL`);
+        }
+    } catch (e) {
+        console.error('award_evidence reviewer_id FK fix error:', e.message);
+    }
 
     console.log("Database schema checked.");
   } catch (err) {
@@ -1210,6 +1248,98 @@ app.delete('/api/admin/users/:id', verifyToken, verifyAdmin, require2FA, async (
         // 删除用户 (QSOS 和 user_awards 会自动级联删除)
         await client.query('DELETE FROM users WHERE id=$1', [req.params.id]);
         await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (e) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: e.message });
+    } finally {
+        client.release();
+    }
+});
+
+// --- 角色升级申请（普通用户 → 奖状管理员，需 admin 审核）---
+app.get('/api/user/role-request', verifyToken, async (req, res) => {
+    try {
+        const r = await dbPool.query(
+            `SELECT id, requested_role, status, reject_reason, created_at FROM role_requests WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+            [req.user.id],
+        );
+        res.json(r.rows[0] || null);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/user/role-request', verifyToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'user') return res.status(400).json({ error: 'ALREADY_PRIVILEGED', message: '当前账号已具备奖状管理员或更高权限' });
+        const dup = await dbPool.query(`SELECT id FROM role_requests WHERE user_id=$1 AND status='pending'`, [req.user.id]);
+        if (dup.rows.length > 0) return res.status(400).json({ error: 'ALREADY_PENDING', message: '你已提交过申请，请等待管理员审核' });
+
+        const awardName = String((req.body || {}).award_name || '').trim().slice(0, 200);
+        const reason = String((req.body || {}).reason || '').trim().slice(0, 2000);
+        const experience = String((req.body || {}).experience || '').trim().slice(0, 1000);
+        const contact = String((req.body || {}).contact || '').trim().slice(0, 200);
+        if (!awardName) return res.status(400).json({ error: 'NO_AWARD_NAME', message: '请填写拟创建的奖状名称' });
+        if (!reason) return res.status(400).json({ error: 'NO_REASON', message: '请填写申请理由' });
+
+        const ins = await dbPool.query(
+            `INSERT INTO role_requests (user_id, requested_role, award_name, reason, experience, contact)
+             VALUES ($1, 'award_admin', $2, $3, $4, $5) RETURNING id`,
+            [req.user.id, awardName, reason, experience || null, contact || null],
+        );
+        const admins = await dbPool.query(`SELECT id FROM users WHERE role='admin'`);
+        await notifyUsers(dbPool, admins.rows.map((r) => r.id), {
+            type: 'role_request',
+            title: '有新的角色升级申请',
+            body: `用户 ${req.user.callsign} 申请成为奖状管理员（拟创建奖状「${awardName}」），请到「用户管理」审核。`,
+        });
+        res.json({ success: true, id: ins.rows[0].id });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/admin/role-requests', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const r = await dbPool.query(
+            `SELECT rr.id, rr.requested_role, rr.status, rr.created_at, rr.reject_reason,
+                    rr.award_name, rr.reason, rr.experience, rr.contact,
+                    u.id AS user_id, u.callsign
+             FROM role_requests rr JOIN users u ON u.id = rr.user_id
+             WHERE rr.status = 'pending'
+             ORDER BY rr.created_at ASC`,
+        );
+        res.json(r.rows);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async (req, res) => {
+    const id = Number(req.params.id);
+    const { action, reason } = req.body || {};
+    if (action !== 'approve' && action !== 'reject') return res.status(400).json({ error: 'BAD_ACTION', message: 'action 必须是 approve 或 reject' });
+    if (action === 'reject' && !String(reason || '').trim()) return res.status(400).json({ error: 'NO_REASON', message: '驳回必须填写原因' });
+
+    const client = await dbPool.connect();
+    try {
+        await client.query('BEGIN');
+        const old = await client.query(`SELECT * FROM role_requests WHERE id=$1 FOR UPDATE`, [id]);
+        if (old.rows.length === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'NOT_FOUND', message: '申请不存在' }); }
+        if (old.rows[0].status !== 'pending') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'ALREADY_REVIEWED', message: '该申请已处理' }); }
+
+        const approved = action === 'approve';
+        if (approved) {
+            await client.query(`UPDATE users SET role = 'award_admin' WHERE id = $1`, [old.rows[0].user_id]);
+        }
+        await client.query(
+            `UPDATE role_requests SET status=$1, reviewer_id=$2, reviewed_at=NOW(), reject_reason=$3 WHERE id=$4`,
+            [approved ? 'approved' : 'rejected', req.user.id, approved ? null : String(reason || '').slice(0, 500), id],
+        );
+        await client.query('COMMIT');
+
+        await notifyUsers(dbPool, [old.rows[0].user_id], {
+            type: approved ? 'role_approved' : 'role_rejected',
+            title: approved ? '升级申请已通过' : '升级申请被驳回',
+            body: approved
+                ? '恭喜！你的「奖状管理员」申请已通过，重新登录后即可创建和管理奖状。'
+                : `你的「奖状管理员」申请被驳回${reason ? '：' + reason : ''}。`,
+        });
         res.json({ success: true });
     } catch (e) {
         await client.query('ROLLBACK');
