@@ -31,6 +31,7 @@ export const ALL_ROUTES = [
   'issuanceManager',
   'users',
   'evidence_audit',
+  'admin_logs',
   'userCenter',
 ];
 
@@ -60,6 +61,7 @@ export const ROUTES_BY_ROLE = {
     'issuanceManager',
     'users',
     'evidence_audit',
+    'admin_logs', // 全站审计日志：仅最高级管理员
   ],
 };
 

@@ -39,10 +39,12 @@ const detectImageType = (buf) => {
   return null;
 };
 
-export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin, getConfig, getMinio, getMinioPublic }) {
+export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin, getConfig, getMinio, getMinioPublic, logAudit }) {
   const router = express.Router();
   const db = () => getDbPool();
   const minio = () => getMinio();
+  // 审计写入由 server.js 注入；未注入时静默跳过（best-effort，不影响主流程）
+  const audit = (req, entry) => (typeof logAudit === 'function' ? logAudit(db(), req, entry) : Promise.resolve());
   // presigned URL 用对外客户端（浏览器可达的 host），未配置时退回内部客户端
   const minioPublic = () => (getMinioPublic ? getMinioPublic() : getMinio());
   const bucket = () => (getConfig() && getConfig().evidenceBucket) || EVIDENCE_BUCKET;
@@ -94,6 +96,13 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
         type: 'evidence_pending',
         title: '有新的实物材料待审核',
         body: `用户 ${req.user.callsign} 为奖状「${aw.rows[0].name}」上传了 QSL 卡片材料，请及时审核。`,
+      });
+
+      await audit(req, {
+        action: 'evidence.upload',
+        targetType: 'evidence',
+        targetId: ins.rows[0].id,
+        detail: { award_id: awardId, award: aw.rows[0].name, callsign: req.user.callsign, match_callsign: matchCallsign, bytes: req.file.buffer.length },
       });
 
       res.json({ success: true, id: ins.rows[0].id });
@@ -243,6 +252,19 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
           body: `你的实物卡片材料被驳回${reason ? '：' + reason : ''}。`,
         });
       }
+
+      await audit(req, {
+        action: 'evidence.audit',
+        targetType: 'evidence',
+        targetId: id,
+        detail: {
+          award_id: old.rows[0].award_id,
+          applicant_id: old.rows[0].user_id,
+          op: action,
+          matched_qso: matchedQso,
+          reason: String(reason || '').slice(0, 200),
+        },
+      });
 
       res.json({ success: true, matched_qso: matchedQso });
     } catch (e) {
