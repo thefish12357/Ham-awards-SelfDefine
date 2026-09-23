@@ -22,6 +22,8 @@ import EvidenceAuditView from './pages/EvidenceAuditView.jsx';
 import LandingView from './pages/LandingView.jsx';
 import AboutView from './pages/AboutView.jsx';
 import PrivacyView from './pages/PrivacyView.jsx';
+import TermsView from './pages/TermsView.jsx';
+import ProtocolView from './pages/ProtocolView.jsx';
 import { normalizeLayout } from './lib/awardLayout.js';
 import { collectExternalImages } from './lib/media.js';
 import VisualDesigner from './components/VisualDesigner.jsx';
@@ -992,6 +994,22 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                         </div>
                     )}
 
+                    {/* 申领须知：与后端规则一致（条件判定、同等级仅一次、实物材料审核后即删） */}
+                    {mode !== 'view_only' && canApply && userRole === 'user' && (
+                        <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+                            <div className="mb-2 flex items-center gap-2 text-sm font-bold text-blue-700">
+                                <Info size={15} /> 申领须知
+                            </div>
+                            <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-slate-600">
+                                <li>资格由本奖状的规则自动判定，可查看下方进度与明细；条件未满足时无法申领。</li>
+                                <li>同一奖状的<b>同一等级只能领取一次</b>，请在条件达成后再申领。</li>
+                                <li>可用 QSL 实物卡片补充确认：审核通过后计入成绩，照片在审核结束后立即删除。</li>
+                                <li>申领成功后生成唯一序列号与二维码，可通过公开校验页查验。</li>
+                                <li>请勿上传虚假或违反法律法规的材料，详见站内《内容规范》。</li>
+                            </ul>
+                        </div>
+                    )}
+
                     <div className="mt-6">
                         {mode === 'view_only' ? (
                             <div className="text-center text-slate-400 text-sm bg-slate-50 p-3 rounded-lg border">
@@ -1481,6 +1499,19 @@ const AwardDesigner = ({ initData, onClose }) => {
                     {step === 1 && (
                         <div className="flex-1 p-8 overflow-y-auto max-w-3xl mx-auto w-full space-y-6">
                             <h3 className="text-xl font-bold border-b pb-4 mb-6">基本信息</h3>
+
+                            {/* 创建指引：与前端必填校验（名称/底图）及后端审核流转保持一致 */}
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                <div className="mb-2 flex items-center gap-2 text-sm font-bold text-slate-700">
+                                    <Info size={15} /> 创建指引
+                                </div>
+                                <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-slate-600">
+                                    <li>共三步：基本信息 → 规则配置 → 视觉设计，可随时点顶部标签切换。</li>
+                                    <li><b>奖状名称</b>与<b>底图</b>为必填项，缺少任一项都无法保存草稿或提交审核。</li>
+                                    <li>提交后进入管理员审核；若被打回，可在「草稿箱 → 打回草稿」查看原因，修改后重新提交。</li>
+                                    <li>底图与素材须为你有权使用的图片与字体（勿用未授权商业字体）。</li>
+                                </ul>
+                            </div>
                             <div className="space-y-4">
                                 <div>
                                     <label className="block text-sm font-bold text-slate-700 mb-1">奖状名称</label>
@@ -1702,9 +1733,19 @@ const AwardDesigner = ({ initData, onClose }) => {
                 </div>
 
                 {/* Footer */}
-                <div className="p-4 border-t bg-slate-50 flex justify-between items-center">
-                    <div className="text-xs text-slate-400">
-                        {step === 3 && '提示: 拖动元素调整位置，右侧面板编辑属性；保存时会把当前布局一并写入奖状。'}
+                <div className="p-4 border-t bg-slate-50 flex justify-between items-center gap-6">
+                    <div className="flex-1 text-xs text-slate-400 space-y-1">
+                        <div className="flex items-start gap-1.5 text-amber-600">
+                            <Info size={13} className="mt-0.5 shrink-0" />
+                            <span>
+                                保存或提交即表示你确认：奖状名称、描述、底图等内容<b>不含违反法律法规或侵犯他人权益的信息</b>，
+                                否则奖状可被下架、撤回或删除账号。
+                                <a href="#/protocol" target="_blank" rel="noreferrer" className="ml-1 underline hover:text-amber-500">查看《内容规范》</a>
+                            </span>
+                        </div>
+                        {step === 3 && (
+                            <div>提示: 拖动元素调整位置，右侧面板编辑属性；保存时会把当前布局一并写入奖状。</div>
+                        )}
                     </div>
                     <div className="flex gap-4">
                         <button onClick={()=>saveAward('draft')} className="px-6 py-2 border rounded-lg font-bold text-slate-600">保存草稿</button>
@@ -2506,6 +2547,8 @@ export default function App() {
   };
   if (publicPage === 'about') return <AboutView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
   if (publicPage === 'privacy') return <PrivacyView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
+  if (publicPage === 'terms') return <TermsView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
+  if (publicPage === 'protocol') return <ProtocolView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
 
   if (view === 'install') return <InstallView onComplete={() => window.location.reload()} />;
 
@@ -2754,6 +2797,13 @@ export default function App() {
                           <span className="font-medium text-sm">{theme === 'dark' ? '白天模式' : '夜间模式'}</span>
                       </button>
                       <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-3 text-red-400 hover:bg-red-900/20 rounded-lg"><LogOut size={18} /> <span className="font-medium text-sm">退出登录</span></button>
+                  </div>
+                  {/* 侧边栏常驻条款入口：主界面不逐页加页脚，链接集中在这里，任何页面都能直接进入 */}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-800 px-6 py-4 text-[11px] text-slate-500">
+                      <a href="#/about" className="transition-colors hover:text-cyan-300">关于</a>
+                      <a href="#/privacy" className="transition-colors hover:text-cyan-300">隐私政策</a>
+                      <a href="#/terms" className="transition-colors hover:text-cyan-300">用户协议</a>
+                      <a href="#/protocol" className="transition-colors hover:text-cyan-300">内容规范</a>
                   </div>
               </aside>
               {/* 站内通知面板（M4.1） */}

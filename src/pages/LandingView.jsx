@@ -409,6 +409,8 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
               <div className="flex items-center justify-center gap-5">
                 <a href="#/about" className="transition-colors hover:text-cyan-300">关于</a>
                 <a href="#/privacy" className="transition-colors hover:text-cyan-300">隐私政策</a>
+                <a href="#/terms" className="transition-colors hover:text-cyan-300">用户协议</a>
+                <a href="#/protocol" className="transition-colors hover:text-cyan-300">内容规范</a>
               </div>
               <p className="mt-2">
                 业余无线电奖状管理 · 仅为业余无线电爱好者社区服务

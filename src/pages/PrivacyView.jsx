@@ -144,6 +144,8 @@ export default function PrivacyView({ onBack, theme = 'dark', onToggleTheme }) {
           <div className="mx-auto max-w-3xl text-center text-xs text-slate-500">
             <div className="flex items-center justify-center gap-5">
               <a href="#/about" className="transition-colors hover:text-cyan-300">关于</a>
+              <a href="#/terms" className="transition-colors hover:text-cyan-300">用户协议</a>
+              <a href="#/protocol" className="transition-colors hover:text-cyan-300">内容规范</a>
             </div>
             <p className="mt-2">© 2026 HAM AWARDS · 业余无线电奖状管理</p>
           </div>
