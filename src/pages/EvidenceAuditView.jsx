@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Loader2, Check, X, RefreshCw, Inbox } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch.js';
+import { confirmDialog, promptDialog } from '../lib/confirm.jsx';
 
 /**
  * 实物材料审核页（仅 admin）—— M4
@@ -25,9 +26,24 @@ const EvidenceAuditView = () => {
     const review = async (id, action) => {
         let reason = '';
         if (action === 'reject') {
-            const r = window.prompt('请输入驳回原因：');
-            if (!r || !r.trim()) return;
-            reason = r.trim();
+            const r = await promptDialog({
+                title: '驳回实物材料',
+                message: '请填写驳回原因，申请人会收到这条说明。',
+                detail: '照片会在驳回后立即从服务器删除，只保留这条驳回说明。',
+                placeholder: '例如：卡片信息不清晰 / 与填写的通联不符',
+                confirmText: '驳回',
+                danger: true,
+            });
+            if (!r) return;
+            reason = r;
+        } else {
+            const ok = await confirmDialog({
+                title: '通过实物材料',
+                message: '确认通过这份实物卡片材料？',
+                detail: '通过后会按卡片填写的信息匹配该用户的通联日志并打上「已确认」标记；照片随后立即从服务器删除，只保留审核结论。',
+                confirmText: '通过',
+            });
+            if (!ok) return;
         }
         setReviewingId(id);
         try {

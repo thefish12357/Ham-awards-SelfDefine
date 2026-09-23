@@ -463,7 +463,7 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
             </div>
 
             {editLevel ? (
-              <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-2 text-xs space-y-1">
+              <div className="bg-amber-50 border border-amber-200 text-amber-700 rounded-lg p-2 text-xs space-y-1">
                 <div>正在编辑「{editLevel}」的差异，只对该等级生效。</div>
                 {hasLevelOverride(selectedRaw, editLevel) && (
                   <button type="button" onClick={() => clearLevelOverride(selectedId)} className="font-bold underline">

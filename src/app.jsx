@@ -15,10 +15,13 @@ import {
 // 统一请求封装（原 apiFetch 定义就在这里）与 Hash 路由已抽到独立模块，
 // 行为与原先保持一致，新功能请直接从这里 import，不要再写一份。
 import { apiFetch } from './lib/apiFetch.js';
+// 统一确认弹层（替代原生 confirm/prompt，防手滑删除/提交）
+import { confirmDialog, promptDialog, infoDialog } from './lib/confirm.jsx';
 import { DEFAULT_ROUTE, isPublicHashRoute, isRouteAllowed, parseVerifyHash, readPublicPage, readRoute, writeRoute } from './lib/routes.js';
 import LotwImportView from './pages/LotwImportView.jsx';
 import VerifyView from './pages/VerifyView.jsx';
 import EvidenceAuditView from './pages/EvidenceAuditView.jsx';
+import AuditLogsView from './pages/AuditLogsView.jsx';
 import LandingView from './pages/LandingView.jsx';
 import AboutView from './pages/AboutView.jsx';
 import PrivacyView from './pages/PrivacyView.jsx';
@@ -27,6 +30,7 @@ import ProtocolView from './pages/ProtocolView.jsx';
 import { normalizeLayout } from './lib/awardLayout.js';
 import { collectExternalImages } from './lib/media.js';
 import VisualDesigner from './components/VisualDesigner.jsx';
+import InviteCodePanel from './components/InviteCodePanel.jsx';
 import { ResponsiveAwardRenderer } from './components/AwardRenderer.jsx';
 import PasswordInput from './components/PasswordInput.jsx';
 // 注意：PDF 导出（jsPDF + html-to-image，约 440 KB）改为**点击时动态 import**，
@@ -216,13 +220,13 @@ const DashboardView = ({ user }) => {
 
     // Helper Card Component
     const StatCard = ({ title, value, icon: Icon, color, sub }) => (
-        <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between">
-            <div>
-                <div className="text-slate-500 text-xs font-bold uppercase mb-2">{title}</div>
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center justify-between gap-4">
+            <div className="min-w-0 flex-1">
+                <div className="text-slate-500 text-xs font-bold uppercase mb-2 whitespace-nowrap">{title}</div>
                 <div className="text-3xl font-black text-slate-800">{value}</div>
                 {sub && <div className="text-xs text-slate-400 mt-1">{sub}</div>}
             </div>
-            {Icon && <div className={`p-4 rounded-full ${color || 'bg-blue-50 text-blue-600'}`}><Icon size={24} /></div>}
+            {Icon && <div className={`shrink-0 p-3.5 rounded-full ${color || 'bg-blue-50 text-blue-600'}`}><Icon size={22} /></div>}
         </div>
     );
 
@@ -248,7 +252,7 @@ const DashboardView = ({ user }) => {
 
             {/* 奖状管理员视图 - 仅显示自己的数据 */}
             {user.role === 'award_admin' && (
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
                     <StatCard title="我的发布" value={stats.my_approved} icon={CheckCircle} color="bg-green-100 text-green-700" sub="已通过审核" />
                     <StatCard title="审核中" value={stats.my_pending} icon={Clock} color="bg-blue-100 text-blue-700" sub="等待管理员操作" />
                     <StatCard title="我的草稿" value={stats.my_drafts} icon={FileText} color="bg-slate-100 text-slate-700" sub="未提交" />
@@ -260,11 +264,14 @@ const DashboardView = ({ user }) => {
             {user.role === 'admin' && (
                 <div className="space-y-8">
                     {/* 第一排：系统状态与人员 */}
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                         <div className="bg-slate-900 text-white p-6 rounded-2xl shadow-lg shadow-slate-300">
-                             <div className="text-slate-400 text-xs font-bold uppercase mb-2">系统状态</div>
-                             <div className="text-2xl font-bold flex items-center gap-2">
-                                 <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div> 运行正常
+                    <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+                         {/* ⚠️ 不要用 `bg-slate-900 text-white` 做「大块卡片」：深色主题会把它映射成
+                             实色青底（那是给**按钮**用的强调色），整块高饱和青底在近黑面板群里很突兀。
+                             大卡片统一用「面板 + 细边框」（与 StatCard 同款），强调色只留给小图标与状态点。 */}
+                         <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                             <div className="text-slate-500 text-xs font-bold uppercase mb-2 whitespace-nowrap">系统状态</div>
+                             <div className="text-2xl font-black text-slate-800 flex items-center gap-2">
+                                 <span className="inline-block h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-emerald-500"></span> 运行正常
                              </div>
                          </div>
                          <StatCard title="在线用户" value={stats.online_users?.reduce((a,b)=>a+parseInt(b.count),0) || 0} icon={Activity} color="bg-green-100 text-green-700" sub={stats.online_users?.map(u => `${u.role}: ${u.count}`).join(', ')} />
@@ -670,6 +677,13 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
 
     const handleApplyClick = async () => {
         if (!checkResult?.eligible) return;
+        const ok = await confirmDialog({
+            title: '申领奖状',
+            message: `确认申领「${award.name}」？`,
+            detail: `判定等级：${checkResult?.achieved_level?.name || '—'}　当前成绩：${checkResult?.current_score ?? '—'}\n同一等级只能领取一次；领取后会生成公开可校验的序列号，且无法自行撤销。`,
+            confirmText: '确认申领',
+        });
+        if (!ok) return;
         setApplying(true);
         try {
             await apiFetch(`/awards/${award.id}/apply`, { method: 'POST' });
@@ -694,6 +708,13 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
         if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return; }
         if (file.size > 5 * 1024 * 1024) { alert('图片不能超过 5 MB'); return; }
         if (!evForm.callsign.trim()) { alert('请先填写对方呼号'); return; }
+        const ok = await confirmDialog({
+            title: '提交实物材料',
+            message: '确认上传这张卡片照片？',
+            detail: `奖状：${award.name}\n对方呼号：${evForm.callsign.trim()}\n波段/模式/日期：${evForm.band || '—'} / ${evForm.mode || '—'} / ${evForm.date || '—'}\n\n上传后管理员会收到待审提醒；审核通过或驳回后照片会立即从服务器删除，只保留审核结论。`,
+            confirmText: '上传并提交',
+        });
+        if (!ok) return;
         setEvUploading(true);
         try {
             const fd = new FormData();
@@ -1123,10 +1144,17 @@ const AwardAdminManager = ({ viewMode }) => {
 
     useEffect(() => { loadData(); }, [viewMode]);
 
-    const handleDelete = async (id) => {
-        if(!confirm('确定删除此记录吗？')) return;
+    const handleDelete = async (award) => {
+        const ok = await confirmDialog({
+            title: '删除奖状',
+            message: `确认删除「${award?.name || '未命名奖状'}」？`,
+            detail: '删除后不可恢复。只有草稿与被退回的奖状能删除；已发布的奖状请改用「撤回/打回」。',
+            confirmText: '删除',
+            danger: true,
+        });
+        if (!ok) return;
         try {
-            await apiFetch(`/awards/${id}`, { method: 'DELETE' });
+            await apiFetch(`/awards/${award.id}`, { method: 'DELETE' });
             loadData();
         } catch(e) { alert(e.message); }
     };
@@ -1208,7 +1236,7 @@ const AwardAdminManager = ({ viewMode }) => {
                                         )}
                                         <div className="flex gap-2 mt-4">
                                             <button onClick={()=>setEditingAward(d)} className="flex-1 bg-slate-900 text-white py-2 rounded-lg text-sm font-bold">编辑/重交</button>
-                                            <button onClick={()=>handleDelete(d.id)} className="p-2 text-red-400 hover:bg-red-50 rounded-lg"><Trash2 size={16}/></button>
+                                            <button onClick={()=>handleDelete(d)} className="p-2 text-red-400 hover:bg-red-50 rounded-lg"><Trash2 size={16}/></button>
                                         </div>
                                     </div>
                                 </div>
@@ -1307,7 +1335,18 @@ const SystemAdminAwardManager = ({ viewMode }) => {
                                     <button onClick={()=>setDetailModal(item)} className="p-2 bg-slate-100 text-slate-600 rounded hover:bg-slate-200" title="查看详情"><Eye size={16}/></button>
                                     {viewMode === 'audit' ? (
                                         <>
-                                            <button onClick={()=>apiFetch('/admin/awards/audit', {method:'POST', body:JSON.stringify({id:item.id, action:'approve'})}).then(()=>{alert('已通过');load()})} className="px-3 py-1 bg-green-100 text-green-700 rounded font-bold text-sm">通过</button>
+                                            <button onClick={async ()=>{
+                                                const ok = await confirmDialog({
+                                                    title: '通过并发布奖状',
+                                                    message: `确认通过「${item.name}」？`,
+                                                    detail: `创建者：${item.creator_call || '—'}\n通过后该奖状会立即出现在奖状大厅，用户即可申领。`,
+                                                    confirmText: '通过并发布',
+                                                });
+                                                if (!ok) return;
+                                                await apiFetch('/admin/awards/audit', {method:'POST', body:JSON.stringify({id:item.id, action:'approve'})})
+                                                    .then(()=>{alert('已通过');load()})
+                                                    .catch(e=>alert(e.message));
+                                            }} className="px-3 py-1 bg-green-100 text-green-700 rounded font-bold text-sm">通过</button>
                                             <button onClick={()=>setActionModal({id:item.id, action:'reject', title:'打回申请'})} className="px-3 py-1 bg-red-100 text-red-700 rounded font-bold text-sm">打回</button>
                                         </>
                                     ) : (
@@ -1354,11 +1393,18 @@ const IssuanceManager = () => {
 
     useEffect(() => { load(); }, []);
 
-    const handleDeleteIssuance = async (id) => {
-        if(!confirm('确定要撤销并删除该颁发记录吗？')) return;
+    const handleDeleteIssuance = async (item) => {
+        const ok = await confirmDialog({
+            title: '撤销已颁发的奖状',
+            message: `确认撤销 ${item?.applicant_call || '该用户'} 的「${item?.award_name || '奖状'}」颁发记录？`,
+            detail: `序列号：${item?.serial_number || '—'}　等级：${item?.level || '—'}\n撤销后该奖状的公开校验链接（#/verify/序列号）会立即失效，记录不可恢复。`,
+            confirmText: '撤销并删除',
+            danger: true,
+        });
+        if (!ok) return;
         try {
-            await apiFetch(`/admin/issued-awards/${id}`, { method: 'DELETE' });
-            alert('删除成功');
+            await apiFetch(`/admin/issued-awards/${item.id}`, { method: 'DELETE' });
+            alert('已撤销');
             load();
         } catch(e) { alert(e.message); }
     };
@@ -1384,7 +1430,7 @@ const IssuanceManager = () => {
                                 <td className="p-4 font-bold text-blue-600">{item.applicant_call}</td>
                                 <td className="p-4"><span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-xs font-bold">{item.level}</span></td>
                                 <td className="p-4">
-                                    <button onClick={()=>handleDeleteIssuance(item.id)} className="p-2 bg-red-50 text-red-600 rounded hover:bg-red-100 text-xs font-bold flex items-center gap-1"><Trash2 size={14}/> 删除颁发</button>
+                                    <button onClick={()=>handleDeleteIssuance(item)} className="p-2 bg-red-50 text-red-600 rounded hover:bg-red-100 text-xs font-bold flex items-center gap-1"><Trash2 size={14}/> 删除颁发</button>
                                 </td>
                             </tr>
                         ))}
@@ -1440,14 +1486,24 @@ const AwardDesigner = ({ initData, onClose }) => {
             if (external.length) {
                 const shown = external.slice(0, 3).join('\n');
                 const more = external.length > 3 ? `\n…另有 ${external.length - 3} 张` : '';
-                const ok = window.confirm(
-                    `检测到 ${external.length} 张图片来自外部网站：\n\n${shown}${more}\n\n` +
-                    '这些图片可能导致：\n' +
-                    '· 导出 PDF 时因跨域而失败或缺图\n' +
-                    '· 图片随时失效（对方删除 / 更换防盗链）\n\n' +
-                    '强烈建议改为上传到本站。仍要继续保存吗？',
-                );
+                const ok = await confirmDialog({
+                    title: '检测到外站图片',
+                    message: `共 ${external.length} 张图片来自外部网站：\n${shown}${more}`,
+                    detail: '这些图片可能导致：\n· 导出 PDF 时因跨域而失败或缺图\n· 图片随时失效（对方删除 / 更换防盗链）\n\n强烈建议改为上传到本站。',
+                    confirmText: '仍要保存',
+                });
                 if (!ok) return; // 用户选择返回修改，不保存
+            }
+
+            // ★ 提交审核是"离开自己手里"的不可逆动作：最后再确认一次
+            if (status === 'pending') {
+                const go = await confirmDialog({
+                    title: '提交审核',
+                    message: `确认提交「${meta.name}」进入审核？`,
+                    detail: '提交后管理员会收到待审提醒，审核期间这份奖状不能再编辑；若被退回，可在「草稿箱 → 打回草稿」修改后重新提交。',
+                    confirmText: '提交审核',
+                });
+                if (!go) return;
             }
 
             await apiFetch('/awards', {
@@ -1783,6 +1839,13 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
 
     const handleRoleRequest = async (e) => {
         e.preventDefault();
+        const ok = await confirmDialog({
+            title: '提交角色升级申请',
+            message: '确认提交成为「奖状管理员」的申请？',
+            detail: `拟创建奖状：${roleReqForm.award_name || '—'}\n申请理由：${String(roleReqForm.reason || '').slice(0, 150)}\n\n提交后管理员会收到提醒；同一时间只能有一份待审申请。`,
+            confirmText: '提交申请',
+        });
+        if (!ok) return;
         setRoleReqSubmitting(true);
         try {
             await apiFetch('/user/role-request', { method: 'POST', body: JSON.stringify(roleReqForm) });
@@ -1832,6 +1895,17 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
     };
 
     const handleDangerousAction = async (action) => {
+        const isDeleteAccount = action === 'delete_account';
+        const ok = await confirmDialog({
+            title: isDeleteAccount ? '注销账号' : '清空通联日志',
+            message: isDeleteAccount ? '确认注销你的账号？' : '确认清空你上传的全部通联日志（QSO）？',
+            detail: isDeleteAccount
+                ? '账号、通联日志、申领记录与实物材料记录会被永久删除且无法恢复；你创建的奖状会变成「无主」状态。'
+                : '清空后需要重新上传 ADIF 或重新连 LoTW 才能继续判定奖状，此操作不可恢复。',
+            confirmText: isDeleteAccount ? '继续注销' : '确认清空',
+            danger: true,
+        });
+        if (!ok) return;
         try {
             if (user.has2fa) {
                 const c = prompt('请输入 2FA 验证码以确认:');
@@ -2005,6 +2079,13 @@ const LogbookView = () => {
     const handleUpload = async (e) => {
         e.preventDefault();
         if(!file) return;
+        const ok = await confirmDialog({
+            title: '导入通联日志',
+            message: `确认导入「${file.name}」？`,
+            detail: '导入会把 QSO 记录写入本站数据库（会占用服务器存储）；按「呼号+波段+模式+日期」判重，重复记录自动跳过。',
+            confirmText: '导入',
+        });
+        if (!ok) return;
         setUploading(true);
         const formData = new FormData();
         formData.append('file', file);
@@ -2157,6 +2238,8 @@ const UserManage = () => {
     const [newUserInfo, setNewUserInfo] = useState({ callsign: '', password: '', role: 'user' });
     const [roleRequests, setRoleRequests] = useState([]);
     const [reviewingReqId, setReviewingReqId] = useState(null);
+    // 参考 HamCQ 用户列表加的搜索（前端过滤：呼号 / ID / 角色）
+    const [search, setSearch] = useState('');
     
     useEffect(() => { loadUsers(); loadRoleRequests(); }, []);
     
@@ -2177,9 +2260,23 @@ const UserManage = () => {
     const reviewRoleRequest = async (id, action) => {
         let reason = '';
         if (action === 'reject') {
-            const r = window.prompt('请输入驳回原因：');
-            if (!r || !r.trim()) return;
-            reason = r.trim();
+            const r = await promptDialog({
+                title: '驳回升级申请',
+                message: '请填写驳回原因，申请人会收到这条说明。',
+                placeholder: '例如：材料不足 / 暂无新增奖状计划',
+                confirmText: '驳回',
+                danger: true,
+            });
+            if (!r) return;
+            reason = r;
+        } else {
+            const ok = await confirmDialog({
+                title: '通过升级申请',
+                message: '确认通过该用户的「奖状管理员」申请？',
+                detail: '通过后该用户角色立即变更为奖状管理员，需要其重新登录才生效。',
+                confirmText: '通过',
+            });
+            if (!ok) return;
         }
         setReviewingReqId(id);
         try {
@@ -2193,7 +2290,9 @@ const UserManage = () => {
         }
     };
 
-    const handleAction = async (method, url, body = {}) => {
+    // confirmOpts 非空时先弹确认框：删除账号 / 改角色这类操作都会传，防止手滑
+    const handleAction = async (method, url, body = {}, confirmOpts = null) => {
+        if (confirmOpts && !(await confirmDialog(confirmOpts))) return;
         try {
             const headers = twoFaCode ? { 'x-2fa-code': twoFaCode } : {};
             await apiFetch(url, { method, body: JSON.stringify(body), headers });
@@ -2207,58 +2306,132 @@ const UserManage = () => {
         }
     };
 
+    // ★ 参考 HamCQ 后台的「用户分页列表」（2026-09-23）：标题 + 副标题、搜索框、用户数、
+    //   「新建用户」按钮、表格（ID / 呼号 / 注册时间 / 用户组徽标 / 状态 / 操作）。
+    const keyword = search.trim().toLowerCase();
+    const filteredUsers = keyword
+        ? users.filter((u) => u.callsign.toLowerCase().includes(keyword) || String(u.id) === keyword || u.role.includes(keyword))
+        : users;
+
+    const ROLE_META = {
+        admin: { label: '系统管理员', Icon: Shield, cls: 'bg-red-100 text-red-700 border-red-200' },
+        award_admin: { label: '奖状管理员', Icon: Trophy, cls: 'bg-purple-100 text-purple-700 border-purple-200' },
+        user: { label: '普通用户', Icon: User, cls: 'bg-blue-100 text-blue-700 border-blue-200' },
+    };
+
     return (
         <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <h3 className="font-bold text-xl flex items-center gap-2"><User size={24}/> 用户管理</h3>
-                <button onClick={()=>setCreating(true)} className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold flex items-center gap-2"><UserPlus size={18}/> 添加用户</button>
+            <div>
+                <h2 className="flex items-center gap-3 text-2xl font-black text-slate-800"><Users className="text-blue-600" /> 用户管理</h2>
+                <p className="mt-1 text-sm text-slate-500">站内账号一览：角色调整、密码重置、账号删除，以及角色升级申请的审核。</p>
             </div>
+            {/* 内测门禁（默认关闭）：自包含组件，自己拉数据 */}
+            <InviteCodePanel />
             {roleRequests.length > 0 && (
-                <div className="bg-white rounded-xl shadow border border-purple-100 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-slate-100 bg-purple-50/50">
-                        <h4 className="font-bold text-sm text-purple-700 flex items-center gap-2"><Trophy size={16}/> 角色升级申请</h4>
+                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                    <div className="flex items-center gap-2 border-b border-slate-100 bg-purple-50/50 px-4 py-3 text-sm font-bold text-purple-700">
+                        <Trophy size={16} /> 角色升级申请（{roleRequests.length}）
                     </div>
                     {roleRequests.map((r) => (
-                        <div key={r.id} className="flex items-center justify-between px-4 py-3 border-b border-slate-50 last:border-0">
-                            <div className="flex-1 min-w-0">
-                                <div className="font-bold text-sm text-slate-800">{r.callsign}</div>
+                        <div key={r.id} className="flex items-start justify-between gap-4 border-b border-slate-100 px-4 py-3 last:border-0">
+                            <div className="min-w-0 flex-1">
+                                <div className="text-sm font-bold text-slate-800">{r.callsign}</div>
                                 <div className="text-xs text-slate-400">申请成为「奖状管理员」 · {new Date(r.created_at).toLocaleDateString('zh-CN')}</div>
-                                {r.award_name && <div className="text-xs text-slate-700 mt-1">拟创建奖状：<b>{r.award_name}</b></div>}
-                                {r.reason && <div className="text-xs text-slate-500 mt-1 bg-slate-50 rounded p-2">理由：{r.reason}</div>}
-                                {r.experience && <div className="text-xs text-slate-500 mt-1">经验/背景：{r.experience}</div>}
-                                {r.contact && <div className="text-xs text-slate-500 mt-1">联系方式：{r.contact}</div>}
+                                {r.award_name && <div className="mt-1 text-xs text-slate-700">拟创建奖状：<b>{r.award_name}</b></div>}
+                                {r.reason && <div className="mt-1 rounded bg-slate-50 p-2 text-xs text-slate-500">理由：{r.reason}</div>}
+                                {r.experience && <div className="mt-1 text-xs text-slate-500">经验/背景：{r.experience}</div>}
+                                {r.contact && <div className="mt-1 text-xs text-slate-500">联系方式：{r.contact}</div>}
                             </div>
-                            <div className="flex gap-2">
-                                <button onClick={() => reviewRoleRequest(r.id, 'approve')} disabled={reviewingReqId === r.id} className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-bold hover:bg-green-700 disabled:opacity-60">通过</button>
-                                <button onClick={() => reviewRoleRequest(r.id, 'reject')} disabled={reviewingReqId === r.id} className="px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-xs font-bold hover:bg-red-200 disabled:opacity-60">驳回</button>
+                            <div className="flex shrink-0 gap-2">
+                                <button onClick={() => reviewRoleRequest(r.id, 'approve')} disabled={reviewingReqId === r.id} className="rounded-lg bg-green-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-60">通过</button>
+                                <button onClick={() => reviewRoleRequest(r.id, 'reject')} disabled={reviewingReqId === r.id} className="rounded-lg bg-red-100 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-200 disabled:opacity-60">驳回</button>
                             </div>
                         </div>
                     ))}
                 </div>
             )}
+
+            {/* 工具条：搜索 / 用户数 / 新建 */}
+            <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="relative min-w-[220px] flex-1">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="搜索呼号 / ID / 角色"
+                        className="w-full rounded-xl border bg-white py-2 pl-9 pr-3 text-sm"
+                    />
+                </div>
+                <div className="text-xs text-slate-500">
+                    用户数：<b className="text-slate-700">{keyword ? `${filteredUsers.length} / ${users.length}` : users.length}</b>
+                </div>
+                <button onClick={() => setCreating(true)} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white">
+                    <UserPlus size={16} /> 新建用户
+                </button>
+            </div>
+
             {users.length === 0 ? (
-                <div className="text-center p-8 bg-white rounded-xl shadow border border-slate-100 text-slate-400">暂无用户数据或加载失败</div>
+                <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-400">暂无用户数据或加载失败</div>
             ) : (
-                <div className="bg-white rounded-xl shadow overflow-hidden">
-                    <table className="w-full text-left">
-                        <thead className="bg-slate-50 border-b">
-                            <tr><th className="p-4">ID</th><th className="p-4">呼号</th><th className="p-4">角色</th><th className="p-4">2FA</th><th className="p-4">操作</th></tr>
-                        </thead>
-                        <tbody className="divide-y">
-                            {users.map(u => (
-                                <tr key={u.id}>
-                                    <td className="p-4">{u.id}</td>
-                                    <td className="p-4 font-mono font-bold">{u.callsign}</td>
-                                    <td className="p-4"><span className={`px-2 py-1 rounded text-xs font-bold ${u.role==='admin'?'bg-red-100 text-red-700':u.role==='award_admin'?'bg-purple-100 text-purple-700':'bg-blue-100 text-blue-700'}`}>{u.role}</span></td>
-                                    <td className="p-4">{u.has_2fa ? <Check className="text-green-500"/> : <span className="text-slate-300">-</span>}</td>
-                                    <td className="p-4 flex gap-2">
-                                        <button onClick={()=>setEditing(u)} className="p-2 hover:bg-slate-100 rounded"><Edit size={16}/></button>
-                                        <button onClick={()=>handleAction('DELETE', `/admin/users/${u.id}`)} className="p-2 hover:bg-red-50 text-red-500 rounded"><Trash2 size={16}/></button>
-                                    </td>
+                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="bg-slate-50 text-xs text-slate-500">
+                                    <th className="px-4 py-3 text-left font-bold">ID</th>
+                                    <th className="px-4 py-3 text-left font-bold">呼号</th>
+                                    <th className="px-4 py-3 text-left font-bold whitespace-nowrap">注册时间</th>
+                                    <th className="px-4 py-3 text-left font-bold">用户组</th>
+                                    <th className="px-4 py-3 text-left font-bold whitespace-nowrap">两步验证</th>
+                                    <th className="px-4 py-3 text-right font-bold">操作</th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
+                            </thead>
+                            <tbody>
+                                {filteredUsers.length === 0 && (
+                                    <tr>
+                                        <td colSpan={6} className="px-4 py-10 text-center text-slate-400">没有匹配「{search}」的用户</td>
+                                    </tr>
+                                )}
+                                {filteredUsers.map((u) => {
+                                    const meta = ROLE_META[u.role] || ROLE_META.user;
+                                    const RoleIcon = meta.Icon;
+                                    return (
+                                        <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50">
+                                            <td className="px-4 py-3 font-mono text-xs text-slate-500">{u.id}</td>
+                                            <td className="px-4 py-3 font-mono font-bold text-blue-600">{u.callsign}</td>
+                                            <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-500">
+                                                {u.created_at ? new Date(u.created_at).toLocaleString('zh-CN', { hour12: false }) : '—'}
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${meta.cls}`}>
+                                                    <RoleIcon size={12} /> {meta.label}
+                                                </span>
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                {u.has_2fa ? (
+                                                    <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600"><Check size={14} /> 已启用</span>
+                                                ) : (
+                                                    <span className="text-xs text-slate-400">未启用</span>
+                                                )}
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <div className="flex justify-end gap-2">
+                                                    <button onClick={() => setEditing(u)} title="编辑角色 / 重置密码" className="rounded-lg border p-2 text-slate-600 hover:bg-slate-50"><Edit size={15} /></button>
+                                                    <button onClick={() => handleAction('DELETE', `/admin/users/${u.id}`, {}, {
+                                                        title: '删除账号',
+                                                        message: `确认删除用户「${u.callsign}」？`,
+                                                        detail: `当前角色：${u.role}\n该账号的通联日志、申领记录会级联删除；他创建的奖状会变成「无主」状态（奖状本身不删）。此操作不可恢复。`,
+                                                        confirmText: '删除账号',
+                                                        danger: true,
+                                                    })} title="删除账号" className="rounded-lg border border-red-200 p-2 text-red-500 hover:bg-red-50"><Trash2 size={15} /></button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             )}
             {(editing || creating) && (
@@ -2271,8 +2444,22 @@ const UserManage = () => {
                         </select>
                         <input className="w-full p-2 border rounded" placeholder={creating ? "设置密码" : "重置密码 (留空不修改)"} type="password" id="modal-pass" value={creating ? newUserInfo.password : undefined} onChange={creating ? (e)=>setNewUserInfo({...newUserInfo, password:e.target.value}) : undefined}/>
                         <button onClick={()=>{
-                            if (creating) handleAction('POST', '/admin/users', newUserInfo);
-                            else { const pass = document.getElementById('modal-pass').value; handleAction('PUT', `/admin/users/${editing.id}`, { role: editing.role, password: pass || undefined }); }
+                            if (creating) {
+                                handleAction('POST', '/admin/users', newUserInfo, {
+                                    title: '新建账号',
+                                    message: `确认创建账号「${String(newUserInfo.callsign || '').toUpperCase()}」？`,
+                                    detail: `角色：${newUserInfo.role}\n创建后请把初始密码单独告知本人。`,
+                                    confirmText: '创建账号',
+                                });
+                                return;
+                            }
+                            const pass = document.getElementById('modal-pass').value;
+                            handleAction('PUT', `/admin/users/${editing.id}`, { role: editing.role, password: pass || undefined }, {
+                                title: '保存账号变更',
+                                message: `确认修改「${editing.callsign}」？`,
+                                detail: `角色：${editing.role}${pass ? '\n将重置该账号的登录密码' : ''}\n注意：角色变更需要对方重新登录才会生效。`,
+                                confirmText: '保存',
+                            });
                         }} className="w-full bg-blue-600 text-white py-2 rounded font-bold">确认保存</button>
                         <button onClick={()=>{setEditing(null); setCreating(false);}} className="w-full text-slate-500 py-2">取消</button>
                     </div>
@@ -2299,6 +2486,22 @@ export default function App() {
   }, [theme]);
   // 初始页面从 URL 读取；非法路由回落默认页，角色可见性由下方守卫校正
   const [subView, setSubView] = useState(() => readRoute() || DEFAULT_ROUTE);
+  // 窄屏侧边栏抽屉开关（仅 lg 以下生效；宽屏侧边栏常驻，不读这个值）
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // 主界面内容区（它自己才是内部滚动容器，不是 window）
+  const mainRef = useRef(null);
+  /**
+   * 切页回到顶部。
+   * Hash 路由只改 URL、不会重新加载文档，浏览器会保留上一页的滚动位置
+   * （所以点「关于 / 隐私政策 / 用户协议 / 内容规范」后会停在原滚动高度）。
+   * 公开页走 body 滚动、主界面走 <main> 内部滚动，两处都要归零。
+   * ⚠️ 本 effect 必须写在 subView / publicPage 声明**之后**，否则引用未初始化
+   * 变量会触发 TDZ 报错、整页白屏。
+   */
+  useEffect(() => {
+      window.scrollTo(0, 0);
+      if (mainRef.current) mainRef.current.scrollTop = 0;
+  }, [subView, publicPage]);
   const [show2FAInput, setShow2FAInput] = useState(false);
   const [loginForm, setLoginForm] = useState({});
   const [authMode, setAuthMode] = useState('login'); // Added for in-page register
@@ -2306,6 +2509,8 @@ export default function App() {
   const [oauthProviders, setOauthProviders] = useState([]);
   const [oauthPendingToken, setOauthPendingToken] = useState(null);
   const [oauthPendingUsername, setOauthPendingUsername] = useState('');
+  // 内测门禁：注册 / HamCQ 首次建号是否需要邀请码（来自公开接口 /api/system-status）
+  const [requireInvite, setRequireInvite] = useState(false);
   
   // New States for Menu and Notifications
   const [expandedMenus, setExpandedMenus] = useState({});
@@ -2362,10 +2567,15 @@ export default function App() {
   }, []);
 
   // OAuth 提供方查询（M5）：登录页据此决定是否显示「使用 HamCQ 登录」
+  // 同时读一次内测开关（同一个公开接口族，省一次请求也避免时序问题）
   useEffect(() => {
     fetch('/api/auth/oauth/providers')
       .then((r) => r.json())
       .then((d) => setOauthProviders(d.providers || []))
+      .catch(() => {});
+    fetch('/api/system-status')
+      .then((r) => r.json())
+      .then((d) => setRequireInvite(!!d.requireInvite))
       .catch(() => {});
   }, []);
 
@@ -2496,8 +2706,9 @@ export default function App() {
       e.preventDefault();
       const callsign = e.target.callsign.value;
       const password = e.target.password.value;
+      const inviteCode = e.target.invite_code ? e.target.invite_code.value : '';
       try {
-          const res = await apiFetch('/auth/oauth/complete', { method: 'POST', body: JSON.stringify({ pending_token: oauthPendingToken, callsign, password }) });
+          const res = await apiFetch('/auth/oauth/complete', { method: 'POST', body: JSON.stringify({ pending_token: oauthPendingToken, callsign, password, invite_code: inviteCode }) });
           localStorage.setItem('ham_token', res.token);
           localStorage.setItem('ham_user', JSON.stringify(res.user));
           setUser(res.user);
@@ -2564,56 +2775,86 @@ export default function App() {
   if (view === 'auth') {
     const field = 'w-full rounded-lg border border-white/10 bg-white/5 p-3 text-white placeholder-slate-500 outline-none transition-all focus:border-cyan-400/60 focus:ring-2 focus:ring-cyan-400/30';
     const labelCls = 'text-xs font-bold uppercase text-slate-400';
-    const primaryBtn = 'w-full rounded-xl bg-gradient-to-r from-cyan-400 to-indigo-400 py-3.5 font-bold text-slate-950 shadow-lg shadow-cyan-500/25 transition-all hover:-translate-y-0.5 hover:from-cyan-300 hover:to-indigo-300 active:scale-95';
+    // 主按钮用可被双主题映射的实色（深色主题=青，亮色主题=靛蓝），刻意不用渐变
+    const primaryBtn = 'w-full rounded-xl bg-slate-900 py-3.5 font-bold text-white transition-all hover:-translate-y-0.5 active:scale-95';
+
+    // HamCQ 登录按钮：登录页与注册页共用（注册页也常驻，因为"忘记密码"时它是唯一免密通道）
+    const oauthBlock = oauthProviders.length > 0 ? (
+      <div className="mt-4">
+        <div className="mb-3 flex items-center gap-3">
+          <div className="h-px flex-1 bg-white/10" />
+          <span className="text-xs text-slate-500">或</span>
+          <div className="h-px flex-1 bg-white/10" />
+        </div>
+        <button
+          type="button"
+          onClick={() => { window.location.href = '/api/auth/oauth/start'; }}
+          className="w-full rounded-xl border border-white/15 py-3 text-sm font-bold text-slate-200 transition-colors hover:bg-white/5"
+        >
+          {oauthProviders[0].label || '使用 HamCQ 登录'}
+        </button>
+      </div>
+    ) : null;
     return (
-    <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 p-4 antialiased`}>
-      {/* 背景光晕：与首页保持一致的深色科技风 */}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at top, rgba(56,189,248,0.16), transparent 55%)' }} />
-        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at bottom right, rgba(99,102,241,0.20), transparent 55%)' }} />
-        <div className="absolute -left-24 -top-24 h-96 w-96 animate-float-slow rounded-full bg-cyan-500/20 blur-3xl" />
-        <div className="absolute -right-24 bottom-0 h-96 w-96 animate-float rounded-full bg-indigo-500/20 blur-3xl" />
+    <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative min-h-screen bg-slate-950 antialiased`}>
+      {/* 顶栏：跨两栏悬浮（返回首页 / 主题切换） */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between px-6 py-5">
+        <button
+          type="button"
+          onClick={() => setView('landing')}
+          className="pointer-events-auto inline-flex items-center gap-1.5 text-sm font-bold text-slate-400 transition-colors hover:text-white"
+        >
+          <span className="text-base leading-none">←</span> 返回首页
+        </button>
+        <button
+          type="button"
+          onClick={toggleTheme}
+          title={theme === 'dark' ? '切换到白天模式' : '切换到夜间模式'}
+          className="pointer-events-auto inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-1.5 text-sm font-bold text-slate-400 transition-colors hover:text-white"
+        >
+          {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          <span className="hidden sm:inline">{theme === 'dark' ? '白天' : '夜间'}</span>
+        </button>
       </div>
 
-      <button
-        type="button"
-        onClick={() => setView('landing')}
-        className="absolute left-6 top-6 z-10 inline-flex items-center gap-1.5 text-sm font-bold text-slate-400 transition-colors hover:text-white"
-      >
-        <span className="text-base leading-none">←</span> 返回首页
-      </button>
-
-      <button
-        type="button"
-        onClick={toggleTheme}
-        title={theme === 'dark' ? '切换到白天模式' : '切换到夜间模式'}
-        className="absolute right-6 top-6 z-10 inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-bold text-slate-300 transition-colors hover:text-white"
-      >
-        {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
-        <span className="hidden sm:inline">{theme === 'dark' ? '白天' : '夜间'}</span>
-      </button>
-
-      <div className="relative z-10 w-full max-w-md animate-scale-in overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-2xl shadow-slate-950/60 backdrop-blur-xl">
-        <div className="flex items-center gap-2.5 border-b border-white/10 px-8 pb-5 pt-7">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/30">
+      {/* 分屏布局：左=表单，右=品牌展示（参考 Dribbble「Mix Certificate — Sign In & Landing Page UI」）
+          注意 min-w-0：flex 子项默认 min-width:auto，会被内部内容撑开导致横向溢出，
+          在 1024~1100px 这种刚过 lg 的宽度下尤其明显。 */}
+      <div className="flex min-h-screen">
+        {/* ---------- 左栏：表单 ---------- */}
+        <div className="flex w-full min-w-0 flex-col justify-center px-6 pb-14 pt-24 lg:w-[46%] lg:px-14 lg:pt-14">
+          <div className="mx-auto w-full min-w-0 max-w-[380px] animate-scale-in">
+            <div className="flex items-center gap-2.5">
+              <span className="grid h-10 w-10 place-items-center rounded-xl bg-cyan-400 text-slate-950">
                 <Award size={20} strokeWidth={2.5} />
-            </span>
-            <div>
+              </span>
+              <div>
                 <div className="text-sm font-black tracking-[0.2em]">HAM<span className="text-cyan-400">AWARDS</span></div>
                 <div className="text-[11px] text-slate-500">业余无线电奖状管理平台</div>
+              </div>
             </div>
-        </div>
-        <div className="flex border-b border-white/10">
-            <button onClick={()=>setAuthMode('login')} className={`flex-1 py-3.5 font-bold text-sm transition-colors ${authMode==='login'?'bg-white/5 text-cyan-300':'text-slate-500 hover:text-slate-300'}`}>登录</button>
-            <button onClick={()=>setAuthMode('register')} className={`flex-1 py-3.5 font-bold text-sm transition-colors ${authMode==='register'?'bg-white/5 text-cyan-300':'text-slate-500 hover:text-slate-300'}`}>注册新账号</button>
-        </div>
+
+            <h1 className="mt-9 text-2xl font-black tracking-tight text-white">
+              {authMode === 'register' ? '创建您的账号' : authMode === 'oauth_complete' ? '完成 HamCQ 授权' : '欢迎回来'}
+            </h1>
+            <p className="mt-2 text-sm leading-relaxed text-slate-400">
+              {authMode === 'register'
+                ? '注册后即可导入通联日志、按规则申领奖状。'
+                : authMode === 'oauth_complete'
+                  ? '请确认你的本站呼号，再继续。'
+                  : '登录后继续管理你的通联日志与奖状。'}
+            </p>
+
+            <div className="mt-7 flex gap-1 rounded-xl border border-white/10 bg-white/[0.03] p-1">
+              <button onClick={()=>setAuthMode('login')} className={`flex-1 rounded-lg py-2.5 text-sm font-bold transition-colors ${authMode==='login'?'bg-white/10 text-cyan-300':'text-slate-500 hover:text-slate-300'}`}>登录</button>
+              <button onClick={()=>setAuthMode('register')} className={`flex-1 rounded-lg py-2.5 text-sm font-bold transition-colors ${authMode==='register'?'bg-white/10 text-cyan-300':'text-slate-500 hover:text-slate-300'}`}>注册新账号</button>
+            </div>
 
         {authMode === 'oauth_complete' ? (
-            <div className="p-8">
-                <div className="text-center mb-6">
-                    <h2 className="text-xl font-bold text-white">完成 HamCQ 登录</h2>
-                    <p className="text-xs text-slate-400 mt-1">已通过 HamCQ 账号「{oauthPendingUsername}」授权。请确认你的呼号（HamCQ 用户名不一定是呼号），再继续。</p>
-                </div>
+            <div className="pt-6">
+                <p className="mb-5 text-xs leading-relaxed text-slate-400">
+                    已通过 HamCQ 账号「{oauthPendingUsername}」授权。请确认你的呼号（HamCQ 用户名不一定是呼号），再继续。
+                </p>
                 <form onSubmit={handleOauthComplete} className="space-y-4">
                     <div className="space-y-1">
                         <label className={labelCls}>本站呼号</label>
@@ -2624,12 +2865,19 @@ export default function App() {
                         <PasswordInput variant="dark" name="password" autoComplete="new-password" className={field} />
                         <span className="text-[10px] text-slate-500">若该呼号已注册，必须填写其本站密码完成绑定；若是新账号，可设置密码以便日后密码登录，留空则只能用 HamCQ 登录。</span>
                     </div>
+                    {requireInvite && (
+                        <div className="space-y-1">
+                            <label className={labelCls}>内测邀请码</label>
+                            <input name="invite_code" className={`${field} font-mono uppercase`} placeholder="新建账号必填；绑定已有账号可留空" />
+                            <span className="text-[10px] text-slate-500">本站内测中：<b>新建账号</b>需要邀请码；若该呼号已注册（你在补齐绑定），用上面的密码验证即可，不需要邀请码。</span>
+                        </div>
+                    )}
                     <button className={primaryBtn}>确认并登录</button>
                     <button type="button" onClick={() => { setAuthMode('login'); setOauthPendingToken(null); window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`); }} className="w-full text-center text-sm text-slate-500 transition-colors hover:text-slate-300">返回登录</button>
                 </form>
             </div>
         ) : authMode === 'login' ? (
-            <div className="p-8">
+            <div className="pt-6">
                 <form onSubmit={handleLogin} className="space-y-4">
                     {!show2FAInput ? (
                         <>
@@ -2651,29 +2899,31 @@ export default function App() {
                     </button>
                 </form>
 
-                {oauthProviders.length > 0 && (
-                    <div className="mt-4">
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className="flex-1 h-px bg-white/10" />
-                            <span className="text-xs text-slate-500">或</span>
-                            <div className="flex-1 h-px bg-white/10" />
-                        </div>
-                        <button
-                            type="button"
-                            onClick={() => { window.location.href = '/api/auth/oauth/start'; }}
-                            className="w-full rounded-xl border border-white/15 py-3 font-bold text-sm text-slate-200 transition-colors hover:bg-white/5"
-                        >
-                            {oauthProviders[0].label || '使用 HamCQ 登录'}
-                        </button>
-                    </div>
+                {!show2FAInput && (
+                    <button
+                        type="button"
+                        onClick={() => infoDialog({
+                            title: '忘记密码了？',
+                            message: '本站目前没有自助找回密码，请用下面两种方式之一进入账号：',
+                            detail:
+                                '① 用 HamCQ 登录（推荐）\n'
+                                + '如果你之前把 HamCQ 账号绑定过本站，点下面的「使用 HamCQ 登录」会直接进站，不需要本站密码；\n'
+                                + '进站后到「用户中心 → 修改密码」重新设置即可。\n\n'
+                                + '② 请管理员重置\n'
+                                + '把你的呼号发给站点管理员，管理员可在「后台管理 → 用户管理」里为你设置一个新密码。\n\n'
+                                + '提示：新注册账号建议直接用 HamCQ 登录，就不会再有忘记密码的问题。',
+                            confirmText: '知道了',
+                        })}
+                        className="mt-3 block w-full text-center text-xs text-slate-500 underline transition-colors hover:text-slate-300"
+                    >
+                        忘记密码？
+                    </button>
                 )}
+
+                {oauthBlock}
             </div>
         ) : (
-            <div className="p-8">
-                <div className="text-center mb-6">
-                    <h2 className="text-xl font-bold text-white">欢迎加入 HAM AWARDS</h2>
-                    <p className="text-xs text-slate-400 mt-1">创建您的账户以申请奖状和管理日志</p>
-                </div>
+            <div className="pt-6">
                 <form onSubmit={handleRegister} className="space-y-4">
                     <div className="space-y-1"><label className={labelCls}>注册呼号</label><input name="callsign" required className={field} placeholder="例如: BA1AA" /></div>
                     <div className="space-y-1">
@@ -2684,10 +2934,74 @@ export default function App() {
                         <label className={labelCls}>确认密码</label>
                         <PasswordInput variant="dark" name="confirmPassword" required autoComplete="new-password" className={field} />
                     </div>
-                    <button className="w-full rounded-xl bg-gradient-to-r from-emerald-400 to-teal-400 py-3.5 font-bold text-slate-950 shadow-lg shadow-emerald-500/25 transition-all hover:-translate-y-0.5 hover:from-emerald-300 hover:to-teal-300 active:scale-95">立即注册</button>
+                    {requireInvite && (
+                        <div className="space-y-1">
+                            <label className={labelCls}>内测邀请码</label>
+                            <input name="invite_code" required className={`${field} font-mono uppercase`} placeholder="HAM-XXXX-XXXX" />
+                            <span className="text-[10px] text-slate-500">本站处于内测阶段，注册需要邀请码；没有的话请联系站点管理员领取。</span>
+                        </div>
+                    )}
+                    <button className="w-full rounded-xl bg-green-600 py-3.5 font-bold text-white transition-all hover:-translate-y-0.5 active:scale-95">立即注册</button>
                 </form>
+
+                {/* 注册就引导用 HamCQ：绑定后即使忘记本站密码也能直接进站（唯一免密通道） */}
+                <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] p-3 text-xs leading-relaxed text-slate-300">
+                    <b>建议用 HamCQ 登录</b>
+                    ：绑定 HamCQ 后，忘记本站密码也能直接用论坛账号进站，不用记第二个密码。
+                    {requireInvite ? '（内测期间同样需要邀请码）' : ''}
+                </div>
+                {oauthBlock}
             </div>
         )}
+          </div>
+        </div>
+
+        {/* ---------- 右栏：品牌展示（仅 lg 以上显示） ---------- */}
+        <div className="auth-brand relative hidden min-w-0 overflow-hidden lg:flex lg:w-[54%] lg:flex-col lg:justify-center lg:px-14">
+          <div className="relative z-10 mx-auto w-full min-w-0 max-w-md">
+            <h2 className="text-3xl font-black leading-snug tracking-tight" style={{ color: '#f4f4f5' }}>
+              一站式管理<br />你的业余无线电奖状
+            </h2>
+            <p className="mt-4 text-sm leading-relaxed" style={{ color: '#94a3b8' }}>
+              LoTW 直连导入 · 可视化奖状设计 · 在线申请审核 · 二维码真伪校验
+            </p>
+
+            {/* 奖状预览（微微倾斜，呼应参考设计的证书卡） */}
+            <div className="mt-10 -rotate-2 rounded-xl p-5 shadow-2xl shadow-black/40" style={{ backgroundColor: '#ffffff' }}>
+              <div className="p-5 text-center" style={{ border: '2px solid rgba(252, 211, 77, 0.75)' }}>
+                <div className="text-[10px] font-bold uppercase tracking-[0.35em]" style={{ color: '#b45309' }}>Certificate</div>
+                <div className="mt-2 text-lg font-black" style={{ color: '#0f172a' }}>DX 大师奖</div>
+                <div className="mt-0.5 text-[10px] font-bold tracking-widest" style={{ color: '#d97706' }}>GOLD LEVEL</div>
+                <div className="mt-4 font-serif text-xl italic" style={{ color: '#1e293b' }}>BH7CSA</div>
+                <div className="mx-auto mt-2 h-px w-16" style={{ backgroundColor: '#e2e8f0' }} />
+                <div className="mt-4 flex items-center justify-between text-[9px]" style={{ color: '#64748b' }}>
+                  <span className="font-mono">SN 7D0B5DF2</span>
+                  <span className="grid h-8 w-8 place-items-center rounded-full text-white" style={{ backgroundColor: '#fbbf24' }}>
+                    <QrCode size={14} />
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* 三项能力标签（用真实功能表述，不编造统计数字） */}
+            <div className="mt-8 grid grid-cols-3 gap-3">
+              {[
+                { icon: ShieldCheck, label: '凭据零留存' },
+                { icon: QrCode, label: '扫码可校验' },
+                { icon: Radio, label: 'LoTW 直连' },
+              ].map((f) => (
+                <div
+                  key={f.label}
+                  className="rounded-xl px-3 py-3 text-center"
+                  style={{ border: '1px solid rgba(255,255,255,0.10)', backgroundColor: 'rgba(255,255,255,0.05)' }}
+                >
+                  <f.icon size={16} className="mx-auto" style={{ color: '#22d3ee' }} />
+                  <div className="mt-2 text-[11px]" style={{ color: '#94a3b8' }}>{f.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     );
@@ -2705,13 +3019,14 @@ export default function App() {
           { id: 'lotw_import', label: 'LoTW 直连', icon: Globe, show: true },
           { id: 'all_logs', label: '全部日志', icon: List, show: true }, 
           
-          // Award Admin Only (Split Views with Dropdown)
-          { id: 'award_create', label: '新建奖状', icon: Plus, show: user.role === 'award_admin' },
+          // 奖状管理（奖状管理员）：`group` 用于在侧边栏输出分组标题，见下方 nav 渲染
+          { id: 'award_create', label: '新建奖状', icon: Plus, show: user.role === 'award_admin', group: '奖状管理' },
           { 
               id: 'drafts_group', 
               label: '草稿箱', 
               icon: FileText, 
               show: user.role === 'award_admin',
+              group: '奖状管理',
               isDropdown: true,
               children: [
                   { id: 'award_drafts', label: '我的草稿' },
@@ -2719,26 +3034,32 @@ export default function App() {
               ],
               notification: notifications.returned // 2. Parent red dot if child has notifications
           },
-          { id: 'award_audit_list', label: '审核列表', icon: List, show: user.role === 'award_admin' },
+          { id: 'award_audit_list', label: '审核列表', icon: List, show: user.role === 'award_admin', group: '奖状管理' },
+          { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'award_admin', group: '奖状管理' },
 
-          // System Admin Only (Split Views)
-          { id: 'admin_audit', label: '奖状审核', icon: CheckCircle, show: user.role === 'admin', notification: notifications.pending }, // 1. System Admin Red Dot
-          { id: 'admin_overview', label: '奖状总览', icon: Layout, show: user.role === 'admin' },
-          { id: 'issuanceManager', label: '颁发管理', icon: Trophy, show: user.role === 'admin' }, 
-          { id: 'users', label: '用户管理', icon: Users, show: user.role === 'admin' },
-          { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'admin' || user.role === 'award_admin' },
+          // ★ 后台管理（仅最高级管理员）：把「用户管理 / 奖状审核 / 实物材料审核 / 审计日志」
+          //   等管理类操作收进同一个分组，避免和普通用户菜单混在一起。
+          { id: 'admin_audit', label: '奖状审核', icon: CheckCircle, show: user.role === 'admin', group: '后台管理', notification: notifications.pending }, // 1. System Admin Red Dot
+          { id: 'admin_overview', label: '奖状总览', icon: Layout, show: user.role === 'admin', group: '后台管理' },
+          { id: 'issuanceManager', label: '颁发管理', icon: Trophy, show: user.role === 'admin', group: '后台管理' }, 
+          { id: 'users', label: '用户管理', icon: Users, show: user.role === 'admin', group: '后台管理' },
+          { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'admin', group: '后台管理' },
+          { id: 'admin_logs', label: '审计日志', icon: ShieldCheck, show: user.role === 'admin', group: '后台管理' },
           
           // Common Bottom
           { id: 'userCenter', label: '用户中心', icon: User, show: true },
       ].filter(i => i.show);
 
       return (
-          <div className={`${theme === 'dark' ? 'app-dark bg-slate-950' : 'bg-slate-50'} relative flex h-screen overflow-hidden`}>
+          <div className={`${theme === 'dark' ? 'app-dark bg-slate-950' : 'app-light'} relative flex h-screen overflow-hidden`}>
               <div className="pointer-events-none absolute inset-0 overflow-hidden">
-                  <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at top, rgba(56,189,248,0.10), transparent 55%)' }} />
-                  <div className="absolute -right-32 top-1/3 h-96 w-96 animate-float rounded-full bg-indigo-500/10 blur-3xl" />
+                  <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse 90% 55% at 50% -10%, rgba(255,255,255,0.05), transparent)' }} />
               </div>
-              <aside className="relative z-10 w-64 bg-slate-900/70 backdrop-blur-xl text-white flex flex-col shrink-0 border-r border-white/10">
+              {/* 窄屏点遮罩关闭抽屉 */}
+              {sidebarOpen && (
+                  <div className="fixed inset-0 z-30 bg-black/50 lg:hidden" onClick={() => setSidebarOpen(false)} />
+              )}
+              <aside className={`fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-white/10 bg-slate-900/70 text-white backdrop-blur-xl transition-transform duration-200 lg:static lg:z-10 lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
                   <div className="p-6 border-b border-slate-800">
                       <div className="flex items-center justify-between">
                           <h1 className="font-black text-xl tracking-wider">HAM AWARDS</h1>
@@ -2754,10 +3075,14 @@ export default function App() {
                       <div className="text-xs text-slate-500 mt-1 flex items-center gap-2"><div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>{user.callsign} ({user.role})</div>
                   </div>
                   <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-                      {menu.map(item => (
+                      {menu.map((item, idx) => (
                           <div key={item.id}>
+                            {/* 分组标题：组内第一项上方输出一次（菜单项用 `group` 字段归属分组） */}
+                            {item.group && menu[idx - 1]?.group !== item.group && (
+                                <div className="px-4 pb-2 pt-4 text-[11px] font-bold uppercase tracking-wider text-slate-500">{item.group}</div>
+                            )}
                             <button 
-                                onClick={() => handleMenuClick(item)} 
+                                onClick={() => { handleMenuClick(item); setSidebarOpen(false); }} 
                                 className={`w-full flex items-center justify-between px-4 py-3 rounded-lg transition-all ${subView===item.id || (item.children && expandedMenus[item.id]) ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/50' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
                             >
                                 <div className="flex items-center gap-3">
@@ -2779,7 +3104,7 @@ export default function App() {
                                     {item.children.map(child => (
                                         <button 
                                             key={child.id}
-                                            onClick={() => handleMenuClick(child)}
+                                            onClick={() => { handleMenuClick(child); setSidebarOpen(false); }}
                                             className={`w-full flex items-center justify-between px-4 py-2 rounded-lg text-sm transition-all ${subView===child.id ? 'text-white font-bold bg-white/10' : 'text-slate-500 hover:text-white'}`}
                                         >
                                             <span>{child.label}</span>
@@ -2799,7 +3124,7 @@ export default function App() {
                       <button onClick={handleLogout} className="w-full flex items-center gap-3 px-4 py-3 text-red-400 hover:bg-red-900/20 rounded-lg"><LogOut size={18} /> <span className="font-medium text-sm">退出登录</span></button>
                   </div>
                   {/* 侧边栏常驻条款入口：主界面不逐页加页脚，链接集中在这里，任何页面都能直接进入 */}
-                  <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-800 px-6 py-4 text-[11px] text-slate-500">
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-800 px-6 py-4 text-[11px] text-slate-400">
                       <a href="#/about" className="transition-colors hover:text-cyan-300">关于</a>
                       <a href="#/privacy" className="transition-colors hover:text-cyan-300">隐私政策</a>
                       <a href="#/terms" className="transition-colors hover:text-cyan-300">用户协议</a>
@@ -2839,7 +3164,18 @@ export default function App() {
                       </div>
                   </div>
               )}
-              <main className="relative z-10 flex-1 overflow-y-auto p-8">
+              <main ref={mainRef} className="relative z-10 min-w-0 flex-1 overflow-y-auto p-4 sm:p-8">
+                  {/* 窄屏顶部条：打开侧边栏抽屉（宽屏隐藏） */}
+                  <div className="mb-4 flex items-center gap-3 lg:hidden">
+                      <button
+                          onClick={() => setSidebarOpen(true)}
+                          title="打开菜单"
+                          className="rounded-lg border border-white/10 p-2 text-slate-500 transition-colors hover:text-slate-300"
+                      >
+                          <Menu size={18} />
+                      </button>
+                      <span className="text-sm font-black tracking-[0.2em]">HAM<span className="text-cyan-400">AWARDS</span></span>
+                  </div>
                   <div className="max-w-6xl mx-auto">
                       {subView === 'dashboard' && <DashboardView user={user} />}
                       {subView === 'awards' && <AwardCenterView user={user} />} 
@@ -2861,6 +3197,7 @@ export default function App() {
                       
                       {subView === 'issuanceManager' && <IssuanceManager />}                      
                       {subView === 'evidence_audit' && <EvidenceAuditView />}
+                      {subView === 'admin_logs' && <AuditLogsView />}
                       {subView === 'userCenter' && <UserCenterView user={user} refreshUser={refreshUser} onLogout={handleLogout} />}
                   </div>
               </main>

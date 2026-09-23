@@ -33,8 +33,7 @@ export default function AboutView({ onBack, theme = 'dark', onToggleTheme }) {
     <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative min-h-screen overflow-x-hidden bg-slate-950 antialiased`}>
       {/* 背景 */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at top, rgba(56,189,248,0.14), transparent 55%)' }} />
-        <div className="absolute -right-32 bottom-0 h-96 w-96 animate-float rounded-full bg-indigo-500/15 blur-3xl" />
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse 90% 60% at 50% -10%, rgba(255,255,255,0.06), transparent)' }} />
       </div>
 
       <div className="relative">

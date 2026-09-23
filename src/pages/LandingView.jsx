@@ -75,6 +75,13 @@ const HIGHLIGHTS = [
 
 const CAPABILITIES = ['LoTW 直连', 'ADIF 解析', '可视化设计器', '多等级差异', '二维码校验', 'GPL-3.0'];
 
+/** 首页「成品预览」用的示例奖状（仅演示界面形态，非真实用户数据） */
+const PREVIEW_AWARDS = [
+  { level: 'GOLD', name: 'DX 大师奖', callsign: 'BH7CSA', sn: '7D0B5DF2' },
+  { level: 'SILVER', name: '波段收集奖', callsign: 'BH2VSQ', sn: '6F63B9AE' },
+  { level: 'BRONZE', name: '网格探索奖', callsign: 'BH2TEST', sn: 'A1C93F07' },
+];
+
 function SectionHeading({ eyebrow, title, desc }) {
   return (
     <div data-reveal className="opacity-0 max-w-2xl">
@@ -128,27 +135,20 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
       ref={rootRef}
       className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative min-h-screen overflow-x-hidden bg-slate-950 antialiased selection:bg-cyan-400/30`}
     >
-      {/* ===== 背景层 ===== */}
+      {/* ===== 背景层：克制的顶部高光 + 极淡网格（不放大面积彩色光晕） ===== */}
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
         <div
           className="absolute inset-0"
-          style={{ background: 'radial-gradient(ellipse at top, rgba(56,189,248,0.18), transparent 55%)' }}
+          style={{ background: 'radial-gradient(ellipse 90% 55% at 50% -10%, rgba(255,255,255,0.07), transparent)' }}
         />
         <div
-          className="absolute inset-0"
-          style={{ background: 'radial-gradient(ellipse at bottom right, rgba(99,102,241,0.22), transparent 55%)' }}
-        />
-        <div
-          className="absolute inset-0 opacity-[0.15]"
+          className="absolute inset-0 opacity-[0.05]"
           style={{
             backgroundImage:
-              'linear-gradient(to right, rgba(148,163,184,0.5) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.5) 1px, transparent 1px)',
+              'linear-gradient(to right, rgba(148,163,184,0.6) 1px, transparent 1px), linear-gradient(to bottom, rgba(148,163,184,0.6) 1px, transparent 1px)',
             backgroundSize: '64px 64px',
           }}
         />
-        <div className="absolute -left-24 -top-24 h-[28rem] w-[28rem] animate-float-slow rounded-full bg-cyan-500/20 blur-3xl" />
-        <div className="absolute -right-32 top-1/3 h-[26rem] w-[26rem] animate-float rounded-full bg-indigo-500/20 blur-3xl" />
-        <div className="absolute bottom-0 left-1/3 h-[24rem] w-[24rem] animate-float-slow rounded-full bg-fuchsia-500/10 blur-3xl" />
       </div>
 
       <div className="relative">
@@ -156,7 +156,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
         <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/60 backdrop-blur-xl">
           <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
             <div className="flex items-center gap-2.5">
-              <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-indigo-500 text-slate-950 shadow-lg shadow-cyan-500/30">
+              <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-400 text-slate-950">
                 <Award size={20} strokeWidth={2.5} />
               </span>
               <span className="text-sm font-black tracking-[0.2em]">
@@ -185,7 +185,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
               </button>
               <button
                 onClick={onRegister}
-                className="inline-flex items-center gap-2 rounded-lg bg-gradient-to-r from-cyan-400 to-indigo-400 px-4 py-2 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-500/25 transition-all hover:-translate-y-0.5 hover:from-cyan-300 hover:to-indigo-300"
+                className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-bold text-white transition-all hover:-translate-y-0.5"
               >
                 开始使用 <ArrowRight size={16} />
               </button>
@@ -202,7 +202,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
                 className="absolute h-20 w-20 animate-pulse-ring rounded-full border border-indigo-400/30"
                 style={{ animationDelay: '1.2s' }}
               />
-              <span className="relative grid h-16 w-16 place-items-center rounded-2xl border border-white/10 bg-gradient-to-br from-cyan-400/20 to-indigo-500/20 backdrop-blur">
+              <span className="relative grid h-16 w-16 place-items-center rounded-2xl border border-white/10 bg-white/5">
                 <Radio className="text-cyan-300" size={30} />
               </span>
             </div>
@@ -213,14 +213,14 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
             </div>
 
             <h1
-              className="mt-6 animate-fade-up text-4xl font-black leading-[1.1] tracking-tight md:text-6xl lg:text-7xl"
+              className="mt-6 animate-fade-up break-words text-3xl font-black leading-[1.15] tracking-tight sm:text-4xl md:text-5xl lg:text-6xl xl:text-7xl"
               style={{ animationDelay: '0.1s' }}
             >
-              <span className="bg-gradient-to-r from-cyan-300 via-sky-200 to-indigo-300 bg-clip-text text-transparent">
+              <span className="text-white">
                 让每一次通联
               </span>
               <br />
-              <span className="bg-gradient-to-r from-indigo-300 via-fuchsia-200 to-amber-200 bg-clip-text text-transparent">
+              <span className="text-slate-400">
                 都成为值得珍藏的荣誉
               </span>
             </h1>
@@ -239,7 +239,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
             >
               <button
                 onClick={onRegister}
-                className="group inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-indigo-400 px-7 py-3.5 font-bold text-slate-950 shadow-xl shadow-cyan-500/25 transition-all hover:-translate-y-0.5 hover:from-cyan-300 hover:to-indigo-300"
+                className="group inline-flex items-center gap-2 rounded-xl bg-slate-900 px-7 py-3.5 font-bold text-white transition-all hover:-translate-y-0.5"
               >
                 免费开始使用
                 <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
@@ -264,8 +264,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
 
           {/* ===== 成品预览（玻璃窗口 mock） ===== */}
           <div data-reveal className="mx-auto mt-20 max-w-5xl opacity-0">
-            <div className="group relative rounded-3xl border border-white/10 bg-white/[0.03] p-2 shadow-2xl shadow-slate-950/60 backdrop-blur-xl">
-              <div className="pointer-events-none absolute inset-0 rounded-3xl bg-gradient-to-tr from-cyan-400/10 via-transparent to-indigo-400/10" />
+            <div className="group relative rounded-3xl border border-white/10 bg-white/[0.03] p-2">
               <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-slate-900/70">
                 <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
                   <span className="h-3 w-3 rounded-full bg-red-400/70" />
@@ -274,20 +273,20 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
                   <span className="ml-3 text-xs text-slate-500">ham-awards.local / 我的奖状</span>
                 </div>
                 <div className="grid gap-5 p-6 sm:grid-cols-3">
-                  {[1, 2, 3].map((i) => (
+                  {PREVIEW_AWARDS.map((a) => (
                     <div
-                      key={i}
-                      className="relative overflow-hidden rounded-xl border border-white/10 bg-gradient-to-br from-slate-800/60 to-slate-900/60 p-5 transition-transform duration-500 group-hover:-translate-y-1"
+                      key={a.sn}
+                      className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] p-5 transition-transform duration-500 group-hover:-translate-y-1"
                     >
                       <div className="flex items-center justify-between">
                         <Award size={22} className="text-amber-300" />
                         <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 text-[10px] font-bold text-amber-200">
-                          {i === 1 ? 'GOLD' : i === 2 ? 'SILVER' : 'BRONZE'}
+                          {a.level}
                         </span>
                       </div>
-                      <div className="mt-6 h-2.5 w-3/4 rounded-full bg-white/20" />
-                      <div className="mt-2.5 h-2 w-1/2 rounded-full bg-white/10" />
-                      <div className="mt-6 flex items-center gap-2 text-[10px] text-slate-400">
+                      <div className="mt-5 text-sm font-bold text-white">{a.name}</div>
+                      <div className="mt-1.5 font-mono text-[10px] text-slate-500">SN {a.sn} · {a.callsign}</div>
+                      <div className="mt-4 flex items-center gap-2 text-[10px] text-slate-400">
                         <CheckCircle2 size={12} className="text-emerald-400" /> 已签发 · 可校验
                       </div>
                       <span className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 -translate-x-full -skew-x-12 bg-gradient-to-r from-transparent via-white/15 to-transparent transition-transform duration-700 group-hover:translate-x-[400%]" />
@@ -322,8 +321,8 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
                   className="group relative rounded-2xl border border-white/10 bg-white/[0.03] p-6 opacity-0 backdrop-blur transition-all duration-500 hover:-translate-y-2 hover:border-cyan-400/40 hover:bg-white/[0.06] hover:shadow-2xl hover:shadow-cyan-500/10"
                   style={{ animationDelay: `${i * 0.08}s` }}
                 >
-                  <div className={`mb-5 grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br ${f.tone}`}>
-                    <f.icon size={22} className="text-slate-950" />
+                  <div className="mb-5 grid h-11 w-11 place-items-center rounded-xl border border-white/10 bg-white/5">
+                    <f.icon size={22} className="text-cyan-400" />
                   </div>
                   <h3 className="text-lg font-bold">{f.title}</h3>
                   <p className="mt-2 text-sm leading-relaxed text-slate-400">{f.desc}</p>
@@ -373,7 +372,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
         <section className="px-6 pb-24">
           <div
             data-reveal
-            className="mx-auto max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-cyan-500/15 via-indigo-500/10 to-fuchsia-500/10 p-10 text-center opacity-0 backdrop-blur md:p-16"
+            className="mx-auto max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-white/[0.04] p-10 text-center opacity-0 md:p-16"
           >
             <Waves className="mx-auto text-cyan-300/70" size={34} />
             <h2 className="mt-6 text-3xl font-black tracking-tight md:text-4xl">准备好领取你的第一张奖状了吗？</h2>
@@ -381,7 +380,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
             <div className="mt-9 flex flex-col items-center justify-center gap-4 sm:flex-row">
               <button
                 onClick={onRegister}
-                className="group inline-flex items-center gap-2 rounded-xl bg-white px-7 py-3.5 font-bold text-slate-950 shadow-xl shadow-slate-950/30 transition-all hover:-translate-y-0.5"
+                className="group inline-flex items-center gap-2 rounded-xl bg-slate-900 px-7 py-3.5 font-bold text-white transition-all hover:-translate-y-0.5"
               >
                 立即注册
                 <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />

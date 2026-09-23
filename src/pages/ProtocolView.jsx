@@ -69,8 +69,7 @@ export default function ProtocolView({ onBack, theme = 'dark', onToggleTheme }) 
   return (
     <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative min-h-screen overflow-x-hidden bg-slate-950 antialiased`}>
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
-        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse at top, rgba(52,211,153,0.14), transparent 55%)' }} />
-        <div className="absolute -right-32 top-1/3 h-96 w-96 animate-float rounded-full bg-cyan-500/12 blur-3xl" />
+        <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse 90% 60% at 50% -10%, rgba(255,255,255,0.06), transparent)' }} />
       </div>
 
       <div className="relative">
@@ -111,8 +110,12 @@ export default function ProtocolView({ onBack, theme = 'dark', onToggleTheme }) 
             合法性与友善程度的要求高于一般网站。请在设计奖状、上传日志与材料前阅读本规范。
           </p>
 
+          {/* ⚠️ 提示文字用 text-amber-700 而非 text-amber-200/90：
+              深色主题把它提亮为 #fcd34d（浅底可见），亮色主题保持 #b45309
+              （深字配淡黄底），两套主题都能读清。浅色档（-100~-300）
+              在白天模式下几乎与底色同色，是"看不见"的元凶。 */}
           <div className="mt-8 rounded-2xl border border-amber-400/20 bg-amber-400/[0.06] p-5">
-            <p className="flex items-start gap-2 text-sm leading-relaxed text-amber-200/90">
+            <p className="flex items-start gap-2 text-sm leading-relaxed text-amber-700">
               <Ban size={16} className="mt-0.5 shrink-0" />
               <span>
                 <b>不得上传或发布任何违反法律法规的内容</b>。
