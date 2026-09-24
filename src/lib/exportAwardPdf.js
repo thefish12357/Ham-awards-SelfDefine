@@ -18,38 +18,14 @@ import { createRoot } from 'react-dom/client';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import AwardRenderer from '../components/AwardRenderer.jsx';
+import { toSameOriginMediaUrl } from './media.js';
 
 const MM_PER_INCH = 25.4;
 const EXPORT_DPI = 300;
 /** 离屏渲染使用的 CSS 宽度；再用 pixelRatio 放大到目标像素 */
 const RENDER_CSS_WIDTH = 1200;
 
-/**
- * 把对象存储里的图片地址换成同源代理地址，避免污染 canvas。
- * 认不出来（不是本站桶）的地址原样返回。
- */
-export function toSameOriginMediaUrl(url) {
-  if (!url) return url;
-  try {
-    const u = new URL(url, window.location.origin);
-    if (u.origin === window.location.origin) return url;
-    const idx = u.pathname.indexOf('/awards/');
-    if (idx === -1) return url;
-    // ⚠️ URL.pathname **保留 percent-encoding**。直接把它交给 encodeURIComponent 会二次编码
-    //    （`%C3%A6` → `%25C3%25A6`），服务端拿这个 key 去对象存储里根本找不到对象 → 图片 404。
-    //    先解码还原成真实 key，再统一编码一次。
-    let key = u.pathname.slice(idx + 1);
-    try {
-      key = decodeURIComponent(key);
-    } catch {
-      // key 里含非法 % 序列，保持原样即可
-    }
-    return `/api/media?key=${encodeURIComponent(key)}`;
-  } catch {
-    return url;
-  }
-}
-
+// 同源代理地址换算已上提到 `src/lib/media.js`（展示位与导出共用同一份实现）。
 export function prepareLayoutForExport(layout) {
   if (!layout) return layout;
   return {

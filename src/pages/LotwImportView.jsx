@@ -401,30 +401,50 @@ export default function LotwImportView() {
             <CalendarRange size={16} /> 日期范围（可选，日志很大时建议缩小）
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex gap-2">
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">起始日期</label>
               <input
                 type="date"
                 className="w-full p-3 border rounded-xl"
                 value={form.from}
                 onChange={(e) => update({ from: e.target.value })}
               />
-              <button
-                type="button"
-                className="px-3 py-2 border rounded-xl text-xs font-bold whitespace-nowrap hover:bg-slate-50"
-                onClick={() => update({ from: yearsAgoStr(3), to: todayStr() })}
-              >
-                最近 3 年
-              </button>
             </div>
-            <input
-              type="date"
-              className="w-full p-3 border rounded-xl"
-              value={form.to}
-              onChange={(e) => update({ to: e.target.value })}
-            />
+            <div>
+              <label className="block text-xs text-slate-500 mb-1">结束日期</label>
+              <input
+                type="date"
+                className="w-full p-3 border rounded-xl"
+                value={form.to}
+                onChange={(e) => update({ to: e.target.value })}
+              />
+            </div>
+          </div>
+          {/* 年份段是 4 位、月/日段是 2 位，浏览器只在「当前段填满」时才自动跳到下一段，
+              所以输 2 位年份不会跳——这是原生控件的行为，改不了；这里用快捷区间减少手输。 */}
+          <div className="flex flex-wrap gap-2 mt-2">
+            {[1, 3, 5].map((n) => (
+              <button
+                key={n}
+                type="button"
+                className="px-3 py-1.5 border rounded-lg text-xs font-bold hover:bg-slate-50"
+                onClick={() => update({ from: yearsAgoStr(n), to: todayStr() })}
+              >
+                最近 {n} 年
+              </button>
+            ))}
+            <button
+              type="button"
+              className="px-3 py-1.5 border rounded-lg text-xs font-bold hover:bg-slate-50"
+              onClick={() => update({ from: '', to: '' })}
+            >
+              清空
+            </button>
           </div>
           <p className="text-xs text-slate-400 mt-2">
-            留空表示读取全部历史。若提示数据量过大，服务端会自动按日期二分重试；仍失败时请手动缩小范围。
+            留空表示读取全部历史。日期框是浏览器原生控件，<b>年份要输满 4 位</b>（如 2026）才会自动跳到月份，
+            月份与日各 2 位即可；也可以直接点开输入框里的日历图标选日期。
+            若提示数据量过大，服务端会自动按日期二分重试；仍失败时请手动缩小范围。
           </p>
         </div>
 

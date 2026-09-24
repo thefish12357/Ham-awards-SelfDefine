@@ -1012,14 +1012,20 @@ app.get('/api/awards/all_approved', verifyToken, async (req, res) => {
 });
 
 // 系统管理员：获取待审核奖状
+// ⚠️ status / created_at **必须带 awards. 前缀**：users 表也有同名列（安全加固新增的
+//    users.status），JOIN 后写裸列名会让 PostgreSQL 直接报
+//    「column reference "status" is ambiguous」→ 接口 500 → 前端「奖状审核」列表永远空白。
+//    而通知红点是另一条链路（notifications 表），照常亮起 —— 于是表现为
+//    「有红点但列表不显示」。2026-09-24 修复。
 app.get('/api/admin/awards/pending', verifyToken, verifyAdmin, async (req, res) => {
-    const r = await dbPool.query(`SELECT awards.*, users.callsign as creator_call FROM awards JOIN users ON awards.creator_id = users.id WHERE status = 'pending' ORDER BY created_at ASC`);
+    const r = await dbPool.query(`SELECT awards.*, users.callsign as creator_call FROM awards JOIN users ON awards.creator_id = users.id WHERE awards.status = 'pending' ORDER BY awards.created_at ASC`);
     res.json(r.rows);
 });
 
 // 系统管理员：获取已发布奖状 (用于抽查)
+// 同上：不限定表名会 500，导致「奖状大厅」有奖状而「奖状总览」空白（2026-09-24 修复）
 app.get('/api/admin/awards/approved', verifyToken, verifyAdmin, async (req, res) => {
-    const r = await dbPool.query(`SELECT awards.*, users.callsign as creator_call FROM awards JOIN users ON awards.creator_id = users.id WHERE status = 'approved' ORDER BY created_at DESC`);
+    const r = await dbPool.query(`SELECT awards.*, users.callsign as creator_call FROM awards JOIN users ON awards.creator_id = users.id WHERE awards.status = 'approved' ORDER BY awards.created_at DESC`);
     res.json(r.rows);
 });
 
@@ -1265,8 +1271,14 @@ app.post('/api/awards/upload-bg', verifyToken, verifyAwardAdmin, uploadBg.single
         const publicPort = mc.publicPort || process.env.MINIO_PUBLIC_PORT || mc.port;
         const protocol = mc.useSSL ? 'https://' : 'http://';
         const fullUrl = `${protocol}${publicHost}:${publicPort}/${appConfig.minioBucket}/${fileName}`;
+        // ★ 同源代理地址（前端应优先使用）：`/api/media?key=…`
+        //   1) 页面走 https（隧道 / 反向代理）时，`http://localhost:9000/...` 的图片会被
+        //      浏览器按「混合内容」直接拦掉 → 底图明明上传成功，画布却是空白；
+        //   2) 远程用户的 `localhost` 指向他们自己的机器，根本连不到对象存储。
+        //   同源代理还能避免 canvas 跨域污染（导出 PDF 需要），一举两得。
+        const mediaUrl = `/api/media?key=${encodeURIComponent(fileName)}`;
         fs.unlinkSync(req.file.path);
-        res.json({ url: fullUrl });
+        res.json({ url: fullUrl, mediaUrl });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -30,7 +30,7 @@ import ProtocolView from './pages/ProtocolView.jsx';
 import { normalizeLayout } from './lib/awardLayout.js';
 // 实物材料的收集要素类型（QSL 卡 / Eyeball 卡 / SWL 收听报告）
 import { EVIDENCE_TYPES, evidenceType, evidenceTypeLabel, TZ_OPTIONS, tzOffsetOf, toUtcDateTime } from './lib/evidenceTypes.js';
-import { collectExternalImages } from './lib/media.js';
+import { collectExternalImages, toSameOriginMediaUrl } from './lib/media.js';
 import VisualDesigner from './components/VisualDesigner.jsx';
 import InviteCodePanel from './components/InviteCodePanel.jsx';
 import { ResponsiveAwardRenderer } from './components/AwardRenderer.jsx';
@@ -576,7 +576,7 @@ const MyAwardsView = ({ user }) => {
                                     <ResponsiveAwardRenderer layout={layout} data={renderData} className="absolute inset-0" />
                                 ) : (
                                     <>
-                                        <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${ua.bg_url})` }}></div>
+                                        <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${toSameOriginMediaUrl(ua.bg_url)})` }}></div>
                                         <div className="absolute inset-0 bg-black/10"></div>
                                         <div className="absolute inset-0 p-8 flex flex-col justify-between text-white drop-shadow-md">
                                             <div className="flex justify-between items-start">
@@ -876,7 +876,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                         {previewMode === 'actual' && hasLayout ? (
                             <ResponsiveAwardRenderer layout={normalizeLayout(award.layout, award.bg_url)} data={previewData} />
                         ) : (
-                            <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${award.bg_url})` }} />
+                            <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${toSameOriginMediaUrl(award.bg_url)})` }} />
                         )}
                         <div className="absolute bottom-0 left-0 right-0 bg-black/55 backdrop-blur-sm p-3 text-white">
                             <div className="text-xs font-bold opacity-70 uppercase tracking-wider mb-0.5">奖状详情</div>
@@ -1255,7 +1255,7 @@ const AwardCenterView = ({ user }) => {
                         onClick={() => setSelectedAward(aw)}
                         className={`bg-white rounded-2xl shadow-sm border overflow-hidden hover:shadow-md transition-shadow group cursor-pointer`}
                     >
-                        <div className="h-48 bg-slate-200 bg-cover bg-center relative" style={{backgroundImage: `url(${aw.bg_url})`}}>
+                        <div className="h-48 bg-slate-200 bg-cover bg-center relative" style={{backgroundImage: `url(${toSameOriginMediaUrl(aw.bg_url)})`}}>
                             <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                                 <span className="text-white font-bold border-2 border-white px-4 py-2 rounded-full">查看详情与进度</span>
                             </div>
@@ -1390,7 +1390,7 @@ const AwardAdminManager = ({ viewMode }) => {
                             {drafts.length === 0 && <div className="col-span-full text-center text-slate-400 py-10">空空如也</div>}
                             {drafts.map(d => (
                                 <div key={d.id} className="border rounded-xl overflow-hidden hover:border-blue-300 transition-colors group">
-                                    <div className="h-32 bg-slate-100 bg-cover bg-center relative" style={{backgroundImage: `url(${d.bg_url})`}}>
+                                    <div className="h-32 bg-slate-100 bg-cover bg-center relative" style={{backgroundImage: `url(${toSameOriginMediaUrl(d.bg_url)})`}}>
                                         {isReturnedMode && <div className="absolute top-2 right-2 bg-red-500 text-white text-xs px-2 py-1 rounded font-bold">已退回</div>}
                                     </div>
                                     <div className="p-4">

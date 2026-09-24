@@ -65,6 +65,9 @@ function resizeFrom(o, dir, dx, dy) {
 const cursorFor = (dir) =>
   dir === 'n' || dir === 's' ? 'ns-resize' : dir === 'e' || dir === 'w' ? 'ew-resize' : dir === 'ne' || dir === 'sw' ? 'nesw-resize' : 'nwse-resize';
 
+/** 底图大小上限（MB）。必须与后端 `server.js` 的 `uploadBg` limits.fileSize 保持一致 */
+const MAX_BG_MB = 10;
+
 /**
  * 可视化布局编辑器（Step 3）
  * ------------------------------------------------------------------
@@ -275,13 +278,28 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
     if (!file) return;
+    // 先在前端把「类型 / 大小」拦下来并说清原因：后端 multer 拒绝时只会给一句
+    // 笼统的「Upload failed」，用户根本不知道是超限还是格式不对。
+    if (file.type && !/^image\//.test(file.type)) {
+      setError(`「${file.name}」不是图片文件，请选择 JPG / PNG / WebP / GIF 等图片格式`);
+      return;
+    }
+    if (file.size > MAX_BG_MB * 1024 * 1024) {
+      setError(`图片约 ${(file.size / 1024 / 1024).toFixed(1)} MB，超过 ${MAX_BG_MB} MB 上限，请压缩后再上传`);
+      return;
+    }
     setUploadingBg(true);
     setError(null);
     try {
       const fd = new FormData();
       fd.append('bg', file);
       const r = await apiFetch('/awards/upload-bg', { method: 'POST', body: fd });
-      onChange({ ...layoutRef.current, canvas: { ...layoutRef.current.canvas, bgUrl: r.url } });
+      // ★ 优先用后端返回的**同源代理**地址（`/api/media?key=…`）：
+      //   若存 `http://localhost:9000/...`，https 页面会按「混合内容」把图片拦掉，
+      //   表现为「提示已设置底图、画布却一直空白」；远程用户更是解析到自己机器。
+      const url = r.mediaUrl || r.url;
+      if (!url) throw new Error('服务端未返回图片地址，请检查对象存储配置');
+      onChange({ ...layoutRef.current, canvas: { ...layoutRef.current.canvas, bgUrl: url } });
     } catch (err) {
       setError(err?.message || '底图上传失败，请检查对象存储是否已配置');
     } finally {
@@ -341,6 +359,9 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
               <span className="font-bold">{uploadingBg ? '上传中…' : layout?.canvas?.bgUrl ? '更换底图' : '点击上传底图'}</span>
             </button>
             <p className="text-xs text-slate-400 mt-1">{layout?.canvas?.bgUrl ? '已设置底图' : '未设置底图（保存前必须上传）'}</p>
+            <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+              支持 JPG / PNG / WebP 等图片格式，单张不超过 <b>{MAX_BG_MB} MB</b>；建议 A4 横版比例（297×210）。
+            </p>
           </div>
 
           <div>

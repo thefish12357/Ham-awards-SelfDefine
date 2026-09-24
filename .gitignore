@@ -39,3 +39,10 @@ design-drafts/
 
 # 旧仓库备份目录（本地空仓库的 .git 备份，勿提交）
 .git_empty_backup/
+
+# 本地部署与分享使用说明（含管理员口令，勿提交、勿发布）
+分享使用说明.md
+
+# cloudflared 二进制（本机分享用，移动到了项目根，非仓库资源，勿提交）
+cloudflared.exe
+cloudflared

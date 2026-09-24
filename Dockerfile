@@ -30,6 +30,8 @@ RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
 COPY server.js ./
+# 后端单体由 server.js + server/ 下各路由/服务组成，运行时必须整目录拷入
+COPY server ./server
 COPY docker ./docker
 
 # /data 用于持久化 config.json（由 compose 挂载命名卷）

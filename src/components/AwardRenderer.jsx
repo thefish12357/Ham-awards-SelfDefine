@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { resolveElementForLevel, resolveElementValue } from '../lib/awardLayout.js';
+import { toSameOriginMediaUrl } from '../lib/media.js';
 
 /**
  * 奖状渲染器（纯展示，无状态）
@@ -47,9 +48,13 @@ export default function AwardRenderer({
       className="relative overflow-hidden select-none"
       style={{ width: widthPx, height: px(h), background: '#fff' }}
     >
+      {/* 底图一律经 toSameOriginMediaUrl 换成 `/api/media?key=…`：
+          历史数据里存的是 `http://localhost:9000/...` 绝对地址，在 https 页面下会被
+          浏览器按「混合内容」拦掉（表现为「已设置底图但画布空白」），远程用户更是
+          解析到自己的机器。同源代理同时也避免 canvas 跨域污染。 */}
       {canvas.bgUrl ? (
         <img
-          src={canvas.bgUrl}
+          src={toSameOriginMediaUrl(canvas.bgUrl)}
           alt=""
           draggable={false}
           style={{
@@ -102,7 +107,7 @@ export default function AwardRenderer({
           );
         } else if (el.type === 'image') {
           content = el.src ? (
-            <img src={el.src} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+            <img src={toSameOriginMediaUrl(el.src)} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
           ) : (
             <div
               className="w-full h-full flex items-center justify-center"
