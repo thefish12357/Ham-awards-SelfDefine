@@ -14,6 +14,8 @@
  * ⚠️ 这里存的是**精简后的 ADIF 字段对象**，不存原始 ADIF 文本。
  */
 
+import crypto from 'crypto';
+
 const sessions = new Map(); // sessionId -> session
 
 const defaults = {
@@ -71,9 +73,7 @@ export function createSession(userId, data) {
     throw err;
   }
 
-  const sessionId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}${Math.random()
-    .toString(36)
-    .slice(2, 10)}`;
+  const sessionId = crypto.randomBytes(32).toString('hex');
   const session = {
     sessionId,
     userId,

@@ -33,6 +33,9 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
+// 仅在部署环境明确声明时信任反向代理，否则 req.ip 必须来自直连 socket。
+app.set('trust proxy', process.env.TRUST_PROXY === 'true');
+
 // 7. 安全加固（审计整改）：收紧 CORS，仅允许配置的可信源，默认拒绝跨域
 const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const corsOptions = corsOrigins.length ? { origin: corsOrigins } : { origin: false };
@@ -52,11 +55,7 @@ const uploadBg = multer({
 
 // ---- 安全辅助函数 ----
 function clientIp(req) {
-  const xff =
-    req.headers['cf-connecting-ip'] ||
-    req.headers['x-real-ip'] ||
-    (req.headers['x-forwarded-for'] && String(req.headers['x-forwarded-for']).split(',')[0].trim());
-  return xff || req.ip;
+    return req.ip;
 }
 // 仅允许本机回环或私有网段（含 Docker 网桥 172.16-31）——公网来源一律拒绝
 function isPrivateOrLoopback(ip) {
@@ -642,7 +641,7 @@ app.post('/api/install', installLimiter, async (req, res) => {
   //  - 若配置了 INSTALL_TOKEN：必须携带正确的一次性 bootstrap 令牌（生产/容器部署推荐）；
   //  - 否则仅允许本机回环或私有网段（本地向导 / Docker 内网），公网来源直接拒绝。
   const expectedToken = process.env.INSTALL_TOKEN;
-  const providedToken = req.body.installToken || req.get('x-install-token') || req.query.token;
+    const providedToken = req.body.installToken || req.get('x-install-token');
   if (expectedToken) {
     const a = Buffer.from(providedToken || '');
     const b = Buffer.from(expectedToken);

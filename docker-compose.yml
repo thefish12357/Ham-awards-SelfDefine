@@ -61,6 +61,8 @@ services:
       PORT: 9993
       # config.json 落在命名卷里，容器重建不丢安装状态
       CONFIG_FILE: /data/config.json
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      INSTALL_TOKEN: ${INSTALL_TOKEN:-}
       # 上传/删除对象走容器网络里的服务名；浏览器读图走 localhost
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost}
       MINIO_PUBLIC_PORT: ${MINIO_HOST_PORT:-9000}
