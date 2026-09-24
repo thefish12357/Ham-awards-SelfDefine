@@ -1082,7 +1082,22 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                         </button>
                                     </div>
                                     
-                                    {checkResult ? (
+                                    {/* 分析失败时不能拿 `{error}` 当正常结果渲染（那样会显示 "undefined / undefined"） */}
+                                    {checkResult?.error ? (
+                                        <div className="flex items-start justify-between gap-3 rounded-xl border-2 border-red-200 bg-red-50 p-4 text-xs text-red-700">
+                                            <span className="flex items-start gap-2">
+                                                <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                                                <span>进度分析失败：{checkResult.error}</span>
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => checkEligibility()}
+                                                className="shrink-0 rounded-lg border border-red-300 bg-white px-2 py-1 font-bold"
+                                            >
+                                                重试
+                                            </button>
+                                        </div>
+                                    ) : checkResult ? (
                                         <div className={`rounded-xl p-5 border-2 space-y-4 ${checkResult.eligible ? 'bg-green-50 border-green-200' : 'bg-slate-50 border-slate-200'}`}>
                                             <div>
                                                 <div className="flex justify-between items-center mb-2">
@@ -1298,7 +1313,10 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                 <Info size={15} /> 申领须知
                             </div>
                             <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-slate-600">
-                                <li>资格由本奖状的规则自动判定，可查看下方进度与明细；条件未满足时无法申领。</li>
+                                {/* 以前这里写"可查看下方进度与明细"，但进度块其实在**上方**（紧随「等级要求」），
+                                    长面板里用户滚到按钮时早已滚过它 —— 用户反馈"进度和明细没有显示"就是这个误导。
+                                    现在申领按钮正上方常驻一行进度摘要，这句话才成立。 */}
+                                <li>资格由本奖状的规则自动判定；条件未满足时无法申领 —— 下方「当前进度」会说明差在哪里，点「查看进度与明细」可看逐条比对。</li>
                                 <li>同一奖状的<b>同一等级只能领取一次</b>，请在条件达成后再申领。</li>
                                 <li>可用 <b>QSL 实物卡片</b>补充确认：审核通过后计入成绩（自动匹配日志并标记「已确认」），照片在审核结束后立即删除。</li>
                                 <li>
@@ -1308,6 +1326,41 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                 <li>申领成功后生成唯一序列号与二维码，可通过公开校验页查验。</li>
                                 <li>请勿上传虚假或违反法律法规的材料，详见站内《内容规范》。</li>
                             </ul>
+                        </div>
+                    )}
+
+                    {/* ★ 进度摘要常驻在申领按钮正上方（2026-09-24 用户反馈"进度和明细没有显示"）：
+                        完整的「您的进度」块在页面上方（紧随「等级要求」），但右侧面板很长，
+                        用户滚到按钮时早已把它滚过去，加上「申领须知」旧文案写的是"下方进度与明细"，
+                        方向正好相反 —— 于是看起来就像"根本没有进度"。
+                        这一行保证「能不能领、差多少、去哪看明细」永远和申领按钮同屏。 */}
+                    {showApplicantUI && (
+                        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                            <div className="text-xs font-bold text-slate-600">
+                                {checkResult?.error ? (
+                                    <span className="text-red-600">进度分析失败：{checkResult.error}</span>
+                                ) : checkResult ? (
+                                    <>
+                                        当前进度{' '}
+                                        <span className={`text-base font-black ${checkResult.eligible ? 'text-green-600' : 'text-slate-800'}`}>
+                                            {checkResult.current_score}
+                                        </span>
+                                        <span className="text-slate-400"> / {checkResult.target_score}</span>
+                                        <span className={`ml-2 rounded px-1.5 py-0.5 text-[11px] ${checkResult.eligible ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                                            {checkResult.eligible ? '已达标' : '未达标'}
+                                        </span>
+                                    </>
+                                ) : (
+                                    <span className="text-slate-400">{checking ? '正在分析日志…' : '进度暂不可用'}</span>
+                                )}
+                            </div>
+                            <button
+                                type="button"
+                                onClick={handleLoadMatrix}
+                                className="shrink-0 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-600 hover:bg-blue-100 flex items-center gap-1"
+                            >
+                                <Grid size={12} /> 查看进度与明细
+                            </button>
                         </div>
                     )}
 
@@ -1332,7 +1385,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                             ? `已领取当前等级 (${checkResult.achieved_level.name})`
                                             : checkResult?.eligible 
                                                 ? `申领 ${checkResult.achieved_level.name} 奖状` 
-                                                : '条件未满足，无法申领'}
+                                                : `条件未满足（当前 ${checkResult?.current_score ?? '—'} / ${checkResult?.target_score ?? '—'}），无法申领`}
                                 </button>
                             ) : (
                                 <div className="text-center text-slate-400 text-sm bg-slate-50 p-3 rounded-lg border">
