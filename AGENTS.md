@@ -219,7 +219,10 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
   ⚠️ `/orphans` 必须注册在 `/:id` **之前**，否则会被当成 id 去查整数。
 - 公开校验 `GET /api/verify/:serial` 对这类记录返回 **404 + `revoked:true`**（带快照名称与脱敏呼号），
   而不是笼统的「未找到该序列号对应的奖状」。
-- 「我的奖状」(`/api/user/my-awards`) 仍走 **INNER JOIN**：无主记录**不**展示给持证人（奖状已下架、设计也没了，渲染不出证书）。
+- 「我的奖状」(`/api/user/my-awards`) 也走 **LEFT JOIN + 快照**：无主记录**展示给持证人**（`detached` 标志），
+  但只作为历史留存 —— 卡片显示「此奖状已被下架」占位（奖状设计已随奖状删除，渲染不出证书）、
+  **禁用「下载 PDF」**、点卡片只弹 `infoDialog` 说明（不能进详情弹层：`award_id` 为空会去请求 `/awards/null/check`），
+  排序把有效记录排在前面。
 - `DELETE /api/awards/:id` 对越权/状态不符返回 **403**（不再静默 success）。
 
 ## 7. 编码约定与雷区

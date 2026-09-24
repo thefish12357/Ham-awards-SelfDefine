@@ -515,6 +515,8 @@ const MyAwardsView = ({ user }) => {
 
     // 用奖状的可视化布局导出 300 DPI 的 PDF（M3）
     const handleExportPdf = async (ua) => {
+        // 已下架记录：award 与 layout 都已随奖状删除，导出必然是缺图的空证书
+        if (ua?.detached) return;
         setExportingId(ua.id);
         try {
             // 动态加载：PDF 相关依赖较大，不让它进首屏包
@@ -560,7 +562,14 @@ const MyAwardsView = ({ user }) => {
 
     return (
         <div className="space-y-6">
-            <h3 className="text-xl font-bold flex items-center gap-2"><Award className="text-orange-500"/> 我的荣誉墙 (My Awards)</h3>
+            <div>
+                <h3 className="text-xl font-bold flex items-center gap-2"><Award className="text-orange-500"/> 我的荣誉墙 (My Awards)</h3>
+                {awards.some(a => a.detached) && (
+                    <p className="mt-1 text-xs text-slate-400">
+                        其中 {awards.filter(a => a.detached).length} 张已由主办方下架（仅作历史留存，不能再导出 PDF）。
+                    </p>
+                )}
+            </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-8">
                 {awards.map(ua => {
                     const badgeColor = getLevelColor(ua);
@@ -569,10 +578,35 @@ const MyAwardsView = ({ user }) => {
                     const layout = normalizeLayout(ua.layout, ua.bg_url);
                     const hasLayout = layout.elements.length > 0;
                     return (
-                        <div key={ua.id} className="relative group perspective cursor-pointer" onClick={() => setSelectedAward(ua)}>
+                        <div
+                            key={ua.id}
+                            className="relative group perspective cursor-pointer"
+                            onClick={() => {
+                                // 已下架记录的 award_id 为空，直接进详情弹层会去请求 /awards/null/check，
+                                // 所以这里只弹一句说明，不做进度/预览。
+                                if (ua.detached) {
+                                    infoDialog({
+                                        title: '奖状已下架',
+                                        message: `「${ua.name || '该奖状'}」已由主办方删除，此证书不再有效。`,
+                                        detail: `等级：${ua.level || '—'}\n序列号：${ua.serial_number || '—'}\n颁发时间：${ua.issued_at ? new Date(ua.issued_at).toLocaleString() : '—'}\n\n记录会作为历史留存显示在荣誉墙里，但不能再导出 PDF。`,
+                                    });
+                                    return;
+                                }
+                                setSelectedAward(ua);
+                            }}
+                        >
                             {/* 证书本体：有可视化布局就按布局渲染（与导出的 PDF 一致），否则退回旧的叠字卡片 */}
-                            <div className="bg-white rounded-xl shadow-xl overflow-hidden border-4 border-slate-900 aspect-[1.414/1] relative">
-                                {hasLayout ? (
+                            <div className={`bg-white rounded-xl shadow-xl overflow-hidden aspect-[1.414/1] relative ${ua.detached ? 'border-4 border-slate-300' : 'border-4 border-slate-900'}`}>
+                                {ua.detached ? (
+                                    /* 已下架：奖状设计已随奖状一起删除，渲染不出证书 —— 给一个明确的历史记录占位，
+                                       而不是留一张空白/缺图的卡片让人以为加载失败 */
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-slate-100 px-4 text-center text-slate-500">
+                                        <AlertTriangle size={26} className="text-amber-600" />
+                                        <div className="text-sm font-bold text-slate-700">此奖状已被下架</div>
+                                        <div className="text-xs leading-relaxed">原奖状已由主办方删除，证书不再有效</div>
+                                        <div className="mt-1 break-all font-mono text-[11px] text-slate-400">NO. {ua.serial_number}</div>
+                                    </div>
+                                ) : hasLayout ? (
                                     <ResponsiveAwardRenderer layout={layout} data={renderData} className="absolute inset-0" />
                                 ) : (
                                     <>
@@ -607,7 +641,12 @@ const MyAwardsView = ({ user }) => {
                             
                             {/* Action Bar */}
                             <div className="mt-4 flex justify-between items-center gap-2 px-2">
-                                 <div className="text-sm font-bold text-slate-600 flex items-center gap-2 truncate"><Eye size={14}/> {ua.name}</div>
+                                 <div className="text-sm font-bold text-slate-600 flex items-center gap-2 truncate">
+                                     <Eye size={14}/> {ua.name}
+                                     {ua.detached && (
+                                         <span className="shrink-0 rounded border border-amber-200 bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">已下架</span>
+                                     )}
+                                 </div>
                                  <div className="flex items-center gap-2 shrink-0">
                                      <a
                                         href={`#/verify/${ua.serial_number || ''}`}
@@ -620,7 +659,8 @@ const MyAwardsView = ({ user }) => {
                                      </a>
                                      <button
                                         onClick={(e)=>{ e.stopPropagation(); handleExportPdf(ua); }}
-                                        disabled={exportingId === ua.id}
+                                        disabled={exportingId === ua.id || ua.detached}
+                                        title={ua.detached ? '原奖状已被删除，无法导出' : '按可视化布局导出 300 DPI PDF'}
                                         className="flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-60"
                                      >
                                         {exportingId === ua.id ? <Loader2 size={14} className="animate-spin"/> : <Download size={14}/>}

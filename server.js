@@ -1558,15 +1558,23 @@ app.post('/api/awards/:id/apply', verifyToken, async (req, res) => {
 });
 
 app.get('/api/user/my-awards', verifyToken, async (req, res) => {
-    // Join user_awards with awards to get details
-    // Added a.rules to fetch badge colors
-    // Added a.layout (M3)：导出 PDF 需要奖状的可视化布局
+    // 荣誉墙数据源。字段说明：
+    //  - a.rules  → 等级徽标配色
+    //  - a.layout → 导出 PDF / 卡片渲染需要可视化布局（M3）
+    //  - ★ LEFT JOIN + 快照（2026-09-24）：奖状被删除后记录仍在（外键 SET NULL），
+    //    这里用 `COALESCE(a.name, ua.award_name)` 取名称、`detached` 标记「已下架」，
+    //    让持证人能看到历史记录（但不再渲染证书、不能下载 PDF）。
+    //    ⚠️ 所有同名列必须带表前缀（users 也无所谓，这里没 JOIN users）。
     const result = await dbPool.query(`
-        SELECT ua.*, a.name, a.bg_url, a.description, a.tracking_id, a.rules, a.layout
+        SELECT ua.*,
+               COALESCE(a.name, ua.award_name) AS name,
+               COALESCE(a.tracking_id, ua.award_tracking_id) AS tracking_id,
+               a.bg_url, a.description, a.rules, a.layout,
+               (a.id IS NULL) AS detached
         FROM user_awards ua
-        JOIN awards a ON ua.award_id = a.id
+        LEFT JOIN awards a ON ua.award_id = a.id
         WHERE ua.user_id = $1
-        ORDER BY ua.issued_at DESC
+        ORDER BY (a.id IS NULL), ua.issued_at DESC
     `, [req.user.id]);
     res.json(result.rows);
 });
