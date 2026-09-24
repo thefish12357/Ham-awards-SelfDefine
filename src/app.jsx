@@ -28,6 +28,8 @@ import PrivacyView from './pages/PrivacyView.jsx';
 import TermsView from './pages/TermsView.jsx';
 import ProtocolView from './pages/ProtocolView.jsx';
 import { normalizeLayout } from './lib/awardLayout.js';
+// 实物材料的收集要素类型（QSL 卡 / Eyeball 卡 / SWL 收听报告）
+import { EVIDENCE_TYPES, evidenceType, evidenceTypeLabel, TZ_OPTIONS, tzOffsetOf, toUtcDateTime } from './lib/evidenceTypes.js';
 import { collectExternalImages } from './lib/media.js';
 import VisualDesigner from './components/VisualDesigner.jsx';
 import InviteCodePanel from './components/InviteCodePanel.jsx';
@@ -250,8 +252,8 @@ const DashboardView = ({ user }) => {
                 </div>
             )}
 
-            {/* 奖状管理员视图 - 仅显示自己的数据 */}
-            {user.role === 'award_admin' && (
+            {/* 奖状制作视图 - 显示自己的数据（admin 同样可以建奖状发起审核） */}
+            {(user.role === 'award_admin' || user.role === 'admin') && (
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
                     <StatCard title="我的发布" value={stats.my_approved} icon={CheckCircle} color="bg-green-100 text-green-700" sub="已通过审核" />
                     <StatCard title="审核中" value={stats.my_pending} icon={Clock} color="bg-blue-100 text-blue-700" sub="等待管理员操作" />
@@ -608,7 +610,26 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
     const [evUploading, setEvUploading] = useState(false);
     const [myEvidence, setMyEvidence] = useState([]);
     const evidenceFileRef = useRef(null);
-    const [evForm, setEvForm] = useState({ callsign: '', band: '', mode: '', date: '' });
+    // type = 收集要素类型：qsl_card（QSO 卡）/ eyeball（当面交换卡）/ swl（收听报告）
+    // date/time 按 tz 所选时区填写，提交前统一换算成 **UTC**（校验与日志匹配一律 UTC）
+    const [evForm, setEvForm] = useState({ type: 'qsl_card', callsign: '', band: '', mode: '', date: '', time: '', tz: '0' });
+    const evType = evidenceType(evForm.type);
+    const evIsEyeball = evForm.type === 'eyeball'; // 当面交换：没有波段/模式
+    const evIsSwl = evForm.type === 'swl';
+    const evHasTime = /^\d{2}:\d{2}$/.test(evForm.time || '');
+    const evTzOffset = tzOffsetOf(evForm.tz);
+    const evTzLabel = (TZ_OPTIONS.find((t) => t.value === evForm.tz) || TZ_OPTIONS[0]).label;
+    const evUtc = toUtcDateTime(evForm.date, evForm.time, evTzOffset);
+    const fmtHhmm = (v) => (v && v.length === 4 ? `${v.slice(0, 2)}:${v.slice(2)}` : '');
+
+    /**
+     * 是否显示"申领 / 我的材料"这类申请人界面。
+     * ★ 2026-09-24：**不再限定 user 角色** —— admin / award_admin 同样可以申领奖状、提交实物材料。
+     * 判据改成"是不是从奖状大厅进来的"：
+     *   · 奖状大厅传 `canApply` → 所有角色都能看到进度、材料与申领按钮；
+     *   · 「已颁发奖状查看」传 `mode="view_only"`、「审核预览」两个都不传 → 保持只读，不会出现申领入口。
+     */
+    const showApplicantUI = !!canApply && mode !== 'view_only';
 
     const previewData = {
         callsign: (() => {
@@ -646,13 +667,13 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
     };
 
     useEffect(() => {
-        if (userRole === 'user') {
+        if (showApplicantUI) {
             checkEligibility();
         }
     }, []);
 
     useEffect(() => {
-        if (userRole === 'user' && award.id) {
+        if (showApplicantUI && award.id) {
             apiFetch('/evidence/mine')
                 .then((list) => setMyEvidence((list || []).filter((e) => e.award_id === award.id)))
                 .catch(() => {});
@@ -707,11 +728,40 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
         if (!file) return;
         if (!file.type.startsWith('image/')) { alert('请选择图片文件'); return; }
         if (file.size > 5 * 1024 * 1024) { alert('图片不能超过 5 MB'); return; }
-        if (!evForm.callsign.trim()) { alert('请先填写对方呼号'); return; }
+        if (!evForm.callsign.trim()) {
+            alert(evIsEyeball ? '请先填写对方（学校台）呼号' : evIsSwl ? '请先填写被收听电台呼号' : '请先填写对方呼号');
+            return;
+        }
+        // ★ 日期必填（2026-09-24）：它是**新建日志**的主键组成部分 —— 没日期既无法去重、
+        //   也无法参与任何按时间判定规则的奖状，所以审核通过时不会补建日志（用户曾因此
+        //   「看不到新建的日志」却没有任何提示）。这里直接从源头拦掉。
+        if (!evForm.date) {
+            alert(`请先填写${evIsEyeball ? '交换日期' : evIsSwl ? '收听日期' : '通联日期'}：审核通过后要靠它把这条记录补进你的日志。`);
+            return;
+        }
         const ok = await confirmDialog({
-            title: '提交实物材料',
-            message: '确认上传这张卡片照片？',
-            detail: `奖状：${award.name}\n对方呼号：${evForm.callsign.trim()}\n波段/模式/日期：${evForm.band || '—'} / ${evForm.mode || '—'} / ${evForm.date || '—'}\n\n上传后管理员会收到待审提醒；审核通过或驳回后照片会立即从服务器删除，只保留审核结论。`,
+            title: `提交${evType.label}`,
+            message: `确认上传这张${evType.short}照片？`,
+            detail: [
+                `奖状：${award.name}`,
+                `${evIsSwl ? '被收听电台' : '对方呼号'}：${evForm.callsign.trim()}`,
+                evIsEyeball
+                    ? `交换时间：${evForm.date || '—'}${evHasTime ? ' ' + evForm.time : ''}${evTzOffset !== 0 ? `（${evTzLabel}）` : ''}`
+                    : `波段/模式：${evForm.band || '—'} / ${evForm.mode || '—'}`,
+                !evIsEyeball
+                    ? `通联时间：${evForm.date || '—'}${evHasTime ? ' ' + evForm.time : ''}${evTzOffset !== 0 ? `（${evTzLabel}）` : ''}`
+                    : '',
+                evUtc.ok
+                    ? `换算后按 UTC 提交：${evUtc.date}${evHasTime ? ' ' + fmtHhmm(evUtc.time) : ''} UTC（日志匹配与校验一律用 UTC）`
+                    : '',
+                '',
+                evType.hint,
+                // 让申请人提前知道"通过后会得到什么"，避免以为日志凭空出现/消失
+                evForm.type === 'qsl_card'
+                    ? '审核通过后：先把你日志里对应的通联标记为「已确认」；若日志里没有这条，会按上面填的信息**自动补建一条**（也能用于其它奖状申请）。'
+                    : '',
+                '上传后管理员会收到待审提醒；审核通过或驳回后照片会立即从服务器删除，只保留审核结论。',
+            ].filter((x) => x !== '').join('\n'),
             confirmText: '上传并提交',
         });
         if (!ok) return;
@@ -720,14 +770,20 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
             const fd = new FormData();
             fd.append('photo', file);
             fd.append('award_id', award.id);
+            fd.append('type', evForm.type);
             fd.append('match_callsign', evForm.callsign.trim());
             if (evForm.band) fd.append('match_band', evForm.band);
             if (evForm.mode) fd.append('match_mode', evForm.mode);
-            if (evForm.date) fd.append('match_date', evForm.date);
+            // ★ 日期/时间统一换算成 UTC 再提交（校验与日志匹配一律 UTC）
+            if (evUtc.ok && evUtc.date) {
+                fd.append('match_date', evUtc.date);
+                if (evHasTime) fd.append('match_time', evUtc.time);
+                fd.append('match_tz_offset', String(evTzOffset));
+            }
             await apiFetch('/evidence', { method: 'POST', body: fd });
             const list = await apiFetch('/evidence/mine');
             setMyEvidence((list || []).filter((x) => x.award_id === award.id));
-            alert('实物卡片已上传，等待管理员审核');
+            alert(`${evType.label}已上传，等待管理员审核`);
         } catch (err) {
             alert('上传失败: ' + (err.message || err.error || '未知错误'));
         } finally {
@@ -873,7 +929,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                             )}
 
                             {/* Real-time Check Result Area */}
-                            {userRole === 'user' && (
+                            {showApplicantUI && (
                                 <div className="mt-4 pt-4 border-t">
                                     <div className="flex justify-between items-center mb-3">
                                         <h4 className="font-bold text-sm text-slate-500 uppercase flex items-center gap-2">
@@ -951,38 +1007,86 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                         </div>
                     )}
 
-                    {/* 实物材料（M4）：用户上传 QSL 卡片 */}
-                    {userRole === 'user' && (
+                    {/* 实物材料（M4）：收集要素 = QSL 卡片 / Eyeball 卡 / SWL 收听报告 */}
+                    {showApplicantUI && (
                         <div className="mt-6 pt-4 border-t">
                             <h4 className="font-bold text-sm text-slate-500 uppercase flex items-center gap-2 mb-2">
-                                <ImageIcon size={14}/> 实物卡片材料
+                                <ImageIcon size={14}/> 实物材料 / 收集要素
                             </h4>
                             <p className="text-xs text-slate-400 mb-3">
-                                上传 QSL 卡片照片并填写卡面对应的通联信息；管理员审核通过后，会自动把匹配的日志记录标记为「已确认」，照片立即从服务器删除。
+                                按类型上传照片：<b>QSL 卡片</b>审核通过后会自动把匹配的日志标记为「已确认」；
+                                <b>Eyeball 卡</b>（当面交换）与 <b>SWL 收听报告</b>属于收集凭证，只留审核结论、不参与日志判定。照片审核后立即从服务器删除。
                             </p>
+                            <div className="flex flex-wrap gap-2 mb-2">
+                                {EVIDENCE_TYPES.map((t) => (
+                                    <button
+                                        key={t.value}
+                                        type="button"
+                                        onClick={() => setEvForm({ ...evForm, type: t.value })}
+                                        className={`rounded-lg border px-3 py-1.5 text-xs font-bold transition-colors ${evForm.type === t.value ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+                                    >
+                                        {t.label}
+                                    </button>
+                                ))}
+                            </div>
+                            <p className="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-2 text-[11px] leading-relaxed text-slate-500">{evType.hint}</p>
                             <div className="grid grid-cols-2 gap-2 mb-3">
                                 <label className="block col-span-2">
-                                    <span className="text-xs text-slate-500">对方呼号（必填）</span>
+                                    <span className="text-xs text-slate-500">
+                                        {evIsEyeball ? '对方（学校台）呼号（必填）' : evIsSwl ? '被收听电台呼号（必填）' : '对方呼号（必填）'}
+                                    </span>
                                     <input value={evForm.callsign} onChange={(e) => setEvForm({ ...evForm, callsign: e.target.value.toUpperCase() })} placeholder="例如: JA1ABC" className="w-full mt-1 p-2 border rounded-lg uppercase text-sm" />
                                 </label>
+                                {/* Eyeball 是当面交换，没有波段/模式可言，直接隐藏 */}
+                                {!evIsEyeball && (
+                                    <>
+                                        <label className="block">
+                                            <span className="text-xs text-slate-500">波段</span>
+                                            <select value={evForm.band} onChange={(e) => setEvForm({ ...evForm, band: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm">
+                                                <option value="">不限</option>
+                                                {QSL_BANDS.map((b) => <option key={b} value={b}>{b}</option>)}
+                                            </select>
+                                        </label>
+                                        <label className="block">
+                                            <span className="text-xs text-slate-500">{evIsSwl ? '收听模式' : '操作模式'}</span>
+                                            <select value={evForm.mode} onChange={(e) => setEvForm({ ...evForm, mode: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm">
+                                                <option value="">不限</option>
+                                                {QSL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+                                            </select>
+                                        </label>
+                                    </>
+                                )}
                                 <label className="block">
-                                    <span className="text-xs text-slate-500">波段</span>
-                                    <select value={evForm.band} onChange={(e) => setEvForm({ ...evForm, band: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm">
-                                        <option value="">不限</option>
-                                        {QSL_BANDS.map((b) => <option key={b} value={b}>{b}</option>)}
-                                    </select>
-                                </label>
-                                <label className="block">
-                                    <span className="text-xs text-slate-500">操作模式</span>
-                                    <select value={evForm.mode} onChange={(e) => setEvForm({ ...evForm, mode: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm">
-                                        <option value="">不限</option>
-                                        {QSL_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
-                                    </select>
-                                </label>
-                                <label className="block col-span-2">
-                                    <span className="text-xs text-slate-500">通联日期</span>
+                                    {/* ★ 日期必填：它是补建日志的主键组成部分（user_id + 呼号 + 波段 + 模式 + 日期） */}
+                                    <span className="text-xs text-slate-500">
+                                        {evIsEyeball ? '交换日期' : evIsSwl ? '收听日期' : '通联日期'} <b className="text-red-500">*</b>
+                                        <span className="ml-1 text-slate-400">（必填，审核通过后据此入账）</span>
+                                    </span>
                                     <input type="date" value={evForm.date} onChange={(e) => setEvForm({ ...evForm, date: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm" />
                                 </label>
+                                <label className="block">
+                                    <span className="text-xs text-slate-500">{evIsEyeball ? '交换时间' : evIsSwl ? '收听时间' : '通联时间'}</span>
+                                    <input type="time" value={evForm.time} onChange={(e) => setEvForm({ ...evForm, time: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm" />
+                                </label>
+                                <label className="block col-span-2">
+                                    <span className="text-xs text-slate-500">上面时间用的是哪个时区（校验与匹配一律按 UTC）</span>
+                                    <select value={evForm.tz} onChange={(e) => setEvForm({ ...evForm, tz: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm">
+                                        {TZ_OPTIONS.map((t) => (
+                                            <option key={t.value} value={t.value}>{t.label}</option>
+                                        ))}
+                                    </select>
+                                </label>
+                                {/* 换算结果实时可见：填 BJT 也能一眼看到最终提交的 UTC 值 */}
+                                {evUtc.ok && (
+                                    <p className="col-span-2 rounded-lg border border-slate-200 bg-slate-50 p-2 text-[11px] leading-relaxed text-slate-500">
+                                        将按 UTC 提交：
+                                        <b className="text-slate-700">
+                                            {evUtc.date}{evHasTime ? ` ${fmtHhmm(evUtc.time)}` : ''} UTC
+                                        </b>
+                                        {evHasTime ? '' : '（未填时间 → 只按日期匹配日志）'}
+                                        {evTzOffset !== 0 ? `　你填的是 ${evTzLabel}` : ''}
+                                    </p>
+                                )}
                             </div>
                             <input ref={evidenceFileRef} type="file" accept="image/*" className="hidden" onChange={handleEvidenceUpload} />
                             <button
@@ -992,17 +1096,18 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                 className="w-full py-2.5 rounded-lg border-2 border-dashed border-slate-300 text-slate-600 text-xs font-bold flex items-center justify-center gap-2 hover:bg-slate-50 disabled:opacity-60"
                             >
                                 {evUploading ? <Loader2 size={14} className="animate-spin"/> : <Upload size={14}/>}
-                                {evUploading ? '上传中…' : '上传实物卡片照片'}
+                                {evUploading ? '上传中…' : `上传${evType.short}照片`}
                             </button>
                             {myEvidence.length > 0 && (
                                 <ul className="mt-3 space-y-1 text-xs">
                                     {myEvidence.map((ev) => (
                                         <li key={ev.id} className="flex justify-between items-center bg-slate-50 px-3 py-2 rounded border">
                                             <span className="text-slate-600">
-                                                {ev.match_callsign || 'QSL 卡片'}
+                                                <b className="text-slate-700">{evidenceTypeLabel(ev.type)}</b>
+                                                {ev.match_callsign ? ` · ${ev.match_callsign}` : ''}
                                                 {ev.match_band ? ` · ${ev.match_band}` : ''}
                                                 {ev.match_mode ? ` · ${ev.match_mode}` : ''}
-                                                {ev.match_date ? ` · ${ev.match_date}` : ''}
+                                                {ev.match_date ? ` · ${ev.match_date}${ev.match_time ? ' ' + fmtHhmm(ev.match_time) : ''} UTC` : ''}
                                                 {ev.note ? ` · ${ev.note}` : ''}
                                             </span>
                                             {ev.status === 'pending' && <span className="text-amber-600 font-bold">待审核</span>}
@@ -1016,7 +1121,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                     )}
 
                     {/* 申领须知：与后端规则一致（条件判定、同等级仅一次、实物材料审核后即删） */}
-                    {mode !== 'view_only' && canApply && userRole === 'user' && (
+                    {showApplicantUI && (
                         <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
                             <div className="mb-2 flex items-center gap-2 text-sm font-bold text-blue-700">
                                 <Info size={15} /> 申领须知
@@ -1024,7 +1129,11 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                             <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-slate-600">
                                 <li>资格由本奖状的规则自动判定，可查看下方进度与明细；条件未满足时无法申领。</li>
                                 <li>同一奖状的<b>同一等级只能领取一次</b>，请在条件达成后再申领。</li>
-                                <li>可用 QSL 实物卡片补充确认：审核通过后计入成绩，照片在审核结束后立即删除。</li>
+                                <li>可用 <b>QSL 实物卡片</b>补充确认：审核通过后计入成绩（自动匹配日志并标记「已确认」），照片在审核结束后立即删除。</li>
+                                <li>
+                                    其它<b>收集要素</b>（<b>Eyeball 卡</b>＝当面交换、<b>SWL 收听报告</b>＝收听台凭证）也可提交留档，
+                                    它们属于收集凭证、<b>不参与</b>日志判定，是否计入由奖状规则说明为准。
+                                </li>
                                 <li>申领成功后生成唯一序列号与二维码，可通过公开校验页查验。</li>
                                 <li>请勿上传虚假或违反法律法规的材料，详见站内《内容规范》。</li>
                             </ul>
@@ -2131,8 +2240,7 @@ const AllLogsView = () => {
     const [qsoAwards, setQsoAwards] = useState([]);
     const [loading, setLoading] = useState(true);
 
-    useEffect(() => {
-        // 3. 修复：当前普通用户界面中，全部日志未显示当前用户的完整日志
+    const load = () => {
         setLoading(true);
         // Added timestamp to prevent caching
         apiFetch(`/user/qsos?t=${new Date().getTime()}`)
@@ -2143,7 +2251,9 @@ const AllLogsView = () => {
             })
             .catch(console.error)
             .finally(() => setLoading(false));
-    }, []);
+    };
+
+    useEffect(() => { load(); }, []);
 
     const showQsoDetails = async (qso) => {
         setDetailQso(qso);
@@ -2156,7 +2266,19 @@ const AllLogsView = () => {
 
     return (
         <div className="space-y-6">
-            <h3 className="font-bold text-lg flex items-center gap-2"><List className="text-blue-600"/> 全部日志</h3>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="font-bold text-lg flex items-center gap-2"><List className="text-blue-600"/> 全部日志</h3>
+                <div className="flex items-center gap-3">
+                    {/* 实物卡片审核通过后会自动补一条日志（前提是材料填了通联日期），这里给个刷新入口 */}
+                    <span className="text-xs text-slate-400">实物卡片审核通过后会自动补建日志（需材料填写通联日期）</span>
+                    <button
+                        onClick={load}
+                        className="rounded-lg border px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50"
+                    >
+                        刷新
+                    </button>
+                </div>
+            </div>
             <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
                 <div className="overflow-x-auto">
                     <table className="w-full text-left text-sm">
@@ -2183,10 +2305,19 @@ const AllLogsView = () => {
                                             <button onClick={()=>showQsoDetails(log)} className="px-3 py-1 bg-blue-50 text-blue-600 rounded text-xs font-bold hover:bg-blue-100 border border-blue-200">详情</button>
                                         </td>
                                         <td className="p-4 font-mono">{log.qso_date}</td>
-                                        <td className="p-4 font-bold">{log.callsign}</td>
+                                        <td className="p-4 font-bold">
+                                            {log.callsign}
+                                            {/* 来源标记：这条是"实物卡片审核通过"时自动补建的（不是 ADIF 导入的） */}
+                                            {log.adif_raw?.source === 'evidence' && (
+                                                <span className="ml-2 rounded-full border border-emerald-200 bg-emerald-100 px-2 py-0.5 align-middle text-[10px] font-bold text-emerald-700">
+                                                    实物卡片
+                                                </span>
+                                            )}
+                                        </td>
                                         <td className="p-4">{log.band}</td>
                                         <td className="p-4">{log.mode}</td>
-                                        <td className="p-4 text-slate-500 truncate max-w-[150px]">{log.country}</td>
+                                        {/* 实物卡片补建的日志没有国家字段（卡片不采集），显式显示"—"免得看着像加载失败 */}
+                                        <td className="p-4 text-slate-500 truncate max-w-[150px]">{log.country || '—'}</td>
                                     </tr>
                                 ))
                             )}
@@ -2514,8 +2645,8 @@ export default function App() {
   
   // New States for Menu and Notifications
   const [expandedMenus, setExpandedMenus] = useState({});
-  const [notifications, setNotifications] = useState({ pending: 0, returned: 0 });
-  const [notifData, setNotifData] = useState({ list: [], unread: 0 });
+  // 站内通知：list = 通知内容，unread = 铃铛红点，byType = 各业务类型的未读数（→ 侧边栏对应菜单红点）
+  const [notifData, setNotifData] = useState({ list: [], unread: 0, byType: {} });
   const [notifPanel, setNotifPanel] = useState(false);
 
   useEffect(() => {
@@ -2604,55 +2735,97 @@ export default function App() {
       if (!isRouteAllowed(subView, user.role)) setSubView(DEFAULT_ROUTE);
   }, [user, subView]);
 
-  // 1 & 2. Auto-check for notifications every 1 second
-  useEffect(() => {
-      if (view !== 'main' || !user) return;
-      
-      const checkNotifications = () => {
-          // Re-use dashboard stats endpoint for notifications
-          // In a real app, you might want a lighter endpoint
-          apiFetch('/stats/dashboard').then(stats => {
-              if (user.role === 'admin') {
-                  setNotifications({ pending: stats.awards_pending || 0 });
-              } else if (user.role === 'award_admin') {
-                  setNotifications({ returned: stats.my_returned || 0 });
-              }
-          }).catch(console.error);
-      };
-
-      const intervalId = setInterval(checkNotifications, 1000);
-      checkNotifications(); // Initial check
-
-      return () => clearInterval(intervalId);
-  }, [view, user]);
-
-  // 站内通知（M4.1）：每 10 秒拉一次未读数 + 列表
+  // ★ 2026-09-24：菜单红点改为「未读通知」驱动（原来用 /stats/dashboard 的"待审数量"，
+  //   点进菜单后下一次轮询又把它写回来 → 红点永远消不掉，用户报过这个问题）。
+  //   现在只有一个 10 秒轮询：通知列表 + 未读总数 + 按类型未读数（byType）。
   useEffect(() => {
       if (view !== 'main' || !user) return;
       const poll = () => {
-          apiFetch('/notifications').then((d) => setNotifData({ list: d.list || [], unread: d.unread || 0 })).catch(() => {});
+          apiFetch('/notifications')
+              .then((d) => setNotifData({ list: d.list || [], unread: d.unread || 0, byType: d.byType || {} }))
+              .catch(() => {});
       };
       poll();
       const t = setInterval(poll, 10000);
       return () => clearInterval(t);
   }, [view, user]);
 
+  /**
+   * 通知类型 → 侧边栏菜单：点进对应页面就把该类型的未读清掉（红点消失）。
+   * 没在表里的类型（如"审核通过/驳回"这类**结果通知给申请人自己**的）只出现在铃铛里。
+   */
+  const MENU_NOTIF_TYPES = {
+      admin_audit: ['award_pending'],
+      award_returned: ['award_returned'],
+      drafts_group: ['award_returned'],
+      evidence_audit: ['evidence_pending'],
+      users: ['role_request'],
+  };
+
+  /** 某菜单项的未读数（未映射的类型返回 0，不显示红点） */
+  const notifDot = (types) => (types || []).reduce((sum, t) => sum + (notifData.byType?.[t] || 0), 0);
+
+  /** 点通知面板里的某条 → 跳到相关页面（只做有明确落点的类型） */
+  const NOTIF_TARGET = {
+      award_pending: 'admin_audit',
+      evidence_pending: 'evidence_audit',
+      role_request: 'users',
+      award_returned: 'award_returned',
+  };
+
   const markAllRead = async () => {
       try {
           await apiFetch('/notifications/read', { method: 'POST', body: JSON.stringify({ all: true }) });
-          setNotifData((prev) => ({ list: prev.list.map((n) => ({ ...n, read: true })), unread: 0 }));
+          setNotifData((prev) => ({ list: prev.list.map((n) => ({ ...n, read: true })), unread: 0, byType: {} }));
       } catch (e) { /* ignore */ }
   };
 
-  // 点单条通知即视为已读
-  const markRead = async (id) => {
+  /** 按类型标记已读（点菜单时调用）：本地同步清红点，避免等下一次轮询 */
+  const markTypesRead = async (types) => {
+      if (!types || !types.length || !user) return;
+      const cleared = notifDot(types);
+      if (cleared === 0) return;
       try {
-          await apiFetch('/notifications/read', { method: 'POST', body: JSON.stringify({ id }) });
-          setNotifData((prev) => ({
-              list: prev.list.map((n) => (n.id === id ? { ...n, read: true } : n)),
-              unread: Math.max(0, prev.unread - 1),
-          }));
+          await apiFetch('/notifications/read', { method: 'POST', body: JSON.stringify({ types }) });
       } catch (e) { /* ignore */ }
+      setNotifData((prev) => {
+          const byType = { ...(prev.byType || {}) };
+          types.forEach((t) => { delete byType[t]; });
+          return {
+              ...prev,
+              byType,
+              unread: Math.max(0, prev.unread - cleared),
+              list: prev.list.map((n) => (types.includes(n.type) ? { ...n, read: true } : n)),
+          };
+      });
+  };
+
+  // 点单条通知即视为已读（并可跳到相关页面）
+  const markRead = async (id) => {
+      const item = notifData.list.find((n) => n.id === id);
+      if (item && !item.read) {
+          try {
+              await apiFetch('/notifications/read', { method: 'POST', body: JSON.stringify({ id }) });
+          } catch (e) { /* ignore */ }
+          setNotifData((prev) => {
+              const byType = { ...(prev.byType || {}) };
+              if (byType[item.type]) {
+                  byType[item.type] = Math.max(0, byType[item.type] - 1);
+                  if (!byType[item.type]) delete byType[item.type];
+              }
+              return {
+                  ...prev,
+                  byType,
+                  list: prev.list.map((n) => (n.id === id ? { ...n, read: true } : n)),
+                  unread: Math.max(0, prev.unread - 1),
+              };
+          });
+      }
+      const target = item && NOTIF_TARGET[item.type];
+      if (target) {
+          setSubView(target);
+          setNotifPanel(false);
+      }
   };
 
   const refreshUser = async () => {
@@ -2738,11 +2911,9 @@ export default function App() {
           toggleMenu(item.id);
       } else {
           setSubView(item.id);
-          // 1 & 2. Click to clear red dot simulation (real clear happens on next poll usually, but UI can be optimistic)
-          if (item.id === 'admin_audit') setNotifications(prev => ({ ...prev, pending: 0 }));
-          if (item.id === 'award_returned') setNotifications(prev => ({ ...prev, returned: 0 })); 
-          // Note: Logic says "Click to enter interface then eliminate red dot". 
-          // The interval will keep it 0 if the backend status changes, or we can just ignore it locally until refresh.
+          // ★ 进入页面即把该菜单对应的通知标记为已读（后端也写 read=TRUE），
+          //   所以红点是"真的"消失，不会像以前那样被下一次轮询写回来。
+          markTypesRead(MENU_NOTIF_TYPES[item.id]);
       }
   };
 
@@ -3019,31 +3190,32 @@ export default function App() {
           { id: 'lotw_import', label: 'LoTW 直连', icon: Globe, show: true },
           { id: 'all_logs', label: '全部日志', icon: List, show: true }, 
           
-          // 奖状管理（奖状管理员）：`group` 用于在侧边栏输出分组标题，见下方 nav 渲染
-          { id: 'award_create', label: '新建奖状', icon: Plus, show: user.role === 'award_admin', group: '奖状管理' },
+          // 奖状管理：**奖状管理员与系统管理员都能用**（admin 也要能建奖状并发起审核）。
+          // `group` 用于在侧边栏输出分组标题，见下方 nav 渲染。
+          { id: 'award_create', label: '新建奖状', icon: Plus, show: user.role === 'award_admin' || user.role === 'admin', group: '奖状管理' },
           { 
               id: 'drafts_group', 
               label: '草稿箱', 
               icon: FileText, 
-              show: user.role === 'award_admin',
+              show: user.role === 'award_admin' || user.role === 'admin',
               group: '奖状管理',
               isDropdown: true,
               children: [
                   { id: 'award_drafts', label: '我的草稿' },
-                  { id: 'award_returned', label: '打回草稿', notification: notifications.returned }
+                  { id: 'award_returned', label: '打回草稿', notification: notifDot(['award_returned']) }
               ],
-              notification: notifications.returned // 2. Parent red dot if child has notifications
+              notification: notifDot(['award_returned']) // 父项红点跟随子项
           },
-          { id: 'award_audit_list', label: '审核列表', icon: List, show: user.role === 'award_admin', group: '奖状管理' },
-          { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'award_admin', group: '奖状管理' },
+          { id: 'award_audit_list', label: '审核列表', icon: List, show: user.role === 'award_admin' || user.role === 'admin', group: '奖状管理' },
+          { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'award_admin', group: '奖状管理', notification: notifDot(['evidence_pending']) },
 
           // ★ 后台管理（仅最高级管理员）：把「用户管理 / 奖状审核 / 实物材料审核 / 审计日志」
           //   等管理类操作收进同一个分组，避免和普通用户菜单混在一起。
-          { id: 'admin_audit', label: '奖状审核', icon: CheckCircle, show: user.role === 'admin', group: '后台管理', notification: notifications.pending }, // 1. System Admin Red Dot
+          { id: 'admin_audit', label: '奖状审核', icon: CheckCircle, show: user.role === 'admin', group: '后台管理', notification: notifDot(['award_pending']) },
           { id: 'admin_overview', label: '奖状总览', icon: Layout, show: user.role === 'admin', group: '后台管理' },
           { id: 'issuanceManager', label: '颁发管理', icon: Trophy, show: user.role === 'admin', group: '后台管理' }, 
-          { id: 'users', label: '用户管理', icon: Users, show: user.role === 'admin', group: '后台管理' },
-          { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'admin', group: '后台管理' },
+          { id: 'users', label: '用户管理', icon: Users, show: user.role === 'admin', group: '后台管理', notification: notifDot(['role_request']) },
+          { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'admin', group: '后台管理', notification: notifDot(['evidence_pending']) },
           { id: 'admin_logs', label: '审计日志', icon: ShieldCheck, show: user.role === 'admin', group: '后台管理' },
           
           // Common Bottom

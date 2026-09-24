@@ -306,6 +306,10 @@ async function upgradeSchema() {
     await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_band VARCHAR(10)`);
     await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_mode VARCHAR(10)`);
     await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_date VARCHAR(20)`);
+    // 通联时间（2026-09-24）：表单允许按 UTC / BJT 等时区填写，但**统一换算成 UTC 后入库与匹配**。
+    // match_time = UTC 的 HHMM；match_tz_offset = 用户填写时用的时区偏移（仅用于展示，不参与匹配）。
+    await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_time VARCHAR(4)`);
+    await client.query(`ALTER TABLE award_evidence ADD COLUMN IF NOT EXISTS match_tz_offset INTEGER`);
 
     // 站内通知（M4.1）：审核员待审提醒 + 申请人审核结果通知
     await client.query(`
@@ -729,13 +733,24 @@ app.get('/api/stats/dashboard', verifyToken, async (req, res) => {
             // 修正：显示当前系统中已经颁发的全部奖状计数
             const totalIssued = await client.query("SELECT count(*) FROM user_awards");
 
+            // ★ admin 现在也能建奖状并发起审核（2026-09-24）：
+            //   除了全局统计，也把自己当"奖状制作者"的那份统计给前端（草稿箱红点、我的发布等）
+            const myApproved = await client.query("SELECT count(*) FROM awards WHERE creator_id=$1 AND status='approved'", [id]);
+            const myDrafts = await client.query("SELECT count(*) FROM awards WHERE creator_id=$1 AND status='draft'", [id]);
+            const myPending = await client.query("SELECT count(*) FROM awards WHERE creator_id=$1 AND status='pending'", [id]);
+            const myReturned = await client.query("SELECT count(*) FROM awards WHERE creator_id=$1 AND status='returned'", [id]);
+
             stats = {
                 system_status: 'running',
                 online_users: onlineUsers.rows,
                 total_users: totalUsers.rows,
                 awards_approved: totalAwards.rows[0].count,
                 awards_pending: pendingAwards.rows[0].count,
-                awards_issued: totalIssued.rows[0].count // Added global total count
+                awards_issued: totalIssued.rows[0].count, // Added global total count
+                my_approved: myApproved.rows[0].count,
+                my_drafts: myDrafts.rows[0].count,
+                my_pending: myPending.rows[0].count,
+                my_returned: myReturned.rows[0].count
             };
         }
         res.json(stats);
@@ -1053,6 +1068,17 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
                 targetId: id,
                 detail: { award: name, status, mode: 'update' },
             });
+            // ★ 提交审核 → 通知所有最高级管理员。
+            //   侧边栏「奖状审核」的红点就来自这条 award_pending 通知（点进去即清），
+            //   不再依赖"待审数量"那种点了也消不掉的计数。
+            if (status === 'pending') {
+                const admins = await dbPool.query(`SELECT id FROM users WHERE role='admin'`);
+                await notifyUsers(dbPool, admins.rows.map((r) => r.id), {
+                    type: 'award_pending',
+                    title: '有新的奖状待审核',
+                    body: `${req.user.callsign} 重新提交了奖状「${name}」，请到「奖状审核」处理。`,
+                });
+            }
             res.json({ success: true, id });
         } else {
             // 新建
@@ -1069,6 +1095,15 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
                 targetId: inserted.rows[0].id,
                 detail: { award: name, status, mode: 'create' },
             });
+            // 同上：新建并直接提交审核时通知管理员（侧边栏「奖状审核」红点）
+            if (status === 'pending') {
+                const admins = await dbPool.query(`SELECT id FROM users WHERE role='admin'`);
+                await notifyUsers(dbPool, admins.rows.map((r) => r.id), {
+                    type: 'award_pending',
+                    title: '有新的奖状待审核',
+                    body: `${req.user.callsign} 提交了奖状「${name}」，请到「奖状审核」处理。`,
+                });
+            }
             res.json({ success: true, id: inserted.rows[0].id });
         }
         await client.query('COMMIT');

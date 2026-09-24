@@ -40,7 +40,8 @@ export function createNotificationsRouter({ getDbPool, verifyToken }) {
     const router = express.Router();
     const db = () => getDbPool();
 
-    // 当前用户的通知（未读优先，最近 50 条）+ 未读总数
+    // 当前用户的通知（未读优先，最近 50 条）+ 未读总数 + **按类型分组的未读数**
+    // byType 是给侧边栏「对应菜单红点」用的：点进那个页面就把该类型的未读清掉（见 POST /read 的 types）
     router.get('/', verifyToken, async (req, res) => {
         try {
             const list = await db().query(
@@ -55,20 +56,34 @@ export function createNotificationsRouter({ getDbPool, verifyToken }) {
                 `SELECT COUNT(*)::int AS n FROM notifications WHERE user_id = $1 AND read = FALSE`,
                 [req.user.id],
             );
-            res.json({ list: list.rows, unread: unread.rows[0].n });
+            const byType = await db().query(
+                `SELECT type, COUNT(*)::int AS n
+                   FROM notifications
+                  WHERE user_id = $1 AND read = FALSE
+                  GROUP BY type`,
+                [req.user.id],
+            );
+            const byTypeMap = {};
+            byType.rows.forEach((r) => { byTypeMap[r.type] = r.n; });
+            res.json({ list: list.rows, unread: unread.rows[0].n, byType: byTypeMap });
         } catch (e) {
             res.status(500).json({ error: e.message });
         }
     });
 
-    // 标记已读：{ all: true } 或 { id }
+    // 标记已读：{ all: true } / { id } / { types: [...] }（点菜单进对应页面时按类型清红点）
     router.post('/read', verifyToken, async (req, res) => {
         try {
-            const { all, id } = req.body || {};
+            const { all, id, types } = req.body || {};
             if (all) {
                 await db().query(`UPDATE notifications SET read = TRUE WHERE user_id = $1`, [req.user.id]);
             } else if (id) {
                 await db().query(`UPDATE notifications SET read = TRUE WHERE id = $1 AND user_id = $2`, [id, req.user.id]);
+            } else if (Array.isArray(types) && types.length) {
+                await db().query(
+                    `UPDATE notifications SET read = TRUE WHERE user_id = $1 AND type = ANY($2::text[])`,
+                    [req.user.id, types],
+                );
             }
             res.json({ success: true });
         } catch (e) {
