@@ -40,6 +40,42 @@ const generateSerial = () => {
   return serial;
 };
 
+/** 报表可选日期区间的下界（与 lotwClient 的 HISTORY_START 一致） */
+const REPORT_MIN_DATE = '1900-01-01';
+
+/** 严格 YYYY-MM-DD：**年份必须正好 4 位**（原生 date 控件允许 5~6 位年份，必须挡住） */
+const isStrictIsoDate = (v) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const d = new Date(`${v}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+};
+
+/**
+ * 校验可选的日期区间参数。
+ *
+ * ⚠️ 为什么必须**显式报错**而不能放过：`fetchLotwReports()` 里对不合法日期是
+ *    **静默回退**到 `1900-01-01 → 今天`（全量历史）。用户以为自己只缩小了一小段，
+ *    实际拉的是全部日志 —— 表现就是「读取很慢/超时」，而且完全看不出原因。
+ *    浏览器的 `<input type="date">` 年份段允许超过 4 位（Chrome 上限 275760），
+ *    所以「111111-11-11」这种值真的能从界面传上来（2026-09-24 用户实测）。
+ *
+ * @returns {string|null} 错误信息；null 表示通过
+ */
+const validateReportRange = (from, to) => {
+  const today = new Date().toISOString().slice(0, 10);
+  for (const [label, v] of [['起始日期', from], ['结束日期', to]]) {
+    if (!v) continue; // 留空 = 全部历史，是允许的
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      return `${label}格式不正确：年份必须是 4 位数字（如 2020-01-01），请用日历选择器或快捷按钮重填`;
+    }
+    if (!isStrictIsoDate(v)) return `${label}不是一个真实存在的日期`;
+    if (v < REPORT_MIN_DATE) return `${label}不能早于 ${REPORT_MIN_DATE}`;
+    if (v > today) return `${label}不能晚于今天（${today}）`;
+  }
+  if (from && to && from > to) return '起始日期不能晚于结束日期';
+  return null;
+};
+
 export function createLotwRouter({ getDbPool, verifyToken, getConfig }) {
   const router = express.Router();
 
@@ -74,8 +110,14 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig }) {
       return res.status(400).json({ error: 'INVALID_PASSWORD', message: '请输入有效的 LoTW 密码' });
     }
 
-    const from = body.from ? String(body.from) : undefined;
-    const to = body.to ? String(body.to) : undefined;
+    const fromRaw = body.from ? String(body.from).trim() : '';
+    const toRaw = body.to ? String(body.to).trim() : '';
+    const rangeError = validateReportRange(fromRaw, toRaw);
+    if (rangeError) {
+      return res.status(400).json({ error: 'INVALID_RANGE', message: rangeError });
+    }
+    const from = fromRaw || undefined;
+    const to = toRaw || undefined;
     const ownCall = body.ownCall ? String(body.ownCall).trim() : undefined;
     const includeAll = !!body.includeAll;
 

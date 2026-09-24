@@ -52,6 +52,34 @@ const yearsAgoStr = (n) => {
   return d.toISOString().slice(0, 10);
 };
 
+/** 可选日期区间的下界（与后端 /api/lotw/connect 的 REPORT_MIN_DATE 保持一致） */
+const MIN_REPORT_DATE = '1900-01-01';
+
+/**
+ * 提交前的区间校验。
+ * ⚠️ 为什么需要：`<input type="date">` 是原生控件，**年份段允许超过 4 位**
+ *    （Chrome 上限 275760），用户能输成「111111-11-11」；而服务端的
+ *    `fetchLotwReports()` 对不合法日期是**静默回退**到全部历史，
+ *    于是"缩小范围"实际变成"拉取 1900 年至今的全部日志"，只表现为变慢/超时。
+ *    后端现在也会返回 400，这里先拦一道给出即时反馈。
+ * @returns {string|null} 错误信息；null 表示通过
+ */
+const validateRangeInput = (from, to) => {
+  const today = todayStr();
+  for (const [label, v] of [['起始日期', from], ['结束日期', to]]) {
+    if (!v) continue; // 留空 = 全部历史
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      return `${label}的年份必须是 4 位数字（如 2020-01-01），请用日历图标选日期或点下面的快捷按钮`;
+    }
+    const d = new Date(`${v}T00:00:00Z`);
+    if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v) return `${label}不是一个真实存在的日期`;
+    if (v < MIN_REPORT_DATE) return `${label}不能早于 ${MIN_REPORT_DATE}`;
+    if (v > today) return `${label}不能晚于今天（${today}）`;
+  }
+  if (from && to && from > to) return '起始日期不能晚于结束日期';
+  return null;
+};
+
 export default function LotwImportView() {
   const [consent, setConsent] = useState(() => {
     try {
@@ -153,6 +181,12 @@ export default function LotwImportView() {
     setError(null);
     if (!form.login.trim() || !form.password) {
       setError('请填写 LoTW 用户名与密码');
+      return;
+    }
+    // 日期区间先自己校验一遍：原生控件允许 5~6 位年份，服务端会静默回退成全量历史
+    const rangeError = validateRangeInput(form.from, form.to);
+    if (rangeError) {
+      setError(rangeError);
       return;
     }
     setConnecting(true);
@@ -403,8 +437,11 @@ export default function LotwImportView() {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-slate-500 mb-1">起始日期</label>
+              {/* min/max 让日历选择器直接禁用越界日期（原生日期框默认没有上下限） */}
               <input
                 type="date"
+                min={MIN_REPORT_DATE}
+                max={todayStr()}
                 className="w-full p-3 border rounded-xl"
                 value={form.from}
                 onChange={(e) => update({ from: e.target.value })}
@@ -414,6 +451,8 @@ export default function LotwImportView() {
               <label className="block text-xs text-slate-500 mb-1">结束日期</label>
               <input
                 type="date"
+                min={MIN_REPORT_DATE}
+                max={todayStr()}
                 className="w-full p-3 border rounded-xl"
                 value={form.to}
                 onChange={(e) => update({ to: e.target.value })}
@@ -442,8 +481,9 @@ export default function LotwImportView() {
             </button>
           </div>
           <p className="text-xs text-slate-400 mt-2">
-            留空表示读取全部历史。日期框是浏览器原生控件，<b>年份要输满 4 位</b>（如 2026）才会自动跳到月份，
-            月份与日各 2 位即可；也可以直接点开输入框里的日历图标选日期。
+            留空表示读取全部历史（等同 {MIN_REPORT_DATE} 起）。日期框是浏览器原生控件，<b>年份只能是 4 位</b>（如 2026），
+            输满才会自动跳到月份，月份与日各 2 位即可；推荐直接点输入框里的日历图标选日期。
+            可选范围为 <b>{MIN_REPORT_DATE} ~ 今天</b>，超出或起始晚于结束都会被拦下并提示。
             若提示数据量过大，服务端会自动按日期二分重试；仍失败时请手动缩小范围。
           </p>
         </div>
