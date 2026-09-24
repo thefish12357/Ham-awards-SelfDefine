@@ -194,7 +194,7 @@ export default function InviteCodePanel() {
               <input
                 value={form.note}
                 onChange={(e) => setForm({ ...form, note: e.target.value })}
-                placeholder="例如：给 BH7CSA 邀请的 3 位朋友"
+                placeholder="例如：给 BG1ABC 邀请的 3 位朋友"
                 className="mt-1 w-full rounded-lg border p-2 text-sm"
               />
             </label>

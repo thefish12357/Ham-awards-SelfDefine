@@ -111,7 +111,7 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
   const selected = selectedRaw ? resolveElementForLevel(selectedRaw, editLevel) : null;
 
   const sampleData = {
-    callsign: 'BH2VSQ',
+    callsign: 'BG1ABC',
     awardName: awardName || '奖状名称',
     level: 'Gold',
     serial: '1234567890123456',

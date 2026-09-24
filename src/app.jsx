@@ -689,7 +689,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
     const previewData = {
         callsign: (() => {
             try {
-                return JSON.parse(localStorage.getItem('ham_user') || '{}').callsign || 'BH2VSQ';
+                return JSON.parse(localStorage.getItem('ham_user') || '{}').callsign || 'BG1ABC';
             } catch {
                 return 'BH2VSQ';
             }
@@ -3101,7 +3101,7 @@ export default function App() {
                 <form onSubmit={handleOauthComplete} className="space-y-4">
                     <div className="space-y-1">
                         <label className={labelCls}>本站呼号</label>
-                        <input name="callsign" required defaultValue={oauthPendingUsername} className={`${field} uppercase`} placeholder="例如: BH7CSA" />
+                        <input name="callsign" required defaultValue={oauthPendingUsername} className={`${field} uppercase`} placeholder="例如: BG1ABC" />
                     </div>
                     <div className="space-y-1">
                         <label className={labelCls}>本站密码（可选）</label>
@@ -3215,7 +3215,7 @@ export default function App() {
                 <div className="text-[10px] font-bold uppercase tracking-[0.35em]" style={{ color: '#b45309' }}>Certificate</div>
                 <div className="mt-2 text-lg font-black" style={{ color: '#0f172a' }}>DX 大师奖</div>
                 <div className="mt-0.5 text-[10px] font-bold tracking-widest" style={{ color: '#d97706' }}>GOLD LEVEL</div>
-                <div className="mt-4 font-serif text-xl italic" style={{ color: '#1e293b' }}>BH7CSA</div>
+                <div className="mt-4 font-serif text-xl italic" style={{ color: '#1e293b' }}>BG1ABC</div>
                 <div className="mx-auto mt-2 h-px w-16" style={{ backgroundColor: '#e2e8f0' }} />
                 <div className="mt-4 flex items-center justify-between text-[9px]" style={{ color: '#64748b' }}>
                   <span className="font-mono">SN 7D0B5DF2</span>

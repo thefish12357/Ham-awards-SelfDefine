@@ -5,6 +5,12 @@
 
 业余无线电领域的奖状申请与管理平台：管理员**可视化设计**奖状模板，用户**申请并下载 PDF 奖状**，支持 **LoTW 免上传取日志**、**公开校验页防伪**。
 
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="License: GPL-3.0"></a>
+  <img src="https://img.shields.io/badge/前端-React%2018%20%2B%20Vite%204-61dafb.svg" alt="Frontend">
+  <img src="https://img.shields.io/badge/后端-Express%204%20%2B%20PostgreSQL-336791.svg" alt="Backend">
+</p>
+
 ---
 
 ## 相比上游的主要改动
@@ -57,6 +63,26 @@ npm run dev                      # 前端热更新，http://localhost:5173（/ap
 > 端口说明：后端 **9993**、前端 **5173**（开发）/ `dist` 由后端静态托管（生产）。上游 README 里的 3003 已过时。
 
 ---
+
+## 数据来源与第三方许可
+
+- **DXCC 前缀数据** `data/cty.dat`：来自 [Country Files](https://www.country-files.com)（Jim Reisert, AD1C），依其约定自由再分发须保留署名与来源，详见 [`data/NOTICE.md`](./data/NOTICE.md)；同步方式见 `scripts/update-cty.mjs`。
+- **字体**：思源黑体 / 思源宋体（SIL OFL 1.1），许可见 `public/fonts/LICENSE-*.txt`，**请勿删除**。
+- **图标**：lucide-react（ISC）。
+- **上游代码**：基于 [BH2VSQ/Ham-awards-SelfDefine](https://github.com/BH2VSQ/Ham-awards-SelfDefine) v2.2.0，已获作者 GPL-3.0 授权。
+
+## 截图 / Screenshots
+
+> 以下截图均在**独立演示库**截取，示例呼号为虚构（BG1ABC / VR2XYZ / BD3ZZZ），不含任何真实通联数据。
+
+| 页面 | 说明 |
+| --- | --- |
+| ![落地页](docs/screenshots/01-landing.png) | 公开落地页：功能介绍与示例奖状 |
+| ![登录](docs/screenshots/02-login.png) | 登录 / 注册（含 HamCQ 登录） |
+| ![仪表盘](docs/screenshots/03-dashboard.png) | 管理员仪表盘与数据维护（DXCC 库一键更新） |
+| ![设计器](docs/screenshots/04-designer.png) | 可视化奖状设计器（拖拽元素 / 多等级差异 / 撤销重做） |
+
+补充截图（校验页、LoTW 直连、实物材料审核等）欢迎 PR。
 
 ## 许可证
 

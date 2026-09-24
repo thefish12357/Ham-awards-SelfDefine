@@ -354,7 +354,7 @@ export default function LotwImportView() {
             <label className="block text-sm font-bold text-slate-700 mb-1">LoTW 用户名</label>
             <input
               className="w-full p-3 border rounded-xl font-mono"
-              placeholder="通常是你的呼号，例如 BH2VSQ"
+              placeholder="通常是你的呼号，例如 BG1ABC"
               value={form.login}
               onChange={(e) => update({ login: e.target.value })}
               autoComplete="off"
@@ -375,7 +375,7 @@ export default function LotwImportView() {
             <label className="block text-sm font-bold text-slate-700 mb-1">本方呼号（可选）</label>
             <input
               className="w-full p-3 border rounded-xl font-mono"
-              placeholder="多呼号账号时用来筛选，例如 BH2VSQ/P"
+              placeholder="多呼号账号时用来筛选，例如 BG1ABC/P"
               value={form.ownCall}
               onChange={(e) => update({ ownCall: e.target.value })}
             />

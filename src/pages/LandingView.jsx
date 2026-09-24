@@ -77,9 +77,9 @@ const CAPABILITIES = ['LoTW 直连', 'ADIF 解析', '可视化设计器', '多�
 
 /** 首页「成品预览」用的示例奖状（仅演示界面形态，非真实用户数据） */
 const PREVIEW_AWARDS = [
-  { level: 'GOLD', name: 'DX 大师奖', callsign: 'BH7CSA', sn: '7D0B5DF2' },
-  { level: 'SILVER', name: '波段收集奖', callsign: 'BH2VSQ', sn: '6F63B9AE' },
-  { level: 'BRONZE', name: '网格探索奖', callsign: 'BH2TEST', sn: 'A1C93F07' },
+  { level: 'GOLD', name: 'DX 大师奖', callsign: 'BG1ABC', sn: '7D0B5DF2' },
+  { level: 'SILVER', name: '波段收集奖', callsign: 'VR2XYZ', sn: '6F63B9AE' },
+  { level: 'BRONZE', name: '网格探索奖', callsign: 'BD3ZZZ', sn: 'A1C93F07' },
 ];
 
 function SectionHeading({ eyebrow, title, desc }) {

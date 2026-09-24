@@ -4,6 +4,7 @@ dist/
 
 # 运行时生成的敏感配置（内含 jwtSecret / 数据库口令），严禁提交
 config.json
+config.demo*.json
 
 # multer 上传临时目录
 uploads/
