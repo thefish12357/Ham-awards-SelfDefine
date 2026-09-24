@@ -17,6 +17,10 @@ import {
 import { apiFetch } from './lib/apiFetch.js';
 // 统一确认弹层（替代原生 confirm/prompt，防手滑删除/提交）
 import { confirmDialog, promptDialog, infoDialog } from './lib/confirm.jsx';
+// 按需加载失败自愈（部署后旧页面里的 chunk 已不存在 → 自动刷新一次）
+import { importWithRetry } from './lib/lazyImport.js';
+// 奖状目标类型规格（placeholder / 即时提示 / 保存前校验）
+import { TARGET_SPECS, validateRulesTargets } from './lib/awardTargets.js';
 import { DEFAULT_ROUTE, isPublicHashRoute, isRouteAllowed, parseVerifyHash, readPublicPage, readRoute, writeRoute } from './lib/routes.js';
 import LotwImportView from './pages/LotwImportView.jsx';
 import VerifyView from './pages/VerifyView.jsx';
@@ -364,8 +368,8 @@ const LogMatchMatrix = ({ qsos, award, checkResult }) => {
     if (hasSpecificTargets && checkResult?.breakdown) {
         const { breakdown } = checkResult;
         
-        // We need to know the LABEL of the target type
-        const targetLabel = rules.targets.type.toUpperCase();
+        // 表头用中文标签（「DXCC 实体编号」而不是光秃秃的 "DXCC"），避免用户看不懂在比什么
+        const targetLabel = (TARGET_SPECS[rules.targets.type] || {}).label || rules.targets.type.toUpperCase();
         
         const missingItems = breakdown.missing.map(m => ({ target: m, qso: null }));
         
@@ -522,8 +526,10 @@ const MyAwardsView = ({ user }) => {
         if (ua?.detached) return;
         setExportingId(ua.id);
         try {
-            // 动态加载：PDF 相关依赖较大，不让它进首屏包
-            const { downloadAwardPdf } = await import('./lib/exportAwardPdf.js');
+            // 动态加载：PDF 相关依赖较大，不让它进首屏包。
+            // 走 importWithRetry：部署新版本后旧页面里这个 chunk 已不存在，会自动刷新一次
+            // 拿新版本，而不是甩一句 "Failed to fetch dynamically imported module"（2026-09-24 用户实测）。
+            const { downloadAwardPdf } = await importWithRetry(() => import('./lib/exportAwardPdf.js'), { label: 'PDF 导出模块' });
             const { failedImages } = await downloadAwardPdf({
                 layout: normalizeLayout(ua.layout, ua.bg_url),
                 data: buildAwardRenderData(ua, user.callsign),
@@ -758,7 +764,8 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
     const handlePreviewPdf = async () => {
         setExportingPdf(true);
         try {
-            const { downloadAwardPdf } = await import('./lib/exportAwardPdf.js');
+            // 同上：部署新版本后旧页面里的 chunk 已不存在 → 自动刷新一次而不是报英文错
+            const { downloadAwardPdf } = await importWithRetry(() => import('./lib/exportAwardPdf.js'), { label: 'PDF 导出模块' });
             const { failedImages } = await downloadAwardPdf({
                 layout: normalizeLayout(award.layout, award.bg_url),
                 data: previewData,
@@ -953,15 +960,19 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                             type="button"
                             onClick={handlePreviewPdf}
                             disabled={exportingPdf}
+                            // 首次导出要把中文字体（400 个子集）内联进图片，走公网时可能要几十秒；
+                            // 之后会复用缓存、通常 1~2 秒。提前说明，避免用户以为卡死了。
+                            title={exportingPdf ? '正在生成，首次可能需要 30 秒以上（要内联中文字体），请勿关闭页面' : '首次导出较慢（约 30 秒），之后会很快'}
                             className="w-full py-2.5 rounded-xl bg-slate-900 text-white text-xs font-bold flex items-center justify-center gap-2 disabled:opacity-60 shrink-0"
                         >
                             {exportingPdf ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
-                            {exportingPdf ? '生成中…' : '下载效果 PDF（用户最终拿到的样子）'}
+                            {exportingPdf ? '生成中…（首次较慢）' : '下载效果 PDF（用户最终拿到的样子）'}
                         </button>
                     )}
                     {hasLayout && (
                         <p className="text-[11px] text-slate-400 shrink-0">
                             实际效果用示例数据渲染，与用户申领后看到的、以及导出 PDF 的样式一致。
+                            首次导出需内联中文字体，可能要 30 秒以上；之后再导会快很多。
                         </p>
                     )}
                 </div>
@@ -981,6 +992,17 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                 <button onClick={()=>setShowMatrix(false)} className="text-sm text-slate-500 hover:text-black">← 返回详情</button>
                                 <h4 className="font-bold">日志匹配分析 (Log Matrix)</h4>
                             </div>
+                            {/* 明细页同样给出判定自检：用户点进来看明细时，最需要知道"为什么一条都没匹配上" */}
+                            {checkResult?.warnings?.length > 0 && (
+                                <div className="mb-3 space-y-2">
+                                    {checkResult.warnings.map((w, i) => (
+                                        <div key={i} className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] leading-relaxed text-amber-800">
+                                            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                                            <span>{w}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                             <div className="flex-1 overflow-hidden relative">
                                 {checkResult?.matching_qsos ? (
                                     <LogMatchMatrix qsos={checkResult.matching_qsos} award={award} checkResult={checkResult} />
@@ -1106,6 +1128,29 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                                             </div>
                                                         </div>
                                                     </div>
+                                                </div>
+                                            )}
+
+                                            {/* ★ 判定自检提示（2026-09-24）：把"进度为什么是 0"讲清楚。
+                                                最典型的是目标类型与清单格式不匹配（DXCC 类型填了呼号）——
+                                                引擎永远匹配不上，这里必须给出可执行的线索，而不是让用户对着 0 猜。 */}
+                                            {checkResult.warnings?.length > 0 && (
+                                                <div className="space-y-2">
+                                                    {checkResult.warnings.map((w, i) => (
+                                                        <div key={i} className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
+                                                            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                                                            <span>{w}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            {/* 判定口径：让用户能自己核对（多少条日志参与了判定） */}
+                                            {checkResult.stats && (
+                                                <div className="text-[11px] leading-relaxed text-slate-500">
+                                                    日志口径：共 <b>{checkResult.stats.total_qsos}</b> 条，
+                                                    通过基础筛选 <b>{checkResult.stats.basic_filtered}</b> 条，
+                                                    命中目标 <b>{checkResult.stats.target_matched}</b> 条。
                                                 </div>
                                             )}
 
@@ -1825,6 +1870,11 @@ const AwardDesigner = ({ initData, onClose }) => {
             });
             if (rangeError) throw new Error(`${rangeError}。`);
 
+            // ★ 目标清单格式必须与目标类型匹配（2026-09-24）：格式不符的目标永远无法命中，
+            //   用户会看到"进度一直是 0、明细全红"却毫无线索。这里在保存前拦下（后端也会 400）。
+            const targetError = validateRulesTargets(rules);
+            if (targetError) throw new Error(`${targetError}。`);
+
             // ★ 底图**不再必填**（2026-09-24 用户要求）：没有底图时就是「白底 + 元素排版」，
             //   默认模板本身已含双线边框与全部字段，完全可用，不该拦着不让存草稿。
             const finalBgUrl = layout.canvas?.bgUrl || bgUrl || '';
@@ -2036,14 +2086,36 @@ const AwardDesigner = ({ initData, onClose }) => {
                                             <option value="iota">特定 IOTA</option>
                                             <option value="state">特定州/省 (State)</option>
                                         </select>
-                                        {['callsign', 'dxcc', 'grid', 'iota', 'state'].includes(rules.targets.type) && (
-                                            <textarea 
-                                                className="w-full p-2 border rounded h-24 text-sm font-mono" 
-                                                placeholder="输入目标列表，用逗号分隔 (例如: BA1AA, BA4AA, BY1CRA...)"
-                                                value={rules.targets.list}
-                                                onChange={e=>setRules({...rules, targets: {...rules.targets, list: e.target.value}})}
-                                            />
-                                        )}
+                                        {/* ★ 清单格式必须随类型变化（2026-09-24）：
+                                            以前不管选哪种类型，placeholder 都写「例如: BA1AA, BA4AA…」，
+                                            于是有人在「特定 DXCC 实体」下填了呼号 —— 引擎比较的是
+                                            qso.dxcc（实体编号，如 318），永远不可能相等 →
+                                            进度恒为 0、明细全红且零报错（用户实测：'进度与明细未知'）。
+                                            现在 placeholder / 说明 / 即时校验三处都跟着类型走。 */}
+                                        {['callsign', 'dxcc', 'grid', 'iota', 'state'].includes(rules.targets.type) && (() => {
+                                            const spec = TARGET_SPECS[rules.targets.type];
+                                            const targetErr = validateRulesTargets(rules);
+                                            return (
+                                                <>
+                                                    <textarea
+                                                        className={`w-full p-2 border rounded h-24 text-sm font-mono ${targetErr ? 'border-red-400 bg-red-50' : ''}`}
+                                                        placeholder={spec ? spec.placeholder : '输入目标列表，用逗号分隔'}
+                                                        value={rules.targets.list}
+                                                        onChange={e=>setRules({...rules, targets: {...rules.targets, list: e.target.value}})}
+                                                    />
+                                                    {targetErr ? (
+                                                        <div className="mt-2 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-2 text-[11px] leading-relaxed text-red-700">
+                                                            <AlertCircle size={13} className="mt-0.5 shrink-0" />
+                                                            <span>{targetErr}</span>
+                                                        </div>
+                                                    ) : (
+                                                        <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
+                                                            <b>{spec?.label}</b>：{spec?.hint}。判定时由引擎与日志逐条比较，格式不符的目标永远不会命中。
+                                                        </p>
+                                                    )}
+                                                </>
+                                            );
+                                        })()}
                                     </div>
                                 </section>
 

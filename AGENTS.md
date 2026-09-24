@@ -55,6 +55,8 @@
 │   │   ├── uploadLimits.js #   ★ 上传体积上限/尺寸上限常量（前后端必须一致）
 │   │   ├── imageUpload.js  #   ★ 上传前置处理：类型/尺寸/体积校验 + 超尺寸自动等比缩小
 │   │   ├── dateInput.js    #   ★ 日期约束/校验唯一真源（DATE_MIN / DATE_FAR_MAX / validateDateInput）
+│   │   ├── awardTargets.js #   ★ 规则「目标对象」类型规格（placeholder/提示/清单格式校验）
+│   │   ├── lazyImport.js   #   ★ 按需加载失败自愈（部署后旧页面自动刷新一次）
 │   │   └── exportAwardPdf.js   #   客户端 PDF 导出（html-to-image + jsPDF，按需加载）
 │   ├── components/     # ★ 新增：可复用组件
 │   │   ├── AwardRenderer.jsx   #   布局 → DOM 渲染（编辑器/我的奖状/审核预览/PDF 共用）
@@ -65,9 +67,11 @@
 │       ├── LotwImportView.jsx  #   LoTW 直连页（需求①）
 │       └── VerifyView.jsx      #   公开校验页（免登录，二维码指向 #/verify/<serial>）
 ├── server/             # ★ 新增：后端新增模块（server.js 仍是唯一入口）
-│   ├── services/
+│   ├── services/         # （以下为节选，另有 cty / notifications / audit / invites / oauth 等）
 │   │   ├── adif.js           # ADIF 解析（整串 + 流式），替代 server.js 内联实现
-│   │   ├── awardEngine.js    # ★ 奖状判定引擎（纯函数，数据源可插拔）
+│   │   ├── awardEngine.js    # ★ 奖状判定引擎（纯函数，数据源可插拔；含 warnings/stats 自检）
+│   │   ├── awardTargets.js   # ★ 目标类型规格与清单校验（引擎 warnings 与 400 兜底共用）
+│   │   ├── dates.js          # ★ 服务端日期边界校验（与前端 dateInput.js 同规则）
 │   │   ├── lotwClient.js     # LoTW 报表拉取 + 自动二分重试
 │   │   └── lotwSessions.js   # ★ LoTW 临时会话（纯内存，TTL 30 分钟）
 │   └── routes/
@@ -334,6 +338,18 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     - 服务端同规则兜底 `server/services/dates.js`（`validateDate` / `validateRulesDateRange`）：`/api/awards` 的 rules 日期、`/api/evidence` 的 `match_date` 不合法一律 **400**，不信任前端。
     - ⚠️ 实物材料日期的服务端上界是**今天 +1 天**（`utcDateOffset(1)`）：用户在 UTC-11 等时区提交时，本地日期换算出的 UTC 日期可能"跨到明天"。
     - ⚠️ 历史数据里已有一条 `match_date='1111-11-11'`（用户 42 的 SWL 材料，被 4 位截断后仍越界）。SWL/Eyeball 不建日志所以没污染 QSO；新校验的下限 1900 已能拦住这一类。
+
+20. **★ 规则里的「目标对象」必须与清单格式一致，且 UI 提示要随类型变化**（2026-09-24 落地）。
+    - 症状：进度**恒为 0 / N、明细全红、零报错**，用户只能说"进度与明细未知"。实测根因是设计器的目标清单输入框**不管选哪种类型都提示「例如: BA1AA, BA4AA…」**，于是有人在「特定 DXCC 实体」下填了呼号；而引擎比较的是 `qso.dxcc`（实体**编号**，如 318），与呼号永远不可能相等。
+    - 规格只有一份：`server/services/awardTargets.js` 的 `TARGET_SPECS`（label / re / hint / fixHint）+ `validateTargetList`；前端镜像在 `src/lib/awardTargets.js`（**两份必须同步**，否则"前端能存、后端拒绝"）。
+    - 三处必须一起改：① 设计器 placeholder + 行内红字提示；② `saveAward` 保存前拦截；③ `POST /api/awards` 返回 **400 `INVALID_RULES_TARGETS`**。新增目标类型时同时补 `TARGET_FIELD_HINTS`（日志里对应字段名）。
+    - 判定引擎另外产出 **`warnings` + `stats`**（`total_qsos` / `basic_filtered` / `target_matched`），进度区与明细页都会展示——凡是"进度是 0"必须在界面上说清是**目标没命中 / 基础筛选滤掉了 / 日志缺字段 / 没有日志**中的哪一种，不能只给一个 0。
+
+21. **★ 前端按需加载（动态 import）页面要做"旧版本自愈"**（2026-09-24 落地）。
+    - 症状：用户报 `Failed to fetch dynamically imported module: …/assets/exportAwardPdf-<旧 hash>.js`。根因不是缓存，而是**还开着的旧页面**引用的 chunk 在重新构建后被删掉了（Vite 按内容 hash 命名）。
+    - 处理：`src/lib/lazyImport.js` 的 `importWithRetry(loader, {label})`（导出/预览等按需功能必须走它）+ `main.jsx` 监听 `vite:preloadError`；识别到此类错误就**自动刷新一次**，用 `sessionStorage.ham_chunk_reload_at` 防 15 秒内重复刷新（服务器真故障时不死循环），第二次才抛人话错误。
+    - 服务端配套 `express.static` 缓存策略：**`index.html` 必须 `no-cache`**、`/assets/*`（名字含 hash）`immutable, max-age=1y`、`/fonts/*` 等不含 hash 的保持默认校验。改静态托管时别丢掉这三条。
+    - ⚠️ **首次导出 PDF 在公网要 30~45 秒**：中文是 404 个子集 woff2，html-to-image 会把用到的字体族下**每个子集**都内联（实测 246 个 `/fonts/` 请求）。已在 `exportAwardPdf.js` 用 `getFontEmbedCSS()` 算一次并**缓存复用**（第二次导出 ~2 秒），并把超时从 30s 放宽到 90s；按钮上也有"首次较慢"的提示。别把超时改回 30s，否则隧道环境下会误报"生成图片超时"。
 - ⚠️ **`/api/awards/all_approved` 必须用显式列名**（已剔除 `audit_log` / `reject_reason`）：它是任何登录用户都能调的公开大厅接口，**不要改回 `SELECT *`**，否则每个奖状的审核流水都会泄露。
 - 前端：侧边栏按菜单项的 `group` 字段输出分组标题，`admin` 的「后台管理」分组集中了用户管理 / 奖状审核 / 实物材料审核 / 审计日志 / 颁发管理 / 奖状总览。
 

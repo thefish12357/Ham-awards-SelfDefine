@@ -15,7 +15,7 @@
 
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { toPng } from 'html-to-image';
+import { toPng, getFontEmbedCSS } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import AwardRenderer from '../components/AwardRenderer.jsx';
 import { toSameOriginMediaUrl } from './media.js';
@@ -88,6 +88,36 @@ const withTimeout = (promise, ms, message) =>
       throw new Error(message);
     }),
   ]);
+
+/**
+ * 矢量图生成超时（毫秒）。
+ * ⚠️ 不能设成 30 秒（2026-09-24）：本项目的中文用的是**按 unicode-range 切成 404 个 woff2 子集**
+ * 的思源字体（见 `public/fonts/`），html-to-image 内联字体时会把用到的字体族下**每个子集文件**
+ * 都 fetch 一遍 —— 实测一次导出会产生 **246 个 `/fonts/` 请求、约 10 MB**。走公网隧道（分享链接）
+ * 时经常突破 30 秒，用户就看到「生成图片超时：奖状里有图片无法访问」，**而实际上所有图片都正常**，
+ * 纯粹是被字体拖慢的。配合下面的 `fontEmbedCSS` 缓存，第二次导出会快很多。
+ */
+const EXPORT_TIMEOUT_MS = 90000;
+
+/**
+ * 字体内联 CSS 缓存。
+ * `getFontEmbedCSS()` 的结果**只取决于文档里的 @font-face**，与具体节点无关，所以一份就够：
+ * 首次导出付一次代价（几十秒），之后每次导出直接复用，省掉数百个字体请求。
+ */
+let cachedFontEmbedCSS = null;
+
+/** 计算（或复用）字体内联 CSS；失败时返回 null → 退回 html-to-image 自己处理 */
+const resolveFontEmbedCSS = async (node) => {
+  if (cachedFontEmbedCSS != null) return cachedFontEmbedCSS;
+  try {
+    const css = await withTimeout(getFontEmbedCSS(node), 60000, '字体内联超时');
+    if (css) cachedFontEmbedCSS = css;
+    return css || null;
+  } catch (e) {
+    console.warn('[award-pdf] 字体内联失败，本次导出将使用系统回退字体', e);
+    return null;
+  }
+};
 
 /**
  * 提取可读的错误信息。
@@ -175,11 +205,17 @@ export async function buildAwardPdf({ layout, data }) {
       });
     }
 
+    // 字体内联先单独算一次（会因 CJK 子集字体产生上百个请求），再交给 toPng 复用，
+    // 避免它每次都重新拉一遍（见 EXPORT_TIMEOUT_MS 处的说明）。
+    const fontEmbedCSS = await resolveFontEmbedCSS(node);
+
     const pngDataUrl = await withTimeout(
       toPng(node, {
         pixelRatio,
         backgroundColor: '#ffffff',
         cacheBust: false,
+        // 已算好就直接复用（含 undefined 时退回 html-to-image 自己的逻辑）
+        ...(fontEmbedCSS ? { fontEmbedCSS } : {}),
         // ★ 必须开启！html-to-image 的资源缓存 key 默认会**剥掉 query string**
         //   （getCacheKey 里 `url.replace(/\?.*/, '')`）。而我们的底图统一走
         //   `/api/media?key=<对象名>`——不同奖状只有 key 这个 query 不同，剥掉后
@@ -189,8 +225,8 @@ export async function buildAwardPdf({ layout, data }) {
         //   开启后用完整 URL 作缓存 key，互不污染。
         includeQueryParams: true,
       }),
-      30000,
-      '生成图片超时：奖状里有图片无法访问。外部链接的图片请先上传到本站',
+      EXPORT_TIMEOUT_MS,
+      '生成图片超时：奖状里有图片无法访问，或网络过慢。外部链接的图片请先上传到本站后再导出',
     );
 
     const pdf = new jsPDF({ unit: 'mm', format: [widthMm, heightMm], orientation: 'landscape' });

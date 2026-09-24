@@ -20,6 +20,8 @@ import { lookupDxcc, syncCtyFromWeb, ctyStats } from './server/services/cty.js';
 import { evaluateAward as evaluateAwardCore } from './server/services/awardEngine.js';
 // 服务端日期边界校验（与前端 src/lib/dateInput.js 同规则）
 import { validateRulesDateRange } from './server/services/dates.js';
+// 奖状目标类型/清单校验（与前端 src/lib/awardTargets.js 同规则）
+import { validateRulesTargets } from './server/services/awardTargets.js';
 import { configureLotwSessions } from './server/services/lotwSessions.js';
 import { createLotwRouter } from './server/routes/lotw.js';
 import { createEvidenceRouter } from './server/routes/evidence.js';
@@ -45,7 +47,25 @@ app.use(cors(corsOptions));
 
 // 请求体上限从 50MB 降到 2MB，缓解未认证大请求造成的 DoS
 app.use(express.json({ limit: '2mb' }));
-app.use(express.static(path.join(__dirname, 'dist')));
+// 静态资源缓存策略（2026-09-24 修「下载效果 PDF 报 Failed to fetch dynamically imported module」）：
+//   · index.html **必须每次校验**（no-cache）：它引用的入口 chunk 名带内容 hash，
+//     重新构建后旧 hash 文件会被删掉。若用户拿到缓存的旧 index.html，
+//     点击按需加载的功能（导出 PDF / 预览）就会去请求一个已不存在的 chunk → 404 →
+//     「Failed to fetch dynamically imported module: …/assets/exportAwardPdf-<旧 hash>.js」。
+//   · /assets/* 文件名自带内容 hash，内容变了名字就变，可以**永久强缓存**。
+//   · 其余（/fonts/*.woff2、favicon 等）名字不含 hash，保持 express 默认（max-age=0 + ETag 校验）。
+const distDir = path.join(__dirname, 'dist');
+app.use(express.static(distDir, {
+    etag: true,
+    lastModified: true,
+    setHeaders: (res, filePath) => {
+        if (filePath.endsWith('index.html')) {
+            res.setHeader('Cache-Control', 'no-cache');
+        } else if (/[\\/]assets[\\/]/.test(filePath)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+    },
+}));
 
 // 配置上传：日志 ADIF 与奖状底图分别限大小；底图额外限制为图片类型，避免磁盘耗尽
 const upload = multer({ dest: 'uploads/', limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
@@ -1239,6 +1259,14 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
     const rulesDateError = validateRulesDateRange(rules);
     if (rulesDateError) {
         return res.status(400).json({ error: 'INVALID_RULES_DATE', message: rulesDateError });
+    }
+
+    // ★ 目标清单格式校验（2026-09-24）：目标类型与清单格式对不上时**永远无法匹配**，
+    //   表现为"进度一直是 0、明细全红且零报错"（用户实测：DXCC 类型填了呼号）。
+    //   前端已即时提示，这里兜底（旧客户端 / 直接调接口）。
+    const rulesTargetError = validateRulesTargets(rules);
+    if (rulesTargetError) {
+        return res.status(400).json({ error: 'INVALID_RULES_TARGETS', message: rulesTargetError });
     }
 
     // 生成/更新 tracking_id 和日志

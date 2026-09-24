@@ -13,6 +13,8 @@
  * ⚠️ 逻辑与上游 `server.js` 保持逐行一致（仅补了 adif_raw / qso_date 缺失时的空值防护），
  *    改动前请先确认不会影响既有奖状。
  */
+// 目标类型规格（校验清单格式 / 产出 warnings）：与前端 src/lib/awardTargets.js 保持同步
+import { TARGET_SPECS, TARGET_FIELD_HINTS } from './awardTargets.js';
 
 export const categorizeMode = (mode) => {
   const m = (mode || '').toUpperCase();
@@ -25,7 +27,8 @@ export const categorizeMode = (mode) => {
 /**
  * @returns {{eligible:boolean,current_score:number,target_score:number,
  *            achieved_level?:object,next_level?:object,claimed_levels:string[],
- *            thresholds?:Array,breakdown?:object|null,matching_qsos?:Array,details:object}}
+ *            thresholds?:Array,breakdown?:object|null,matching_qsos?:Array,
+ *            warnings:string[],stats:object,details:object}}
  */
 export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQsos = false }) {
   // Legacy compatibility for simple V1 rules
@@ -34,6 +37,8 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
       eligible: false,
       current_score: 0,
       target_score: 1,
+      warnings: ['该奖状用的是旧版规则，无法自动判定进度，请联系奖状管理员升级规则。'],
+      stats: { total_qsos: qsos.length, basic_filtered: 0, target_matched: 0 },
       details: { msg: '旧版规则不兼容自动检查' },
     };
   }
@@ -96,12 +101,20 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
     return null;
   };
 
+  // 统计口径（用来把「进度为什么是 0」讲清楚）：
+  //   basicFilteredCount    = 通过 Step 1 基础筛选的条数
+  //   emptyTargetValueCount = 其中「目标字段为空」的条数（根本没法参与比较）
+  //   targetMatchedCount    = 命中目标清单的条数
+  const basicFilteredCount = filteredQsos.length;
+  let emptyTargetValueCount = 0;
   if (targetSet.size > 0) {
     filteredQsos = filteredQsos.filter((q) => {
       const val = getTargetValue(q);
+      if (!val) emptyTargetValueCount += 1;
       return val && targetSet.has(val);
     });
   }
+  const targetMatchedCount = filteredQsos.length;
 
   let score = 0;
   const uniqueSet = new Set();
@@ -162,6 +175,41 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
     };
   }
 
+  // --- 规则自检（2026-09-24）---
+  // 目的：让「进度一直是 0」有明确解释。此前设计器的目标清单**不管选哪种类型都提示
+  // 「例如: BA1AA, BA4AA…」**，于是有人在「特定 DXCC 实体」下填了呼号（BG5UWQ…），
+  // 引擎比较的是 `qso.dxcc`（实体编号，如 318），永远不可能相等 →
+  // 进度恒为 0、明细全红、**零报错**，用户只能得出"进度与明细未知"。
+  const warnings = [];
+  if (targetSet.size > 0) {
+    const spec = TARGET_SPECS[targetType];
+    if (spec) {
+      const badItems = rawTargetList.filter((t) => !spec.re.test(t));
+      if (badItems.length > 0) {
+        warnings.push(
+          `目标类型是「${spec.label}」，但清单里有 ${badItems.length} 项不符合格式（如「${badItems[0]}」）：${spec.hint}。${spec.fixHint}。`
+        );
+      }
+    }
+    if (score === 0) {
+      if (qsos.length === 0) {
+        warnings.push('你还没有日志，先上传 ADIF 或使用「LoTW 直连」导入后再看进度。');
+      } else if (basicFilteredCount === 0) {
+        warnings.push(
+          `你的 ${qsos.length} 条日志都没有通过基础筛选（时间范围 / QSL 确认要求 / 自定义筛选条件），因此不可能命中目标。`
+        );
+      } else if (emptyTargetValueCount === basicFilteredCount) {
+        warnings.push(
+          `通过基础筛选的 ${basicFilteredCount} 条日志缺少「${TARGET_FIELD_HINTS[targetType] || spec?.label || '目标'}」字段，无法与目标清单比较（重新上传日志或直连 LoTW 可补全）。`
+        );
+      } else {
+        warnings.push(
+          `${basicFilteredCount} 条日志通过了基础筛选，但没有一条命中目标清单（共 ${targetSet.size} 项）。`
+        );
+      }
+    }
+  }
+
   // --- Step 4: Multi-level Thresholds ---
   let thresholds = rules.thresholds || [{ name: 'Award', value: 1 }];
   if (!Array.isArray(thresholds)) thresholds = [thresholds];
@@ -185,6 +233,12 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
     claimed_levels: claimedLevels,
     thresholds,
     breakdown,
+    warnings,
+    stats: {
+      total_qsos: qsos.length,
+      basic_filtered: basicFilteredCount,
+      target_matched: targetMatchedCount,
+    },
     matching_qsos: includeQsos
       ? filteredQsos.map((q) => ({
           id: q.id ?? null,
