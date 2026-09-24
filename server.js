@@ -16,6 +16,7 @@ import multer from 'multer';
 
 // ---- 二次开发新增（M1：LoTW 直连，让用户不必上传日志）----
 import { parseAdif } from './server/services/adif.js';
+import { lookupDxcc } from './server/services/cty.js';
 import { evaluateAward as evaluateAwardCore } from './server/services/awardEngine.js';
 import { configureLotwSessions } from './server/services/lotwSessions.js';
 import { createLotwRouter } from './server/routes/lotw.js';
@@ -855,11 +856,21 @@ app.post('/api/logbook/upload', verifyToken, upload.single('file'), async (req, 
         try {
             await client.query('BEGIN');
             for (let r of records) {
+                // ADIF 自带 DXCC/COUNTRY 字段时**直接用**；缺一字段时按 cty.dat 反查呼号补全。
+                let dxNum = r.dxcc || '';
+                let dxName = r.country || '';
+                if ((!dxNum || !dxName) && r.call) {
+                    const dx = lookupDxcc(r.call);
+                    if (dx) {
+                        if (!dxNum) dxNum = dx.dxcc || '';
+                        if (!dxName) dxName = dx.name || '';
+                    }
+                }
                 await client.query(`
                     INSERT INTO qsos (user_id, callsign, band, mode, qso_date, dxcc, country, adif_raw)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                     ON CONFLICT (user_id, callsign, band, mode, qso_date) DO NOTHING
-                `, [req.user.id, r.call || '', r.band || '', r.mode || '', r.qso_date || '', r.dxcc || '', r.country || '', JSON.stringify(r)]);
+                `, [req.user.id, r.call || '', r.band || '', r.mode || '', r.qso_date || '', dxNum, dxName, JSON.stringify(r)]);
                 imported++;
             }
             await client.query('COMMIT');
@@ -1215,7 +1226,18 @@ app.get('/api/user/qsos', verifyToken, async (req, res) => {
         // 3. Removed LIMIT to show all logs as requested
         // Explicitly selecting columns to match frontend expectations
         // FIXED: Removed 'state' from SELECT as it is not a column in qsos table
-        const r = await dbPool.query('SELECT id, callsign, band, mode, qso_date, country, adif_raw FROM qsos WHERE user_id=$1 ORDER BY qso_date DESC, id DESC', [req.user.id]);
+        const r = await dbPool.query('SELECT id, callsign, band, mode, qso_date, dxcc, country, adif_raw FROM qsos WHERE user_id=$1 ORDER BY qso_date DESC, id DESC', [req.user.id]);
+        // 实物卡片补建的、或早期 ADIF 没带 DXCC 字段的旧记录——在读取时按 cty.dat 实时反查，
+        // 不查 DB（避免 N+1 写）。这里跑一遍已经很快（cty 索引已在进程内存里）。
+        for (const row of r.rows) {
+            if ((!row.country || !row.dxcc) && row.callsign) {
+                const dx = lookupDxcc(row.callsign);
+                if (dx) {
+                    if (!row.country) row.country = dx.name;
+                    if (!row.dxcc) row.dxcc = dx.dxcc;
+                }
+            }
+        }
         res.json(r.rows);
     } catch(e) {
         res.status(500).json({error: e.message});

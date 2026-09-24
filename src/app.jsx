@@ -2234,6 +2234,23 @@ const LogbookView = () => {
 };
 
 // New: All Logs View (Separated from LogbookView - Fixed data loading issue)
+
+/**
+ * 把一条 QSO 行格式化成「DXCC 实体名 · 编号」短串。
+ * 后端 (/api/user/qsos) 已经按 cty.dat 实时反查过 country/dxcc 了；
+ * 旧记录或卡片补建的记录没字段时会显示 "—" 而不是 "未填"。
+ * 命名约定：「Country」列全部改名「DXCC」，理由：
+ *   - Country 这个词对"ham 语境"容易和实际操作国家混淆；
+ *   - DXCC 才是奖状 / LoTW / ADIF 通用的"实体编号"概念，跨字段都对得上。
+ */
+const formatDxcc = (row) => {
+    const name = (row?.country || '').trim();
+    const num = (row?.dxcc || '').trim();
+    if (!name && !num) return '—';
+    if (name && num) return `${name} · ${num}`;
+    return name || num;
+};
+
 const AllLogsView = () => {
     const [logs, setLogs] = useState([]);
     const [detailQso, setDetailQso] = useState(null);
@@ -2289,7 +2306,7 @@ const AllLogsView = () => {
                                 <th className="p-4">Callsign</th>
                                 <th className="p-4">Band</th>
                                 <th className="p-4">Mode</th>
-                                <th className="p-4">Country</th>
+                                <th className="p-4">DXCC</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y">
@@ -2317,7 +2334,7 @@ const AllLogsView = () => {
                                         <td className="p-4">{log.band}</td>
                                         <td className="p-4">{log.mode}</td>
                                         {/* 实物卡片补建的日志没有国家字段（卡片不采集），显式显示"—"免得看着像加载失败 */}
-                                        <td className="p-4 text-slate-500 truncate max-w-[150px]">{log.country || '—'}</td>
+                                        <td className="p-4 text-slate-500 truncate max-w-[200px]">{formatDxcc(log)}</td>
                                     </tr>
                                 ))
                             )}
@@ -2337,7 +2354,7 @@ const AllLogsView = () => {
                             <div><span className="text-slate-400 block text-xs uppercase">Date</span><span className="font-bold">{detailQso.qso_date}</span></div>
                             <div><span className="text-slate-400 block text-xs uppercase">Band</span><span className="font-bold">{detailQso.band}</span></div>
                             <div><span className="text-slate-400 block text-xs uppercase">Mode</span><span className="font-bold">{detailQso.mode}</span></div>
-                            <div className="col-span-2"><span className="text-slate-400 block text-xs uppercase">Country</span><span className="font-bold">{detailQso.country || '-'}</span></div>
+                            <div className="col-span-2"><span className="text-slate-400 block text-xs uppercase">DXCC</span><span className="font-bold">{formatDxcc(detailQso)}</span></div>
                             <div className="col-span-2"><span className="text-slate-400 block text-xs uppercase">State</span><span className="font-bold">{detailQso.state || detailQso.adif_raw?.state || '-'}</span></div>
                         </div>
 

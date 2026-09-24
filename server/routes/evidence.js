@@ -18,6 +18,7 @@ import express from 'express';
 import multer from 'multer';
 import crypto from 'crypto';
 import { notifyUsers } from '../services/notifications.js';
+import { lookupDxcc } from '../services/cty.js';
 
 const EVIDENCE_BUCKET = 'ham-awards-evidence';
 const PRESIGN_TTL_SECONDS = 15 * 60;
@@ -313,12 +314,20 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
         //   也能参与**其它奖状**的判定（`qsl_rcvd='Y'`，满足 qslRequired 类规则）。
         //   必备条件是「日期」：没有日期既无法去重也无法判定，宁可不建（只审核通过）。
         if (matchedQso === 0 && old.rows[0].match_date) {
+          // 卡片不采集 DXCC 字段（用户填的就是对方呼号），但仍然按呼号做一次 cty.dat 反查，
+          // 这样「全部日志」里就能看到实体名 / 编号，不用看着 "—" 以为没存上。
+          const dx = lookupDxcc(old.rows[0].match_callsign);
+          const dxName = dx?.name || null;
+          const dxNum = dx?.dxcc || null;
           const created = await client.query(
-            `INSERT INTO qsos (user_id, callsign, band, mode, qso_date, adif_raw)
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+            `INSERT INTO qsos (user_id, callsign, band, mode, qso_date, dxcc, country, adif_raw)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
              ON CONFLICT (user_id, callsign, band, mode, qso_date)
              DO UPDATE SET adif_raw = qsos.adif_raw
-                       || jsonb_build_object('qsl_rcvd', 'Y', 'source', 'evidence', 'evidence_id', $7::int)
+                       || jsonb_build_object('qsl_rcvd', 'Y', 'source', 'evidence', 'evidence_id', $9::int),
+                       -- 已有 ADIF/导入值时**不覆盖**；只在两边都空时才用 cty 反查补上
+                       country = COALESCE(NULLIF(qsos.country, ''), EXCLUDED.country),
+                       dxcc    = COALESCE(NULLIF(qsos.dxcc,    ''), EXCLUDED.dxcc)
              RETURNING id`,
             [
               old.rows[0].user_id,
@@ -326,6 +335,8 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
               old.rows[0].match_band || null,
               old.rows[0].match_mode || null,
               old.rows[0].match_date,
+              dxNum,
+              dxName,
               JSON.stringify({
                 call: old.rows[0].match_callsign,
                 qso_date: String(old.rows[0].match_date).replace(/-/g, ''),
