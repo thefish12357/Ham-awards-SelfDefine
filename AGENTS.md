@@ -260,6 +260,9 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     只有 `AwardRenderer` 通过 `resolveElementForLevel(el, data.level)` 合并差异，因此**所有消费方自动生效**。
     编辑器用 `ignoreLevelOverrides` 在「默认（所有等级共用）」模式下关掉合并，避免"改基础设计却看到覆盖效果"。
     新增渲染路径时**不要绕过 `AwardRenderer`**，否则多等级会失效。
+   - **列表缩略图统一用 `AwardThumbnail`**（`src/components/AwardRenderer.jsx`）：按布局渲染 + **contain 等比贴合**容器（不能用 `ResponsiveAwardRenderer`，它按宽度铺满会裁掉证书下半截），没有元素时退回底图、都没有则给中性占位。
+     ⚠️ 该组件**不能自己写 `relative`**：调用方传 `absolute inset-0` 铺满固定高度的框，而 Tailwind 输出里 `.relative` 在 `.absolute` 之后会覆盖它 → 元素退回文档流、高度量到 0 → 「量不到高度就不渲染」的死锁（2026-09-24 踩过）。
+     ⚠️ 各列表卡片**不要只渲染 `bg_url`**：底图可空，只画背景图会得到一片空白，看起来像奖状丢了。
 11. **密码输入一律用 `src/components/PasswordInput.jsx`**（自带显隐切换 + `autoComplete`）。裸 `<input type="password">` 会缺眼睛图标，也会触发浏览器控制台警告、并可能让 Chrome 的自动填充下拉挡住按钮。
 12. **★ 字体有版权红线**（2026-09-21 定）：奖状字体列表 `src/lib/awardLayout.js` 的 `FONTS` **只允许**开源可商用授权（**SIL OFL** / **Apache-2.0** / 官方明确免费商用）与**操作系统自带**字体。**严禁**加入方正、汉仪、造字工房、华文、长城等商业字体 —— 用于生成对外发布的奖状会收到律师函。新增字体时必须在 `label` 里标出授权来源。
 

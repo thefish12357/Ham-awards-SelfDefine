@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { resolveElementForLevel, resolveElementValue, shapePath } from '../lib/awardLayout.js';
+import { CANVAS_MM, normalizeLayout, resolveElementForLevel, resolveElementValue, shapePath } from '../lib/awardLayout.js';
 import { toSameOriginMediaUrl } from '../lib/media.js';
 
 /**
@@ -214,6 +214,68 @@ export function ResponsiveAwardRenderer({ layout, data, className, style, ...res
   return (
     <div ref={ref} className={className} style={{ width: '100%', ...(style || {}) }}>
       {width > 0 ? <AwardRenderer layout={layout} data={data} widthPx={width} {...rest} /> : null}
+    </div>
+  );
+}
+
+/** 列表缩略图用的示例数据：**刻意不带真序列号**，否则每张卡片都会去请求一次二维码图片 */
+const THUMB_SAMPLE = { callsign: 'BG1ABC', serial: '', issueDate: '', score: '', verifyUrl: '' };
+
+/**
+ * 列表卡片缩略图（2026-09-24 新增）
+ * ------------------------------------------------------------------
+ * 为什么需要它：各列表以前只用 `bg_url` 当 CSS 背景图（`bg-cover bg-center`）。
+ * 而**底图现在是可选的**，没上传底图时 `bg_url` 为 null → 卡片一片空白，
+ * 看起来像"保存失败 / 奖状丢了"（用户反馈：草稿箱里奖状不显示）。
+ *
+ * 行为：
+ *   1. 布局里有元素 → 按可视化布局渲染（与编辑器/PDF 所见一致），**等比缩放贴合容器**（contain，
+ *      不裁切）。注意不能直接用 `ResponsiveAwardRenderer`：它按容器宽度铺满，固定高度的缩略图
+ *      会把证书下半截裁掉；
+ *   2. 没有元素但有底图 → 退回底图铺满；
+ *   3. 都没有 → 中性占位文案。
+ */
+export function AwardThumbnail({ award, className = '', placeholderText = '未设置底图' }) {
+  const ref = useRef(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return undefined;
+    const measure = () => setBox({ w: el.clientWidth, h: el.clientHeight });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    measure();
+    return () => ro.disconnect();
+  }, []);
+
+  const layout = normalizeLayout(award?.layout, award?.bg_url);
+  const hasLayout = layout.elements.length > 0;
+  const ratio = CANVAS_MM.w / CANVAS_MM.h;
+  // contain：宽高都塞得下才算贴合。
+  // ⚠️ 高度量不到时退回按宽度渲染（否则会出现「量不到高度就不渲染 → 高度永远是 0」的死锁）。
+  const fitWidth = Math.max(0, box.h > 0 ? Math.min(box.w, box.h * ratio) : box.w);
+
+  const data = {
+    ...THUMB_SAMPLE,
+    awardName: award?.name || '',
+    description: award?.description || '',
+    level: award?.rules?.thresholds?.[0]?.name || '',
+    issuer: award?.tracking_id || '',
+  };
+
+  // ⚠️ 这里**不要**再写 `relative`：调用方通常传 `absolute inset-0` 铺满固定高度的缩略图框，
+  //    而 Tailwind 输出顺序里 `.relative` 在 `.absolute` 之后 → 会覆盖掉 absolute，
+  //    元素退回文档流、高度由内容决定 → 量到 0 高度 → 什么都不渲染（踩过一次）。
+  return (
+    <div ref={ref} className={`flex items-center justify-center overflow-hidden bg-white ${className}`}>
+      {hasLayout ? (
+        fitWidth > 0 ? <AwardRenderer layout={layout} data={data} widthPx={Math.round(fitWidth)} /> : null
+      ) : award?.bg_url ? (
+        <div className="h-full w-full bg-cover bg-center" style={{ backgroundImage: `url(${toSameOriginMediaUrl(award.bg_url)})` }} />
+      ) : (
+        <span className="px-3 text-center text-[11px] text-slate-400">{placeholderText}</span>
+      )}
     </div>
   );
 }

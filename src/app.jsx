@@ -33,7 +33,7 @@ import { EVIDENCE_TYPES, evidenceType, evidenceTypeLabel, TZ_OPTIONS, tzOffsetOf
 import { collectExternalImages, toSameOriginMediaUrl } from './lib/media.js';
 import VisualDesigner from './components/VisualDesigner.jsx';
 import InviteCodePanel from './components/InviteCodePanel.jsx';
-import { ResponsiveAwardRenderer } from './components/AwardRenderer.jsx';
+import { AwardThumbnail, ResponsiveAwardRenderer } from './components/AwardRenderer.jsx';
 import PasswordInput from './components/PasswordInput.jsx';
 // 注意：PDF 导出（jsPDF + html-to-image，约 440 KB）改为**点击时动态 import**，
 // 否则首屏包会从 ~266 KB 涨到 ~705 KB。见 handleExportPdf。
@@ -921,8 +921,11 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                     <div className="relative w-full aspect-[297/210] rounded-xl overflow-hidden border border-slate-300 shadow-lg bg-white shrink-0">
                         {previewMode === 'actual' && hasLayout ? (
                             <ResponsiveAwardRenderer layout={normalizeLayout(award.layout, award.bg_url)} data={previewData} />
-                        ) : (
+                        ) : award.bg_url ? (
                             <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${toSameOriginMediaUrl(award.bg_url)})` }} />
+                        ) : (
+                            /* 底图可空：明确告知，别给一片空白让人以为加载失败 */
+                            <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">未设置底图</div>
                         )}
                         <div className="absolute bottom-0 left-0 right-0 bg-black/55 backdrop-blur-sm p-3 text-white">
                             <div className="text-xs font-bold opacity-70 uppercase tracking-wider mb-0.5">奖状详情</div>
@@ -1301,7 +1304,9 @@ const AwardCenterView = ({ user }) => {
                         onClick={() => setSelectedAward(aw)}
                         className={`bg-white rounded-2xl shadow-sm border overflow-hidden hover:shadow-md transition-shadow group cursor-pointer`}
                     >
-                        <div className="h-48 bg-slate-200 bg-cover bg-center relative" style={{backgroundImage: `url(${toSameOriginMediaUrl(aw.bg_url)})`}}>
+                        <div className="h-48 relative overflow-hidden bg-slate-100">
+                            {/* 缩略图按布局渲染（底图可空，只渲染 bg_url 会是一片空白） */}
+                            <AwardThumbnail award={aw} className="absolute inset-0" placeholderText="（未设置底图）" />
                             <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                                 <span className="text-white font-bold border-2 border-white px-4 py-2 rounded-full">查看详情与进度</span>
                             </div>
@@ -1436,7 +1441,9 @@ const AwardAdminManager = ({ viewMode }) => {
                             {drafts.length === 0 && <div className="col-span-full text-center text-slate-400 py-10">空空如也</div>}
                             {drafts.map(d => (
                                 <div key={d.id} className="border rounded-xl overflow-hidden hover:border-blue-300 transition-colors group">
-                                    <div className="h-32 bg-slate-100 bg-cover bg-center relative" style={{backgroundImage: `url(${toSameOriginMediaUrl(d.bg_url)})`}}>
+                                    <div className="h-32 relative overflow-hidden bg-slate-50">
+                                        {/* 缩略图按布局渲染（底图可空，只渲染 bg_url 会是一片空白） */}
+                                        <AwardThumbnail award={d} className="absolute inset-0" placeholderText="未设置底图（白底 + 元素排版）" />
                                         {isReturnedMode && <div className="absolute top-2 right-2 bg-red-500 text-white text-xs px-2 py-1 rounded font-bold">已退回</div>}
                                     </div>
                                     <div className="p-4">
