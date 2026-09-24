@@ -204,13 +204,23 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | `/api/media?key=awards/…`               | 同源图片代理。底图在 MinIO 属跨域，canvas 导出会被污染，走这里规避                                  | **公开**（仅限 `awards/` 一级前缀，禁穿越） |
 | `/api/awards/*`                         | 奖状：my、all_approved、`:id/check`、`:id/apply`、增删改、upload-bg（底图 ≤10MB）、upload-asset（图片元素 ≤2MB） | 登录 / 奖状管理员                           |
 | `/api/qsos/:id/awards`                  | 查某条 QSO 参与哪些奖状                                                                             | 登录                                        |
-| `/api/admin/*`                          | users、awards/pending、awards/approved、awards/audit、issued-awards、settings                       | **系统管理员**                              |
+| `/api/admin/*`                          | users、awards/pending、awards/approved、awards/audit、issued-awards（含 `/orphans` 一键清理失效记录）、settings | **系统管理员**                              |
+| `/api/award-templates/*`                | 奖状布局模板库：list / `:id` / 增 / PATCH 改名 / 删。**按创建者私有**，layout 存库时剥掉 `canvas.bgUrl` | 登录 / 奖状管理员                           |
 
-**颁发记录（`user_awards`）生命周期（2026-09-24 明确）**
+**颁发记录（`user_awards`）生命周期（2026-09-24 修订）**
 
-- **打回 / 撤回只改状态**（`awards.status='returned'`），已颁发的记录**原样保留**（有序列号、可扫码校验的奖状必须留痕），仍出现在「颁发管理」里。
-- **删除奖状时颁发记录一并删除**：外键本就是 `ON DELETE CASCADE`，`DELETE /api/awards/:id` 仍显式删一遍兜底（老库外键可能不是 CASCADE），并把 `issued_deleted` 数量写进审计。
-- 该接口现在对越权/状态不符返回 **403**（不再静默返回 success）。
+- **打回 / 撤回只改状态**（`awards.status='returned'`），记录原样保留。
+- **删除奖状「不」删除颁发记录**：外键为 `ON DELETE SET NULL`（`upgradeSchema` 会把老的 CASCADE 自动改过来，
+  并按 `conname='user_awards_award_id_fkey'` 判 `confdeltype`，幂等）。`DELETE /api/awards/:id` 在删奖状**之前**
+  把奖状名/编号**快照**进记录并置 `detached_at`，返回 `issuedDetached`。
+  理由：已发出的凭证（有序列号、可扫码）是审计台账，删奖状多半只是重做设计/规则，不该顺手清台账。
+- 这些「无主」记录在「颁发管理」里归入 **已失效（原奖状已删除）** 分组（列表接口 `LEFT JOIN awards` + `COALESCE` 快照，
+  返回 `detached` 标志）；可 `DELETE /api/admin/issued-awards/orphans` **一键清理**，也能逐条删。
+  ⚠️ `/orphans` 必须注册在 `/:id` **之前**，否则会被当成 id 去查整数。
+- 公开校验 `GET /api/verify/:serial` 对这类记录返回 **404 + `revoked:true`**（带快照名称与脱敏呼号），
+  而不是笼统的「未找到该序列号对应的奖状」。
+- 「我的奖状」(`/api/user/my-awards`) 仍走 **INNER JOIN**：无主记录**不**展示给持证人（奖状已下架、设计也没了，渲染不出证书）。
+- `DELETE /api/awards/:id` 对越权/状态不符返回 **403**（不再静默 success）。
 
 ## 7. 编码约定与雷区
 
@@ -232,6 +242,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 9. **奖状布局（layout）只有一份 schema**：`src/lib/awardLayout.js`，v2、单位 **mm**、A4 横版 297×210。编辑器、`AwardRenderer`、审核预览、PDF 导出读同一份；旧 `layout: []` 会被 `normalizeLayout` 归一化。改 schema 前先想清楚向后兼容。
    - **形状只有一份几何**：`SHAPES`（Word 风格 22 种）+ `shapePath(shape, W, H, radiusPx)`，渲染端统一出一个 `<path>`。加新形状只改这两处。⚠️ 描边有 **1px 下限**（`Math.max(px(strokeWidth), 1)`）——编辑器画布只有 ~560px 宽，0.5mm 不足 1 个物理像素会让形状"加了却看不见"；PDF 按 1200px 宽渲染，下限不影响打印。
    - **`presetAwardLayout()` 只用于新建/布局为空时的初始化**，**绝不能塞进 `normalizeLayout`**：否则所有历史空布局奖状都会凭空多出一套元素（数据事故）。
+   - **模板库**（`award_templates`）：设计器左栏「存为模板 / 我的模板」走 `/api/award-templates`，**按创建者私有**、每人上限 50 个、**不存底图**（后端 `sanitizeTemplateLayout` 剥掉 `canvas.bgUrl`）；套用时**保留当前底图**、画布样式从模板带入、元素 id 用 `uid()` 重新生成（避免与当前布局撞 id）。
 10. **多等级差异写在元素的 `levelOverrides` 里**，不要在渲染层各写一套判断：
     ```js
     // 元素级：Gold 等级下换色、加大、上移

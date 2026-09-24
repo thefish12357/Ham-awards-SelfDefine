@@ -191,7 +191,7 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig }) {
 
     try {
       const dbPool = getDbPool();
-      const awardRes = await dbPool.query('SELECT id, name, rules, status FROM awards WHERE id = $1', [awardId]);
+      const awardRes = await dbPool.query('SELECT id, name, rules, status, tracking_id FROM awards WHERE id = $1', [awardId]);
       if (awardRes.rows.length === 0) {
         return res.status(404).json({ error: 'NOT_FOUND', message: '奖状不存在' });
       }
@@ -227,9 +227,11 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig }) {
       }
 
       const serial = generateSerial();
+      // 快照奖状名称/编号，便于奖状日后被删除时仍能在颁发台账里显示是哪个奖状
       await dbPool.query(
-        'INSERT INTO user_awards (user_id, award_id, level, score_snapshot, serial_number) VALUES ($1, $2, $3, $4, $5)',
-        [req.user.id, awardId, levelName, evaluation.current_score, serial],
+        `INSERT INTO user_awards (user_id, award_id, level, score_snapshot, serial_number, award_name, award_tracking_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [req.user.id, awardId, levelName, evaluation.current_score, serial, award.name || null, award.tracking_id || null],
       );
       res.json({ success: true, serial, level: levelName });
     } catch (e) {

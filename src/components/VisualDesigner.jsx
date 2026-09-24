@@ -17,6 +17,9 @@ import {
   AlertCircle,
   Layers,
   LayoutTemplate,
+  FolderOpen,
+  Save,
+  Pencil,
 } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch.js';
 import {
@@ -40,7 +43,7 @@ import {
 import { ASSET_MAX_DIM, ASSET_LIMIT_TEXT, BG_LIMIT_TEXT, ACCEPT_IMAGE, ACCEPT_IMAGE_TEXT } from '../lib/uploadLimits.js';
 import { prepareImageForUpload, BG_UPLOAD_PRESET } from '../lib/imageUpload.js';
 import { toSameOriginMediaUrl } from '../lib/media.js';
-import { confirmDialog } from '../lib/confirm.jsx';
+import { confirmDialog, promptDialog } from '../lib/confirm.jsx';
 import AwardRenderer from './AwardRenderer.jsx';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -89,6 +92,9 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
   const [editLevel, setEditLevel] = useState('');
   const [uploadingBg, setUploadingBg] = useState(false);
   const [uploadingImg, setUploadingImg] = useState(false);
+  // 我的模板库（存在服务端，跨设备可用）；拉取失败静默处理，不阻塞设计
+  const [templates, setTemplates] = useState([]);
+  const [templatesBusy, setTemplatesBusy] = useState(false);
   const [error, setError] = useState(null);
   const [past, setPast] = useState([]);
   const [future, setFuture] = useState([]);
@@ -117,6 +123,11 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
     });
     ro.observe(el);
     return () => ro.disconnect();
+  }, []);
+
+  // 「我的模板」：进入编辑器时拉一次列表（失败静默，不阻塞设计流程）
+  useEffect(() => {
+    apiFetch('/award-templates').then(setTemplates).catch(() => {});
   }, []);
 
   const elements = layout?.elements || [];
@@ -303,6 +314,112 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
     setSelectedId(null);
   };
 
+  /* ---------------- 我的模板库 ----------------
+   * 存在服务端（按创建者私有），跨设备/换浏览器都能用。
+   * ⚠️ 只存元素与画布样式，**不存底图**（后端会剥掉 bgUrl）：套模板时保留当前底图。
+   * ---------------------------------------------- */
+
+  const refreshTemplates = () => apiFetch('/award-templates').then(setTemplates).catch(() => {});
+
+  const saveAsTemplate = async () => {
+    const els = layoutRef.current.elements || [];
+    if (els.length === 0) {
+      setError('当前设计还没有任何元素，无法保存为模板');
+      return;
+    }
+    const name = await promptDialog({
+      title: '另存为我的模板',
+      message: `把这套版式（${els.length} 个元素）保存成模板，之后可一键套用到别的奖状。`,
+      detail: '只保存元素的排版与样式，不包含底图；套用时会保留当前奖状自己的底图。',
+      placeholder: '例如：金边双线版 / A4 横版经典',
+      required: true,
+      confirmText: '保存模板',
+    });
+    if (name === null) return;
+    setTemplatesBusy(true);
+    setError(null);
+    try {
+      await apiFetch('/award-templates', {
+        method: 'POST',
+        body: JSON.stringify({ name, layout: layoutRef.current }),
+      });
+      await refreshTemplates();
+    } catch (e) {
+      setError(e?.message || '模板保存失败');
+    } finally {
+      setTemplatesBusy(false);
+    }
+  };
+
+  const applyTemplate = async (t) => {
+    const ok = await confirmDialog({
+      title: '套用模板',
+      message: `用「${t.name}」替换当前所有元素？`,
+      detail: '底图会保留；当前设计可以用左下角的「撤销」恢复。',
+      confirmText: '套用',
+    });
+    if (!ok) return;
+    setTemplatesBusy(true);
+    setError(null);
+    try {
+      const full = await apiFetch(`/award-templates/${t.id}`);
+      const els = (full?.layout?.elements || []).map((el) => ({ ...el, id: uid() }));
+      if (els.length === 0) throw new Error('该模板没有元素');
+      commitSnapshot(layoutRef.current.elements);
+      // 保留当前底图；画布样式（bgFit/bgOpacity）从模板带过来
+      onChange({
+        ...layoutRef.current,
+        canvas: {
+          ...layoutRef.current.canvas,
+          bgFit: full.layout?.canvas?.bgFit || layoutRef.current.canvas?.bgFit,
+          bgOpacity: full.layout?.canvas?.bgOpacity ?? layoutRef.current.canvas?.bgOpacity,
+        },
+        elements: els,
+      });
+      setSelectedId(null);
+    } catch (e) {
+      setError(e?.message || '模板套用失败');
+    } finally {
+      setTemplatesBusy(false);
+    }
+  };
+
+  const renameTemplate = async (t) => {
+    const name = await promptDialog({
+      title: '重命名模板',
+      message: '修改模板名称（不影响已套用的奖状）。',
+      defaultValue: t.name,
+      required: true,
+      confirmText: '保存',
+    });
+    if (name === null || name === t.name) return;
+    setError(null);
+    try {
+      await apiFetch(`/award-templates/${t.id}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+      await refreshTemplates();
+    } catch (e) {
+      setError(e?.message || '重命名失败');
+    }
+  };
+
+  const deleteTemplate = async (t) => {
+    const ok = await confirmDialog({
+      title: '删除模板',
+      message: `确认删除模板「${t.name}」？`,
+      detail: '只删除模板本身，已经用该模板设计好的奖状不受影响。',
+      confirmText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
+    setError(null);
+    try {
+      await apiFetch(`/award-templates/${t.id}`, { method: 'DELETE' });
+      await refreshTemplates();
+    } catch (e) {
+      setError(e?.message || '删除失败');
+    }
+  };
+
   const updateSelected = (patch) => {
     if (!selectedId) return;
     commitSnapshot(layoutRef.current.elements);
@@ -437,6 +554,57 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
             </p>
           </div>
 
+          {/* ★ 模板库刻意排在「添加元素」之前：先挑模板/内置模板再补元素，
+              也避免被下方很长的图层列表挤到折叠线以下（左栏内容比可视高度高约 2.5 倍）。 */}
+          <div>
+            <h4 className="font-bold mb-2 text-sm flex items-center justify-between">
+              <span className="flex items-center gap-1"><FolderOpen size={14} /> 我的模板</span>
+              {templates.length > 0 && <span className="font-normal text-[10px] text-slate-400">{templates.length} 个</span>}
+            </h4>
+            <div className="mb-2 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={saveAsTemplate}
+                disabled={templatesBusy}
+                className="p-2.5 border rounded-xl hover:bg-white flex items-center justify-center gap-1.5 text-xs font-bold text-slate-600 disabled:opacity-60"
+                title="把当前版式另存为「我的模板」"
+              >
+                <Save size={15} /> 存为模板
+              </button>
+              <button
+                type="button"
+                onClick={loadPreset}
+                className="p-2.5 border rounded-xl hover:bg-white flex items-center justify-center gap-1.5 text-xs font-bold text-slate-600"
+                title="用内置模板替换当前元素（标题 / 呼号 / 编号 / 二维码等）"
+              >
+                <LayoutTemplate size={15} /> 内置模板
+              </button>
+            </div>
+            <div className="space-y-1 max-h-36 overflow-y-auto">
+              {templates.length === 0 && (
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  还没有模板。排好版后点「存为模板」，之后可一键套用到别的奖状。
+                </p>
+              )}
+              {templates.map((t) => (
+                <div key={t.id} className="flex items-center gap-1 rounded-lg border bg-white/70 pl-2 pr-1 py-1">
+                  <button
+                    type="button"
+                    onClick={() => applyTemplate(t)}
+                    disabled={templatesBusy}
+                    className="flex-1 min-w-0 text-left text-xs font-bold text-slate-600 hover:text-blue-600 truncate"
+                    title={`套用「${t.name}」（${t.element_count} 个元素）`}
+                  >
+                    {t.name}
+                    <span className="ml-1 font-normal text-[10px] text-slate-400">{t.element_count} 项</span>
+                  </button>
+                  <button type="button" onClick={() => renameTemplate(t)} className="p-1 text-slate-400 hover:text-slate-700" title="重命名"><Pencil size={12} /></button>
+                  <button type="button" onClick={() => deleteTemplate(t)} className="p-1 text-slate-400 hover:text-red-600" title="删除"><Trash2 size={12} /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div>
             <h4 className="font-bold mb-2 text-sm">添加元素</h4>
             <div className="grid grid-cols-2 gap-2">
@@ -453,14 +621,6 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
                 <QrCode size={18} /> 二维码
               </button>
             </div>
-            <button
-              type="button"
-              onClick={loadPreset}
-              className="mt-2 w-full p-2.5 border rounded-xl hover:bg-white flex items-center justify-center gap-1.5 text-xs font-bold text-slate-600"
-              title="用内置模板替换当前元素（标题 / 呼号 / 编号 / 二维码等）"
-            >
-              <LayoutTemplate size={16} /> 载入预设模板
-            </button>
           </div>
 
           <div>

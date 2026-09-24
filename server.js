@@ -352,6 +352,40 @@ async function upgradeSchema() {
     if (!uaColNames.includes('level')) await client.query("ALTER TABLE user_awards ADD COLUMN level VARCHAR(50)");
     if (!uaColNames.includes('score_snapshot')) await client.query("ALTER TABLE user_awards ADD COLUMN score_snapshot INTEGER");
 
+    // ---- 颁发记录与奖状解耦（2026-09-24）----
+    // 需求：奖状被打回 / 删除时，**已颁发的记录必须留存**（有序列号、可扫码校验的凭证不能凭空消失），
+    // 但要「归类」以便日后一键清理。
+    // 做法：① 外键由 ON DELETE CASCADE 改为 ON DELETE SET NULL（删奖状不再连带删记录）；
+    //      ② 把奖状名称/编号**快照**进 user_awards（奖状删了也能显示是哪个奖状）；
+    //      ③ detached_at 标记「已失效」时间，供「颁发管理 → 一键清理失效记录」使用。
+    await client.query(`ALTER TABLE user_awards ADD COLUMN IF NOT EXISTS award_name VARCHAR(200)`);
+    await client.query(`ALTER TABLE user_awards ADD COLUMN IF NOT EXISTS award_tracking_id VARCHAR(50)`);
+    await client.query(`ALTER TABLE user_awards ADD COLUMN IF NOT EXISTS detached_at TIMESTAMP`);
+    const fkRes = await client.query(`SELECT confdeltype FROM pg_constraint WHERE conname = 'user_awards_award_id_fkey'`);
+    // confdeltype: c=cascade / n=set null / a=no action / r=restrict / d=set default
+    if (fkRes.rows.length > 0 && fkRes.rows[0].confdeltype !== 'n') {
+        await client.query('ALTER TABLE user_awards DROP CONSTRAINT user_awards_award_id_fkey');
+        await client.query('ALTER TABLE user_awards ADD CONSTRAINT user_awards_award_id_fkey FOREIGN KEY (award_id) REFERENCES awards(id) ON DELETE SET NULL');
+        console.log('[migrate] user_awards.award_id → ON DELETE SET NULL（颁发记录不再随奖状删除）');
+    }
+    // 历史数据补快照（只补空值，幂等）
+    await client.query(`
+        UPDATE user_awards ua SET award_name = a.name, award_tracking_id = a.tracking_id
+        FROM awards a WHERE ua.award_id = a.id AND (ua.award_name IS NULL OR ua.award_tracking_id IS NULL)
+    `);
+
+    // 奖状布局模板库（2026-09-24）：设计器里「另存为我的模板」用，按创建者私有
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS award_templates (
+        id SERIAL PRIMARY KEY,
+        creator_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        layout JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_award_templates_creator ON award_templates(creator_id, created_at DESC)`);
+
     // 实物材料（M4）：照片存私有桶，审核后立即删图，DB 只留审核结论
     await client.query(`
       CREATE TABLE IF NOT EXISTS award_evidence (
@@ -1052,38 +1086,64 @@ app.get('/api/admin/awards/approved', verifyToken, verifyAdmin, async (req, res)
 });
 
 // 系统管理员：获取已颁发奖状列表 (New)
+// ★ LEFT JOIN + 快照：奖状被删除后记录仍要能显示（detached=true 归入「已失效」）。
+//   注意所有同名列都要写表前缀 —— users 也有 id/created_at，裸写会 ambiguous 报 500。
 app.get('/api/admin/issued-awards', verifyToken, verifyAdmin, async (req, res) => {
     const r = await dbPool.query(`
-        SELECT ua.id, ua.serial_number, ua.issued_at, ua.level, 
-               u.callsign as applicant_call, 
-               a.name as award_name, a.tracking_id
+        SELECT ua.id, ua.serial_number, ua.issued_at, ua.level, ua.award_id, ua.detached_at,
+               u.callsign AS applicant_call,
+               COALESCE(a.name, ua.award_name) AS award_name,
+               COALESCE(a.tracking_id, ua.award_tracking_id) AS tracking_id,
+               (a.id IS NULL) AS detached
         FROM user_awards ua
         JOIN users u ON ua.user_id = u.id
-        JOIN awards a ON ua.award_id = a.id
-        ORDER BY ua.issued_at DESC
+        LEFT JOIN awards a ON ua.award_id = a.id
+        ORDER BY (a.id IS NULL), ua.issued_at DESC
     `);
     res.json(r.rows);
 });
 
+// 系统管理员：一键清理「已失效」颁发记录（原奖状已被删除的那些）。
+// ⚠️ 必须注册在 `/:id` 之前，否则 "orphans" 会被当成 :id 去查整数而 500。
+app.delete('/api/admin/issued-awards/orphans', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const del = await dbPool.query('DELETE FROM user_awards WHERE award_id IS NULL');
+        await logAudit(dbPool, req, {
+            action: 'award.issued_purge_orphans',
+            targetType: 'award_issued',
+            detail: { purged: del.rowCount },
+        });
+        res.json({ success: true, purged: del.rowCount });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // 系统管理员：删除/撤销已颁发的奖状 (New)
 app.delete('/api/admin/issued-awards/:id', verifyToken, verifyAdmin, async (req, res) => {
-    // 撤销颁发是最具破坏性的操作之一：先把被删的对象信息抓下来留痕，再删
+    // 撤销颁发是最具破坏性的操作之一：先把被删的对象信息抓下来留痕，再删。
+    // LEFT JOIN：已失效（原奖状已删除）的记录也要能取到快照里的名称。
     const old = await dbPool.query(
-        `SELECT ua.serial_number, ua.level, u.callsign AS applicant_call, a.name AS award_name
+        `SELECT ua.serial_number, ua.level, u.callsign AS applicant_call,
+                COALESCE(a.name, ua.award_name) AS award_name
            FROM user_awards ua
            JOIN users u ON ua.user_id = u.id
-           JOIN awards a ON ua.award_id = a.id
+           LEFT JOIN awards a ON ua.award_id = a.id
           WHERE ua.id = $1`,
         [req.params.id],
     );
+    if (old.rows.length === 0) return res.status(404).json({ error: 'NOT_FOUND', message: '颁发记录不存在' });
     await dbPool.query('DELETE FROM user_awards WHERE id=$1', [req.params.id]);
     await logAudit(dbPool, req, {
         action: 'award.issued_delete',
         targetType: 'award_issued',
         targetId: req.params.id,
-        detail: old.rows[0]
-            ? { serial: old.rows[0].serial_number, level: old.rows[0].level, applicant: old.rows[0].applicant_call, award: old.rows[0].award_name }
-            : null,
+        detail: {
+            serial: old.rows[0].serial_number,
+            level: old.rows[0].level,
+            applicant: old.rows[0].applicant_call,
+            award: old.rows[0].award_name,
+        },
     });
     res.json({ success: true });
 });
@@ -1269,36 +1329,41 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
 /**
  * 删除奖状（仅限自己的草稿 / 被打回的奖状）
  *
- * 关于「颁发记录」（user_awards）的既定规则：
- *  - **打回只是改状态**（`awards.status='returned'`，见 /api/admin/awards/audit），
- *    已颁发的记录**原样保留**，仍可在「颁发管理」里查到；
- *  - **删除奖状时，颁发记录一并删除**。DB 外键已是 ON DELETE CASCADE，这里仍显式删一遍
- *    兜底（老库的外键可能是 RESTRICT/NO ACTION，那样删除会直接报 500），保证行为一致。
- *    同时把删除条数写进审计，避免"记录凭空消失"无从追溯。
+ * 关于「颁发记录」（user_awards）的既定规则（2026-09-24 修订）：
+ *  - **打回只是改状态**（`awards.status='returned'`，见 /api/admin/awards/audit）；
+ *  - **删除奖状时颁发记录不再一起删除**：外键已改为 `ON DELETE SET NULL`，
+ *    这里先把奖状名称/编号**快照**进记录并打上 `detached_at`，再删奖状。
+ *    记录于是归入「颁发管理 → 已失效」，可随时**一键清理**（DELETE /api/admin/issued-awards/orphans）。
+ *    为什么不留级联：已发出的凭证（有序列号、可扫码）是审计凭据，
+ *    删奖状往往只是因为设计/规则要重做，不该顺手把颁发台账清掉。
  */
 app.delete('/api/awards/:id', verifyToken, verifyAwardAdmin, async (req, res) => {
     const client = await dbPool.connect();
     try {
         await client.query('BEGIN');
         const own = await client.query(
-            `SELECT id, name FROM awards WHERE id=$1 AND creator_id=$2 AND status IN ('draft', 'returned')`,
+            `SELECT id, name, tracking_id FROM awards WHERE id=$1 AND creator_id=$2 AND status IN ('draft', 'returned')`,
             [req.params.id, req.user.id],
         );
         if (own.rows.length === 0) {
             await client.query('ROLLBACK');
             return res.status(403).json({ error: 'FORBIDDEN', message: '只能删除自己的草稿或被打回的奖状' });
         }
-        const issued = await client.query('SELECT count(*)::int AS n FROM user_awards WHERE award_id=$1', [req.params.id]);
-        await client.query('DELETE FROM user_awards WHERE award_id=$1', [req.params.id]);
+        // 先快照（必须在删 awards 之前，否则名称就查不到了）
+        const detached = await client.query(
+            `UPDATE user_awards ua SET award_name = $2, award_tracking_id = $3, detached_at = NOW()
+              WHERE ua.award_id = $1 AND ua.detached_at IS NULL`,
+            [req.params.id, own.rows[0].name, own.rows[0].tracking_id],
+        );
         await client.query('DELETE FROM awards WHERE id=$1', [req.params.id]);
         await client.query('COMMIT');
         await logAudit(dbPool, req, {
             action: 'award.delete',
             targetType: 'award',
             targetId: req.params.id,
-            detail: { award: own.rows[0].name, issued_deleted: issued.rows[0].n },
+            detail: { award: own.rows[0].name, issued_detached: detached.rowCount },
         });
-        res.json({ success: true, issuedDeleted: issued.rows[0].n });
+        res.json({ success: true, issuedDetached: detached.rowCount });
     } catch (e) {
         await client.query('ROLLBACK');
         res.status(500).json({ error: e.message });
@@ -1353,6 +1418,97 @@ app.post('/api/awards/upload-asset', verifyToken, verifyAwardAdmin, handleUpload
     try { res.json(await storeAwardImage(req.file, 'img')); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+/* ---------------------------------------------------------------
+ * 奖状布局模板库（2026-09-24）
+ * 「另存为我的模板」→ 下次设计新奖状时一键套用，省去重新排版。
+ * 设计取舍：
+ *  - **按创建者私有**（creator_id 过滤），不做全局共享 —— 避免别人的模板污染你的列表；
+ *  - 只存**元素与画布样式**，**不存底图**（bgUrl 会被剥掉）：模板套用时保留当前底图，
+ *    否则套模板会把别人的底图一起带过来（而那个对象可能已被清理）；
+ *  - 每人上限 MAX_TEMPLATES，防止无限堆积。
+ * ------------------------------------------------------------- */
+const MAX_TEMPLATES_PER_USER = 50;
+const TEMPLATE_NAME_MAX = 40;
+
+/** 清洗 layout：去掉底图地址，只保留可复用的结构与画布样式 */
+const sanitizeTemplateLayout = (layout) => {
+    const src = layout && typeof layout === 'object' ? layout : {};
+    const canvas = src.canvas && typeof src.canvas === 'object' ? src.canvas : {};
+    return {
+        v: 2,
+        canvas: { w: canvas.w || 297, h: canvas.h || 210, bgFit: canvas.bgFit || 'cover', bgOpacity: canvas.bgOpacity ?? 1, bgUrl: '' },
+        elements: Array.isArray(src.elements) ? src.elements : [],
+    };
+};
+
+app.get('/api/award-templates', verifyToken, verifyAwardAdmin, async (req, res) => {
+    try {
+        const r = await dbPool.query(
+            `SELECT id, name, created_at, jsonb_array_length(COALESCE(layout->'elements', '[]'::jsonb)) AS element_count
+               FROM award_templates WHERE creator_id = $1 ORDER BY created_at DESC, id DESC`,
+            [req.user.id],
+        );
+        res.json(r.rows);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/award-templates/:id', verifyToken, verifyAwardAdmin, async (req, res) => {
+    try {
+        const r = await dbPool.query('SELECT id, name, layout FROM award_templates WHERE id=$1 AND creator_id=$2', [req.params.id, req.user.id]);
+        if (r.rows.length === 0) return res.status(404).json({ error: 'NOT_FOUND', message: '模板不存在' });
+        res.json(r.rows[0]);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/award-templates', verifyToken, verifyAwardAdmin, async (req, res) => {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'NAME_REQUIRED', message: '请填写模板名称' });
+    if (name.length > TEMPLATE_NAME_MAX) return res.status(400).json({ error: 'NAME_TOO_LONG', message: `模板名称不要超过 ${TEMPLATE_NAME_MAX} 个字符` });
+    const layout = sanitizeTemplateLayout(req.body?.layout);
+    if (layout.elements.length === 0) return res.status(400).json({ error: 'EMPTY_LAYOUT', message: '当前设计还没有任何元素，无法保存为模板' });
+    try {
+        const cnt = await dbPool.query('SELECT count(*)::int AS n FROM award_templates WHERE creator_id=$1', [req.user.id]);
+        if (cnt.rows[0].n >= MAX_TEMPLATES_PER_USER) {
+            return res.status(400).json({ error: 'TOO_MANY_TEMPLATES', message: `最多保存 ${MAX_TEMPLATES_PER_USER} 个模板，请先删除不用的` });
+        }
+        const inserted = await dbPool.query(
+            'INSERT INTO award_templates (creator_id, name, layout) VALUES ($1, $2, $3) RETURNING id, name, created_at',
+            [req.user.id, name, JSON.stringify(layout)],
+        );
+        await logAudit(dbPool, req, {
+            action: 'template.create', targetType: 'award_template', targetId: inserted.rows[0].id,
+            detail: { name, elements: layout.elements.length },
+        });
+        res.json({ success: true, ...inserted.rows[0], element_count: layout.elements.length });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.patch('/api/award-templates/:id', verifyToken, verifyAwardAdmin, async (req, res) => {
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'NAME_REQUIRED', message: '请填写模板名称' });
+    if (name.length > TEMPLATE_NAME_MAX) return res.status(400).json({ error: 'NAME_TOO_LONG', message: `模板名称不要超过 ${TEMPLATE_NAME_MAX} 个字符` });
+    try {
+        const upd = await dbPool.query('UPDATE award_templates SET name=$1 WHERE id=$2 AND creator_id=$3', [name, req.params.id, req.user.id]);
+        if (upd.rowCount === 0) return res.status(404).json({ error: 'NOT_FOUND', message: '模板不存在或不属于你' });
+        await logAudit(dbPool, req, { action: 'template.rename', targetType: 'award_template', targetId: req.params.id, detail: { name } });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/award-templates/:id', verifyToken, verifyAwardAdmin, async (req, res) => {
+    try {
+        // 先取名留痕，删掉后再写审计（审计里的名称比 id 有用）
+        const old = await dbPool.query('SELECT name FROM award_templates WHERE id=$1 AND creator_id=$2', [req.params.id, req.user.id]);
+        if (old.rows.length === 0) return res.status(404).json({ error: 'NOT_FOUND', message: '模板不存在或不属于你' });
+        await dbPool.query('DELETE FROM award_templates WHERE id=$1 AND creator_id=$2', [req.params.id, req.user.id]);
+        await logAudit(dbPool, req, {
+            action: 'template.delete', targetType: 'award_template', targetId: req.params.id,
+            detail: { name: old.rows[0].name },
+        });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // --- 奖状申请 & 检查 API (New) ---
 
 app.get('/api/awards/:id/check', verifyToken, async (req, res) => {
@@ -1382,9 +1538,12 @@ app.post('/api/awards/:id/apply', verifyToken, async (req, res) => {
         let serial = '';
         for (let i = 0; i < 16; i += 1) serial += crypto.randomInt(0, 10);
 
+        // 顺手把奖状名称/编号**快照**进颁发记录：奖状日后被删除也能显示是哪个奖状
+        const awMeta = await dbPool.query('SELECT name, tracking_id FROM awards WHERE id=$1', [req.params.id]);
         await dbPool.query(
-            'INSERT INTO user_awards (user_id, award_id, level, score_snapshot, serial_number) VALUES ($1, $2, $3, $4, $5)', 
-            [req.user.id, req.params.id, levelName, current_score, serial]
+            `INSERT INTO user_awards (user_id, award_id, level, score_snapshot, serial_number, award_name, award_tracking_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [req.user.id, req.params.id, levelName, current_score, serial, awMeta.rows[0]?.name || null, awMeta.rows[0]?.tracking_id || null]
         );
         await logAudit(dbPool, req, {
             action: 'award.apply',
@@ -1559,12 +1718,17 @@ app.get('/api/verify/:serial', async (req, res) => {
         return res.status(400).json({ valid: false, error: 'INVALID_SERIAL', message: '序列号格式不正确' });
     }
     try {
+        // LEFT JOIN + 快照：原奖状被删除后序列号**仍然查得到**，
+        // 否则扫码会得到「未找到该序列号对应的奖状」这种误导性结论（记录其实还在）。
         const r = await dbPool.query(`
-            SELECT ua.serial_number, ua.level, ua.issued_at, ua.score_snapshot,
-                   a.name AS award_name, a.description, a.tracking_id,
+            SELECT ua.serial_number, ua.level, ua.issued_at, ua.score_snapshot, ua.detached_at,
+                   COALESCE(a.name, ua.award_name) AS award_name,
+                   a.description,
+                   COALESCE(a.tracking_id, ua.award_tracking_id) AS tracking_id,
+                   (a.id IS NULL) AS detached,
                    u.callsign AS holder_callsign
             FROM user_awards ua
-            JOIN awards a ON a.id = ua.award_id
+            LEFT JOIN awards a ON a.id = ua.award_id
             JOIN users u ON u.id = ua.user_id
             WHERE ua.serial_number = $1
         `, [serial]);
@@ -1572,6 +1736,19 @@ app.get('/api/verify/:serial', async (req, res) => {
             return res.status(404).json({ valid: false, message: '未找到该序列号对应的奖状' });
         }
         const row = r.rows[0];
+        // 奖状已被删除 → 凭证失效，但明确告知原因与持有人信息，而不是笼统说"查不到"
+        if (row.detached) {
+            return res.status(404).json({
+                valid: false,
+                revoked: true,
+                serial: row.serial_number,
+                awardName: row.award_name,
+                level: row.level,
+                issueDate: row.issued_at,
+                holder: maskCallsign(row.holder_callsign),
+                message: `该奖状（${row.award_name || '—'}）已被主办方下架，此证书不再有效。`,
+            });
+        }
         res.json({
             valid: true,
             serial: row.serial_number,

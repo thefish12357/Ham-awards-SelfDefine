@@ -8,7 +8,7 @@ import {
   Search, ShieldCheck, UserPlus, Info, ExternalLink, Image as ImageIcon,
   Users, Activity, Radio, FileText, HardDrive, Clock, FileWarning,
   Target, Calculator, Filter, Layers, Trophy, Crop, ZoomIn, ZoomOut, Grid, ChevronDown, ChevronRight, Bell,
-  Loader2, Monitor, Sun, Moon
+  Loader2, Monitor, Sun, Moon, AlertTriangle, FolderOpen
 } from 'lucide-react';
 
 // ================= 公共模块 =================
@@ -1548,8 +1548,17 @@ const SystemAdminAwardManager = ({ viewMode }) => {
 };
 
 // New Standalone Component for Issuance Management (3. Requirement)
+/**
+ * 颁发管理
+ * ------------------------------------------------------------------
+ * ★ 归类（2026-09-24）：颁发记录**不再随奖状删除**。奖状被删除时记录会保留下来并打上
+ *   `detached` 标记（后端 LEFT JOIN awards，`award_id` 已被置 NULL），本页把它们单独归到
+ *   「已失效」分组，并提供**一键清理**，避免和有效记录混在一起干扰核对。
+ *   —— 反过来，有效记录只能逐条「撤销并删除」，因为那是真正发给用户的凭证。
+ */
 const IssuanceManager = () => {
     const [issuanceList, setIssuanceList] = useState([]);
+    const [purging, setPurging] = useState(false);
 
     const load = () => {
         apiFetch('/admin/issued-awards').then(setIssuanceList).catch(console.error);
@@ -1557,50 +1566,138 @@ const IssuanceManager = () => {
 
     useEffect(() => { load(); }, []);
 
+    const activeList = issuanceList.filter(i => !i.detached);
+    const detachedList = issuanceList.filter(i => i.detached);
+
     const handleDeleteIssuance = async (item) => {
         const ok = await confirmDialog({
-            title: '撤销已颁发的奖状',
-            message: `确认撤销 ${item?.applicant_call || '该用户'} 的「${item?.award_name || '奖状'}」颁发记录？`,
-            detail: `序列号：${item?.serial_number || '—'}　等级：${item?.level || '—'}\n撤销后该奖状的公开校验链接（#/verify/序列号）会立即失效，记录不可恢复。`,
-            confirmText: '撤销并删除',
+            title: item.detached ? '删除已失效记录' : '撤销已颁发的奖状',
+            message: item.detached
+                ? `确认删除 ${item?.applicant_call || '该用户'} 的这条已失效记录？`
+                : `确认撤销 ${item?.applicant_call || '该用户'} 的「${item?.award_name || '奖状'}」颁发记录？`,
+            detail: `序列号：${item?.serial_number || '—'}　等级：${item?.level || '—'}\n${item.detached ? '原奖状已删除，此记录仅用于留痕。' : '撤销后该奖状的公开校验链接（#/verify/序列号）会立即失效，记录不可恢复。'}`,
+            confirmText: item.detached ? '删除记录' : '撤销并删除',
             danger: true,
         });
         if (!ok) return;
         try {
             await apiFetch(`/admin/issued-awards/${item.id}`, { method: 'DELETE' });
-            alert('已撤销');
+            alert(item.detached ? '已删除' : '已撤销');
             load();
         } catch(e) { alert(e.message); }
     };
 
+    /** 一键清理全部「原奖状已删除」的记录 */
+    const handlePurgeDetached = async () => {
+        const ok = await confirmDialog({
+            title: '一键清理已失效记录',
+            message: `确认删除全部 ${detachedList.length} 条「原奖状已删除」的颁发记录？`,
+            detail: '这些记录对应的奖状已不存在，证书也无法再下载。\n清理后记录不可恢复，且相关序列号的公开校验会变成「未找到」。',
+            confirmText: `清理 ${detachedList.length} 条`,
+            danger: true,
+        });
+        if (!ok) return;
+        setPurging(true);
+        try {
+            const r = await apiFetch('/admin/issued-awards/orphans', { method: 'DELETE' });
+            alert(`已清理 ${r.purged ?? 0} 条`);
+            load();
+        } catch(e) { alert(e.message || '清理失败'); }
+        finally { setPurging(false); }
+    };
+
+    /** 表格行（有效 / 已失效 共用一套渲染，只差归属标签与按钮文案） */
+    const renderRow = (item) => (
+        <tr key={item.id} className={item.detached ? 'bg-amber-50' : undefined}>
+            <td className="p-4 text-xs font-mono">{item.id}</td>
+            <td className="p-4 font-bold">
+                {item.award_name || '（名称缺失）'}{' '}
+                {item.detached ? (
+                    <span className="ml-1 text-[11px] font-bold text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded">原奖状已删除</span>
+                ) : (
+                    <span className="text-xs text-slate-400">({item.tracking_id})</span>
+                )}
+            </td>
+            <td className="p-4 font-mono text-sm">{item.serial_number}</td>
+            <td className="p-4 text-sm text-slate-500">{item.issued_at ? new Date(item.issued_at).toLocaleString() : '—'}</td>
+            <td className="p-4 font-bold text-blue-600">{item.applicant_call}</td>
+            <td className="p-4"><span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-xs font-bold">{item.level}</span></td>
+            <td className="p-4">
+                <button onClick={()=>handleDeleteIssuance(item)} className="p-2 bg-red-50 text-red-600 rounded hover:bg-red-100 text-xs font-bold flex items-center gap-1">
+                    <Trash2 size={14}/> {item.detached ? '删除记录' : '删除颁发'}
+                </button>
+            </td>
+        </tr>
+    );
+
+    const tableHead = (
+        <thead className="bg-slate-50 border-b">
+            <tr>
+                <th className="p-4">颁发ID</th><th className="p-4">奖状名称</th><th className="p-4">序列号</th><th className="p-4">颁发时间</th><th className="p-4">申请人</th><th className="p-4">等级</th><th className="p-4">操作</th>
+            </tr>
+        </thead>
+    );
+
     return (
         <div className="space-y-6">
             <h3 className="text-xl font-bold flex items-center gap-2"><Trophy className="text-orange-500"/> 颁发管理 (Issuance Management)</h3>
-            <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-                <table className="w-full text-left">
-                    <thead className="bg-slate-50 border-b">
-                        <tr>
-                            <th className="p-4">颁发ID</th><th className="p-4">奖状名称</th><th className="p-4">序列号</th><th className="p-4">申请时间</th><th className="p-4">申请人</th><th className="p-4">等级</th><th className="p-4">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                        {issuanceList.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-slate-400">暂无颁发记录</td></tr>}
-                        {issuanceList.map(item => (
-                            <tr key={item.id}>
-                                <td className="p-4 text-xs font-mono">{item.id}</td>
-                                <td className="p-4 font-bold">{item.award_name} <span className="text-xs text-slate-400">({item.tracking_id})</span></td>
-                                <td className="p-4 font-mono text-sm">{item.serial_number}</td>
-                                <td className="p-4 text-sm text-slate-500">{new Date(item.issued_at).toLocaleString()}</td>
-                                <td className="p-4 font-bold text-blue-600">{item.applicant_call}</td>
-                                <td className="p-4"><span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded text-xs font-bold">{item.level}</span></td>
-                                <td className="p-4">
-                                    <button onClick={()=>handleDeleteIssuance(item)} className="p-2 bg-red-50 text-red-600 rounded hover:bg-red-100 text-xs font-bold flex items-center gap-1"><Trash2 size={14}/> 删除颁发</button>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
+
+            {detachedList.length > 0 && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 flex flex-wrap items-center justify-between gap-3">
+                    {/* 文字色只用 amber-700：深色主题的映射只覆盖 amber-600/700（见 index.css），
+                        amber-800 在深色下是暗琥珀落在深底上，会看不见 */}
+                    <div className="flex items-start gap-3 text-amber-700">
+                        <AlertTriangle size={18} className="mt-0.5 shrink-0" />
+                        <div className="text-sm">
+                            <div className="font-bold">有 {detachedList.length} 条已失效的颁发记录</div>
+                            <div className="text-xs text-amber-700 mt-0.5">
+                                这些记录对应的奖状已被删除，因此不再随奖状展示，但记录本身保留了下来（凭据留痕）。
+                                确认不再需要时可一键清理。
+                            </div>
+                        </div>
+                    </div>
+                    <button
+                        onClick={handlePurgeDetached}
+                        disabled={purging}
+                        className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 text-white text-xs font-bold hover:bg-amber-700 disabled:opacity-60 shrink-0"
+                    >
+                        <Trash2 size={14}/> {purging ? '清理中…' : `一键清理 ${detachedList.length} 条`}
+                    </button>
+                </div>
+            )}
+
+            <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                    <h4 className="font-bold text-slate-700">有效颁发</h4>
+                    <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{activeList.length}</span>
+                </div>
+                <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+                    <table className="w-full text-left">
+                        {tableHead}
+                        <tbody className="divide-y">
+                            {activeList.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-slate-400">暂无颁发记录</td></tr>}
+                            {activeList.map(renderRow)}
+                        </tbody>
+                    </table>
+                </div>
             </div>
+
+            {detachedList.length > 0 && (
+                <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                        <h4 className="font-bold text-amber-700">已失效（原奖状已删除）</h4>
+                        <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">{detachedList.length}</span>
+                    </div>
+                    <div className="bg-white rounded-2xl shadow-sm border border-amber-200 overflow-hidden">
+                        <table className="w-full text-left">
+                            {tableHead}
+                            <tbody className="divide-y">
+                                {detachedList.map(renderRow)}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
