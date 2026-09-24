@@ -106,6 +106,169 @@ export const VALIGN = [
   { value: 'bottom', label: '底部' },
 ];
 
+/* ==================================================================
+ * 形状（shape）几何
+ * ------------------------------------------------------------------
+ * 参考 Word「插入 → 形状」，内置一组常用图形。
+ * 所有图形都在**元素框内**用 0..1 归一化坐标描述，再按元素实际宽高
+ * （px）缩放，因此任意拉伸都不走样；描边宽度单独以 px 传入，不随拉伸变形。
+ *
+ * ★ 统一用 SVG path 表达（含矩形/椭圆），渲染端只需一个 <path> 分支，
+ *   以后加新形状只改这里 + SHAPES 列表即可。
+ * ================================================================== */
+
+/** 可插入的形状（value 会被写进 elements[].shape，改动务必保持向后兼容） */
+export const SHAPES = [
+  { value: 'rect', label: '矩形' },
+  { value: 'roundRect', label: '圆角矩形' },
+  { value: 'ellipse', label: '椭圆' },
+  { value: 'triangle', label: '等腰三角形' },
+  { value: 'rightTriangle', label: '直角三角形' },
+  { value: 'diamond', label: '菱形' },
+  { value: 'pentagon', label: '五边形' },
+  { value: 'hexagon', label: '六边形' },
+  { value: 'octagon', label: '八边形' },
+  { value: 'star5', label: '五角星' },
+  { value: 'star6', label: '六角星' },
+  { value: 'parallelogram', label: '平行四边形' },
+  { value: 'trapezoid', label: '梯形' },
+  { value: 'arrowRight', label: '右箭头' },
+  { value: 'arrowLeft', label: '左箭头' },
+  { value: 'arrowUp', label: '上箭头' },
+  { value: 'arrowDown', label: '下箭头' },
+  { value: 'chevron', label: '燕尾形' },
+  { value: 'cross', label: '十字形' },
+  { value: 'heart', label: '心形' },
+  { value: 'cloud', label: '云形' },
+  { value: 'line', label: '直线' },
+];
+
+export const shapeLabel = (v) => (SHAPES.find((s) => s.value === v) || {}).label || '形状';
+
+const n3 = (n) => Math.round(n * 1000) / 1000;
+
+/** 归一化点集 → path d */
+const polyPath = (pts, W, H) => `M${pts.map(([u, v]) => `${n3(u * W)},${n3(v * H)}`).join(' L')} Z`;
+
+/** 正 n 边形点集（rot：起始角，弧度） */
+const regularPts = (n, rot) => {
+  const pts = [];
+  for (let i = 0; i < n; i += 1) {
+    const a = rot + (i * 2 * Math.PI) / n;
+    pts.push([0.5 + 0.5 * Math.cos(a), 0.5 + 0.5 * Math.sin(a)]);
+  }
+  return pts;
+};
+
+/** 星形点集（spikes：角数；innerRatio：内半径比例） */
+const starPts = (spikes, innerRatio, rot) => {
+  const pts = [];
+  const step = Math.PI / spikes;
+  for (let i = 0; i < spikes * 2; i += 1) {
+    const rad = i % 2 === 0 ? 1 : innerRatio;
+    const a = rot + i * step;
+    pts.push([0.5 + 0.5 * rad * Math.cos(a), 0.5 + 0.5 * rad * Math.sin(a)]);
+  }
+  return pts;
+};
+
+/** 块状箭头（朝右）的归一化轮廓，其余方向由它旋转得到 */
+const ARROW_RIGHT = [
+  [0, 0.35],
+  [0.6, 0.35],
+  [0.6, 0.05],
+  [1, 0.5],
+  [0.6, 0.95],
+  [0.6, 0.65],
+  [0, 0.65],
+];
+
+/**
+ * 生成形状的 SVG path d。
+ * @param {string} shape SHAPES 里的 value（未知值退化成矩形）
+ * @param {number} W 元素渲染宽度（px）
+ * @param {number} H 元素渲染高度（px）
+ * @param {number} [radiusPx] 圆角半径（px，仅 roundRect 用；<=0 时取短边的 12%）
+ */
+export function shapePath(shape, W, H, radiusPx = 0) {
+  const w = Math.max(W, 1);
+  const h = Math.max(H, 1);
+  switch (shape) {
+    case 'line':
+      // 画在元素框的垂直中线：用户拉伸高度时线始终居中
+      return `M0,${n3(h / 2)} L${n3(w)},${n3(h / 2)}`;
+    case 'roundRect': {
+      const rr = Math.min(radiusPx > 0 ? radiusPx : Math.min(w, h) * 0.12, Math.min(w, h) / 2);
+      return (
+        `M${n3(rr)},0 L${n3(w - rr)},0 A${n3(rr)},${n3(rr)} 0 0 1 ${n3(w)},${n3(rr)}` +
+        ` L${n3(w)},${n3(h - rr)} A${n3(rr)},${n3(rr)} 0 0 1 ${n3(w - rr)},${n3(h)}` +
+        ` L${n3(rr)},${n3(h)} A${n3(rr)},${n3(rr)} 0 0 1 0,${n3(h - rr)}` +
+        ` L0,${n3(rr)} A${n3(rr)},${n3(rr)} 0 0 1 ${n3(rr)},0 Z`
+      );
+    }
+    case 'ellipse': {
+      const rx = w / 2;
+      const ry = h / 2;
+      return `M0,${n3(ry)} A${n3(rx)},${n3(ry)} 0 0 1 ${n3(w)},${n3(ry)} A${n3(rx)},${n3(ry)} 0 0 1 0,${n3(ry)} Z`;
+    }
+    case 'triangle':
+      return polyPath([[0.5, 0], [1, 1], [0, 1]], w, h);
+    case 'rightTriangle':
+      return polyPath([[0, 0], [0, 1], [1, 1]], w, h);
+    case 'diamond':
+      return polyPath([[0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]], w, h);
+    case 'pentagon':
+      return polyPath(regularPts(5, -Math.PI / 2), w, h);
+    case 'hexagon':
+      return polyPath(regularPts(6, 0), w, h);
+    case 'octagon':
+      return polyPath(regularPts(8, Math.PI / 8), w, h);
+    case 'star5':
+      return polyPath(starPts(5, 0.382, -Math.PI / 2), w, h);
+    case 'star6':
+      return polyPath(starPts(6, 0.577, -Math.PI / 2), w, h);
+    case 'parallelogram':
+      return polyPath([[0.25, 0], [1, 0], [0.75, 1], [0, 1]], w, h);
+    case 'trapezoid':
+      return polyPath([[0.22, 0], [0.78, 0], [1, 1], [0, 1]], w, h);
+    case 'arrowRight':
+      return polyPath(ARROW_RIGHT, w, h);
+    case 'arrowLeft':
+      return polyPath(ARROW_RIGHT.map(([u, v]) => [1 - u, 1 - v]), w, h);
+    case 'arrowUp':
+      return polyPath(ARROW_RIGHT.map(([u, v]) => [v, 1 - u]), w, h);
+    case 'arrowDown':
+      return polyPath(ARROW_RIGHT.map(([u, v]) => [1 - v, u]), w, h);
+    case 'chevron':
+      return polyPath([[0, 0], [0.75, 0], [1, 0.5], [0.75, 1], [0, 1], [0.25, 0.5]], w, h);
+    case 'cross':
+      return polyPath(
+        [[0.35, 0], [0.65, 0], [0.65, 0.35], [1, 0.35], [1, 0.65], [0.65, 0.65], [0.65, 1], [0.35, 1], [0.35, 0.65], [0, 0.65], [0, 0.35], [0.35, 0.35]],
+        w,
+        h,
+      );
+    case 'heart':
+      return (
+        `M${n3(0.5 * w)},${n3(h)} C${n3(0.12 * w)},${n3(0.72 * h)} 0,${n3(0.5 * h)} 0,${n3(0.3 * h)}` +
+        ` C0,${n3(0.1 * h)} ${n3(0.16 * w)},0 ${n3(0.31 * w)},0` +
+        ` C${n3(0.41 * w)},0 ${n3(0.48 * w)},${n3(0.06 * h)} ${n3(0.5 * w)},${n3(0.14 * h)}` +
+        ` C${n3(0.52 * w)},${n3(0.06 * h)} ${n3(0.59 * w)},0 ${n3(0.69 * w)},0` +
+        ` C${n3(0.84 * w)},0 ${n3(w)},${n3(0.1 * h)} ${n3(w)},${n3(0.3 * h)}` +
+        ` C${n3(w)},${n3(0.5 * h)} ${n3(0.88 * w)},${n3(0.72 * h)} ${n3(0.5 * w)},${n3(h)} Z`
+      );
+    case 'cloud':
+      // 三个圆弧拼出的云朵轮廓（左半圆 → 顶部大圆弧 → 右半圆 → 底边闭合）
+      return (
+        `M${n3(0.2 * w)},${n3(0.88 * h)} A${n3(0.2 * w)},${n3(0.2 * h)} 0 0 1 ${n3(0.2 * w)},${n3(0.48 * h)}` +
+        ` A${n3(0.3 * w)},${n3(0.3 * h)} 0 0 1 ${n3(0.8 * w)},${n3(0.48 * h)}` +
+        ` A${n3(0.2 * w)},${n3(0.2 * h)} 0 0 1 ${n3(0.8 * w)},${n3(0.88 * h)} Z`
+      );
+    case 'rect':
+    default:
+      return polyPath([[0, 0], [1, 0], [1, 1], [0, 1]], w, h);
+  }
+}
+
 let idCounter = 0;
 export const uid = () => `el_${Date.now().toString(36)}_${(idCounter += 1).toString(36)}`;
 
@@ -166,7 +329,9 @@ export function newShapeElement(x, y) {
     h: 80,
     fill: 'none',
     stroke: '#c8a45c',
-    strokeWidth: 0.5,
+    // ⚠️ 默认线宽不要低于 1mm：编辑器画布约 560px 宽，0.5mm 换算下来不足 1 个物理像素，
+    //    形状会「加了却看不见」（2026-09-24 用户反馈）。
+    strokeWidth: 1,
   };
 }
 
@@ -222,3 +387,74 @@ export const hasLevelOverride = (el, level) => !!(el && level && el.levelOverrid
 
 /** 元素是否对任何等级做过覆盖（用于编辑器里的标记） */
 export const hasAnyLevelOverride = (el) => !!(el && el.levelOverrides && Object.keys(el.levelOverrides).length > 0);
+
+/* ==================================================================
+ * 预设模板
+ * ------------------------------------------------------------------
+ * 「新建奖状」时用它初始化布局，使用者不必从白纸开始：已经排好
+ * 标题 / 呼号 / 等级 / 编号 / 签发日期 / 颁发机构 / 校验二维码 / 双线边框。
+ *
+ * ⚠️ 只用于**新建**（或布局为空时）的初始化，绝不要塞进 `normalizeLayout`：
+ *    否则所有历史空布局奖状都会在渲染时凭空多出一套元素，属于数据事故。
+ * ================================================================== */
+
+// 与 FONTS 中的条目保持一致（这里只取常用的三种，避免引用整个列表）
+const FONT_SONG = '"Noto Serif SC","Source Han Serif SC","Noto Serif CJK SC","SimSun",serif';
+const FONT_HEI = '"Noto Sans SC","Source Han Sans SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif';
+const FONT_MONO = '"JetBrains Mono","Fira Code","Cascadia Code","Consolas",monospace';
+
+const textEl = (x, y, w, h, patch) => ({
+  ...base(x, y, 1),
+  type: 'text',
+  binding: 'custom',
+  text: '',
+  font: FONT_HEI,
+  color: '#111827',
+  weight: 400,
+  align: 'center',
+  valign: 'middle',
+  w,
+  h,
+  ...patch,
+});
+
+/**
+ * 生成 A4 横版（297×210mm）预设模板。
+ * @param {string} bgUrl 已有底图地址（可空，之后在编辑器里上传）
+ */
+export function presetAwardLayout(bgUrl = '') {
+  return {
+    ...defaultLayout(bgUrl),
+    elements: [
+      // ---- 边框（z=0，永远在最底层）----
+      { ...base(10, 10, 0), type: 'shape', shape: 'rect', w: 277, h: 190, fill: 'none', stroke: '#c8a45c', strokeWidth: 1.2 },
+      { ...base(13.5, 13.5, 0), type: 'shape', shape: 'rect', w: 270, h: 183, fill: 'none', stroke: '#c8a45c', strokeWidth: 0.4 },
+
+      // ---- 标题区 ----
+      textEl(58.5, 26, 180, 18, { text: '荣 誉 证 书', font: FONT_SONG, weight: 700 }),
+      textEl(58.5, 47, 180, 6, { text: 'HONORARY CERTIFICATE', font: FONT_MONO, color: '#b08a3e', weight: 400 }),
+
+      // ---- 奖状名称（动态字段）----
+      textEl(48.5, 58, 200, 13, { binding: 'awardName', text: '', font: FONT_SONG, color: '#b08a3e', weight: 700 }),
+
+      // ---- 获奖人呼号（动态字段）+ 下划线 ----
+      textEl(48.5, 82, 200, 22, { binding: 'callsign', text: '', font: FONT_MONO, weight: 700 }),
+      { ...base(98.5, 108, 1), type: 'shape', shape: 'line', w: 100, h: 1, fill: 'none', stroke: '#c8a45c', strokeWidth: 0.8 },
+
+      // ---- 等级 / 描述 ----
+      textEl(48.5, 114, 200, 13, { binding: 'level', text: '', font: FONT_SONG, color: '#b08a3e', weight: 700 }),
+      textEl(58.5, 134, 180, 8, { binding: 'description', text: '', color: '#6b7280', weight: 400 }),
+
+      // ---- 左下：编号 / 签发日期 ----
+      textEl(24, 158, 50, 6, { text: '证书编号', align: 'left', color: '#6b7280' }),
+      textEl(24, 165, 80, 7, { binding: 'serial', text: '', font: FONT_MONO, align: 'left' }),
+      textEl(24, 178, 50, 6, { text: '签发日期', align: 'left', color: '#6b7280' }),
+      textEl(24, 185, 60, 7, { binding: 'issueDate', text: '', font: FONT_MONO, align: 'left' }),
+
+      // ---- 右下：颁发机构 + 校验二维码 ----
+      textEl(150, 178, 60, 6, { text: '颁发机构', align: 'right', color: '#6b7280' }),
+      textEl(150, 185, 60, 7, { binding: 'issuer', text: '', align: 'right' }),
+      { ...base(240, 152, 1), type: 'qrcode', binding: 'verifyUrl', w: 34, h: 34 },
+    ],
+  };
+}

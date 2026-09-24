@@ -12,8 +12,11 @@ import {
   Loader2,
   ChevronUp,
   ChevronDown,
+  ChevronsUp,
+  ChevronsDown,
   AlertCircle,
   Layers,
+  LayoutTemplate,
 } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch.js';
 import {
@@ -23,14 +26,21 @@ import {
   FONT_GROUPS,
   ALIGN,
   VALIGN,
+  SHAPES,
+  shapeLabel,
   uid,
   newTextElement,
   newShapeElement,
   newImageElement,
   newQrElement,
+  presetAwardLayout,
   resolveElementForLevel,
   hasLevelOverride,
 } from '../lib/awardLayout.js';
+import { ASSET_MAX_DIM, ASSET_LIMIT_TEXT, BG_LIMIT_TEXT, ACCEPT_IMAGE, ACCEPT_IMAGE_TEXT } from '../lib/uploadLimits.js';
+import { prepareImageForUpload, BG_UPLOAD_PRESET } from '../lib/imageUpload.js';
+import { toSameOriginMediaUrl } from '../lib/media.js';
+import { confirmDialog } from '../lib/confirm.jsx';
 import AwardRenderer from './AwardRenderer.jsx';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -65,20 +75,20 @@ function resizeFrom(o, dir, dx, dy) {
 const cursorFor = (dir) =>
   dir === 'n' || dir === 's' ? 'ns-resize' : dir === 'e' || dir === 'w' ? 'ew-resize' : dir === 'ne' || dir === 'sw' ? 'nesw-resize' : 'nwse-resize';
 
-/** 底图大小上限（MB）。必须与后端 `server.js` 的 `uploadBg` limits.fileSize 保持一致 */
-const MAX_BG_MB = 10;
-
 /**
  * 可视化布局编辑器（Step 3）
  * ------------------------------------------------------------------
  * 受控组件：`layout` + `onChange`。内部维护选中态、拖拽/缩放、撤销重做。
- * 底图上传直接在这里调用 /api/awards/upload-bg（**修掉了旧版上传按钮无响应的问题**）。
+ * 底图/图片上传都走各自的接口（**修掉了旧版上传按钮无响应的问题**）：
+ *   - 底图      → POST /api/awards/upload-bg     （≤ BG_MAX_MB）
+ *   - 图片元素  → POST /api/awards/upload-asset  （≤ ASSET_MAX_MB，仅图片元素用）
  */
 export default function VisualDesigner({ layout, onChange, awardName, levels = [] }) {
   const [selectedId, setSelectedId] = useState(null);
   // 多等级差异：'' = 编辑「所有等级共用」的基础设计；否则只改该等级的 levelOverrides
   const [editLevel, setEditLevel] = useState('');
   const [uploadingBg, setUploadingBg] = useState(false);
+  const [uploadingImg, setUploadingImg] = useState(false);
   const [error, setError] = useState(null);
   const [past, setPast] = useState([]);
   const [future, setFuture] = useState([]);
@@ -86,6 +96,7 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
 
   const wrapRef = useRef(null);
   const fileRef = useRef(null);
+  const imgFileRef = useRef(null);
   const layoutRef = useRef(layout);
   const dragRef = useRef(null);
   useEffect(() => {
@@ -236,18 +247,60 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
     setSelectedId(copy.id);
   };
 
+  /** 层级重排统一入口：传入「从底到顶」的新顺序，重写 z 后落盘 */
+  const applyOrder = (ordered) => applyElements(ordered.map((el, i) => ({ ...el, z: i })));
+
+  const layerSorted = () => [...layoutRef.current.elements].sort((a, b) => (a.z || 0) - (b.z || 0));
+
+  /** delta > 0 = 向上一层（更靠前）；delta < 0 = 向下一层（更靠后） */
   const moveLayer = (delta) => {
     if (!selected) return;
-    const sorted = [...layoutRef.current.elements].sort((a, b) => (a.z || 0) - (b.z || 0));
+    const sorted = layerSorted();
     const idx = sorted.findIndex((el) => el.id === selectedId);
     const j = idx + delta;
     if (idx < 0 || j < 0 || j >= sorted.length) return;
     commitSnapshot(layoutRef.current.elements);
     [sorted[idx], sorted[j]] = [sorted[j], sorted[idx]];
-    sorted.forEach((el, i) => {
-      el.z = i;
+    applyOrder(sorted);
+  };
+
+  /** 置于顶层：盖住所有其它元素（含边框装饰） */
+  const bringToFront = () => {
+    if (!selected) return;
+    const sorted = layerSorted();
+    const idx = sorted.findIndex((el) => el.id === selectedId);
+    if (idx < 0 || idx === sorted.length - 1) return;
+    commitSnapshot(layoutRef.current.elements);
+    const [el] = sorted.splice(idx, 1);
+    sorted.push(el);
+    applyOrder(sorted);
+  };
+
+  /** 置于底层：压在底图之上、所有元素之下 */
+  const sendToBack = () => {
+    if (!selected) return;
+    const sorted = layerSorted();
+    const idx = sorted.findIndex((el) => el.id === selectedId);
+    if (idx <= 0) return;
+    commitSnapshot(layoutRef.current.elements);
+    const [el] = sorted.splice(idx, 1);
+    sorted.unshift(el);
+    applyOrder(sorted);
+  };
+
+  /** 一键载入预设模板（保留当前底图），用于新建时没选模板、或想推倒重来 */
+  const loadPreset = async () => {
+    const ok = await confirmDialog({
+      title: '载入预设模板',
+      message: '将用内置模板替换当前所有元素，底图会保留。',
+      detail: '模板包含：标题、呼号、等级、证书编号、签发日期、颁发机构、校验二维码与双线边框。当前设计将被清空（可用「撤销」恢复）。',
+      confirmText: '载入模板',
     });
-    applyElements(sorted);
+    if (!ok) return;
+    commitSnapshot(layoutRef.current.elements);
+    const next = presetAwardLayout(layoutRef.current.canvas?.bgUrl || '');
+    onChange({ ...layoutRef.current, elements: next.elements });
+    setSelectedId(null);
   };
 
   const updateSelected = (patch) => {
@@ -278,21 +331,13 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
     if (!file) return;
-    // 先在前端把「类型 / 大小」拦下来并说清原因：后端 multer 拒绝时只会给一句
-    // 笼统的「Upload failed」，用户根本不知道是超限还是格式不对。
-    if (file.type && !/^image\//.test(file.type)) {
-      setError(`「${file.name}」不是图片文件，请选择 JPG / PNG / WebP / GIF 等图片格式`);
-      return;
-    }
-    if (file.size > MAX_BG_MB * 1024 * 1024) {
-      setError(`图片约 ${(file.size / 1024 / 1024).toFixed(1)} MB，超过 ${MAX_BG_MB} MB 上限，请压缩后再上传`);
-      return;
-    }
     setUploadingBg(true);
     setError(null);
     try {
+      // 类型 / 尺寸 / 体积三项校验 + 必要时等比缩小
+      const { file: prepared } = await prepareImageForUpload(file, BG_UPLOAD_PRESET);
       const fd = new FormData();
-      fd.append('bg', file);
+      fd.append('bg', prepared);
       const r = await apiFetch('/awards/upload-bg', { method: 'POST', body: fd });
       // ★ 优先用后端返回的**同源代理**地址（`/api/media?key=…`）：
       //   若存 `http://localhost:9000/...`，https 页面会按「混合内容」把图片拦掉，
@@ -304,6 +349,33 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
       setError(err?.message || '底图上传失败，请检查对象存储是否已配置');
     } finally {
       setUploadingBg(false);
+    }
+  };
+
+  // ---------------- 图片元素上传（印章 / logo / 小图标） ----------------
+  const onImageFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file || !selectedId) return;
+    setUploadingImg(true);
+    setError(null);
+    try {
+      const { file: prepared, width, height, scaled } = await prepareImageForUpload(file, { label: '图片' });
+      const fd = new FormData();
+      fd.append('image', prepared);
+      const r = await apiFetch('/awards/upload-asset', { method: 'POST', body: fd });
+      const url = r.mediaUrl || r.url;
+      if (!url) throw new Error('服务端未返回图片地址，请检查对象存储配置');
+      // 按上传后的真实宽高比重算元素高度，避免图片被拉伸变形
+      const ar = width / height;
+      const w = selected.w;
+      const h = Math.max(1, Math.round((w / ar) * 10) / 10);
+      updateSelected({ src: url, w, h });
+      if (scaled) setError(`图片超过最长边 ${ASSET_MAX_DIM}px，已自动等比缩小到 ${width}×${height}px 再上传`);
+    } catch (err) {
+      setError(err?.message || '图片上传失败，请检查对象存储是否已配置');
+    } finally {
+      setUploadingImg(false);
     }
   };
 
@@ -332,7 +404,8 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
   };
 
   const fieldLabel = (v) => (FIELD_BINDINGS.find((f) => f.value === v) || {}).label || v;
-  const sortedElements = [...elements].sort((a, b) => (a.z || 0) - (b.z || 0));
+  // 图层列表按「上层在前」排列（z 大的在前），与「置于顶层/底层」的直觉一致
+  const sortedElements = [...elements].sort((a, b) => (b.z || 0) - (a.z || 0));
 
   return (
     <div className="flex-1 flex overflow-hidden">
@@ -348,7 +421,7 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
 
           <div>
             <h4 className="font-bold mb-2 text-sm">奖状底图</h4>
-            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onBgFile} />
+            <input ref={fileRef} type="file" accept={ACCEPT_IMAGE} className="hidden" onChange={onBgFile} />
             <button
               type="button"
               onClick={() => fileRef.current && fileRef.current.click()}
@@ -360,7 +433,7 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
             </button>
             <p className="text-xs text-slate-400 mt-1">{layout?.canvas?.bgUrl ? '已设置底图' : '未设置底图（保存前必须上传）'}</p>
             <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-              支持 JPG / PNG / WebP 等图片格式，单张不超过 <b>{MAX_BG_MB} MB</b>；建议 A4 横版比例（297×210）。
+              支持 JPG / PNG / WebP / GIF，{BG_LIMIT_TEXT}。
             </p>
           </div>
 
@@ -380,10 +453,20 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
                 <QrCode size={18} /> 二维码
               </button>
             </div>
+            <button
+              type="button"
+              onClick={loadPreset}
+              className="mt-2 w-full p-2.5 border rounded-xl hover:bg-white flex items-center justify-center gap-1.5 text-xs font-bold text-slate-600"
+              title="用内置模板替换当前元素（标题 / 呼号 / 编号 / 二维码等）"
+            >
+              <LayoutTemplate size={16} /> 载入预设模板
+            </button>
           </div>
 
           <div>
-            <h4 className="font-bold mb-2 text-sm">元素列表</h4>
+            <h4 className="font-bold mb-2 text-sm">
+              图层 <span className="font-normal text-slate-400">（上层在前）</span>
+            </h4>
             <div className="space-y-1">
               {sortedElements.length === 0 && <p className="text-xs text-slate-400">尚未添加元素</p>}
               {sortedElements.map((elRaw) => {
@@ -398,7 +481,13 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
                     className={`w-full text-left px-3 py-2 rounded-lg text-xs flex items-center justify-between ${selectedId === elRaw.id ? 'bg-blue-100 text-blue-800 font-bold' : 'hover:bg-white text-slate-600'}`}
                   >
                     <span className="truncate flex items-center gap-1">
-                      {el.type === 'text' ? `文字 · ${fieldLabel(el.binding)}` : el.type === 'shape' ? '形状' : el.type === 'image' ? '图片' : '二维码'}
+                      {el.type === 'text'
+                        ? `文字 · ${fieldLabel(el.binding)}`
+                        : el.type === 'shape'
+                          ? `形状 · ${shapeLabel(el.shape)}`
+                          : el.type === 'image'
+                            ? '图片'
+                            : '二维码'}
                       {overridden && <span className="text-amber-600 font-black">•</span>}
                     </span>
                     <span className="text-slate-400">{Math.round(el.x)},{Math.round(el.y)}</span>
@@ -476,12 +565,17 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
             <div className="flex items-center justify-between">
               <h4 className="font-bold">元素属性</h4>
               <div className="flex gap-1">
-                <button type="button" onClick={() => moveLayer(-1)} className="p-1.5 border rounded hover:bg-slate-50" title="上移一层"><ChevronUp size={14} /></button>
-                <button type="button" onClick={() => moveLayer(1)} className="p-1.5 border rounded hover:bg-slate-50" title="下移一层"><ChevronDown size={14} /></button>
+                <button type="button" onClick={bringToFront} className="p-1.5 border rounded hover:bg-slate-50" title="置于顶层"><ChevronsUp size={14} /></button>
+                <button type="button" onClick={() => moveLayer(1)} className="p-1.5 border rounded hover:bg-slate-50" title="上移一层"><ChevronUp size={14} /></button>
+                <button type="button" onClick={() => moveLayer(-1)} className="p-1.5 border rounded hover:bg-slate-50" title="下移一层"><ChevronDown size={14} /></button>
+                <button type="button" onClick={sendToBack} className="p-1.5 border rounded hover:bg-slate-50" title="置于底层"><ChevronsDown size={14} /></button>
                 <button type="button" onClick={duplicateSelected} className="p-1.5 border rounded hover:bg-slate-50" title="复制"><Copy size={14} /></button>
                 <button type="button" onClick={removeSelected} className="p-1.5 border rounded text-red-600 hover:bg-red-50" title="删除"><Trash2 size={14} /></button>
               </div>
             </div>
+            <p className="text-[10px] leading-tight text-slate-400">
+              图层顺序：<b>置于底层</b>压在底图之上、其它元素之下；<b>置于顶层</b>盖住所有元素。
+            </p>
 
             {editLevel ? (
               <div className="bg-amber-50 border border-amber-200 text-amber-700 rounded-lg p-2 text-xs space-y-1">
@@ -592,11 +686,31 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
             )}
 
             {selected.type === 'image' && (
-              <label className="block">
-                <span className="text-xs text-slate-500">图片 URL</span>
-                <input className="w-full mt-1 p-2 border rounded-lg font-mono text-xs" placeholder="https://…" value={selected.src || ''} onChange={(e) => updateSelected({ src: e.target.value })} />
-                <span className="text-xs text-slate-400">例如印章、logo 的公开地址</span>
-              </label>
+              <div className="space-y-2">
+                <input ref={imgFileRef} type="file" accept={ACCEPT_IMAGE} className="hidden" onChange={onImageFile} />
+                <button
+                  type="button"
+                  onClick={() => imgFileRef.current && imgFileRef.current.click()}
+                  disabled={uploadingImg}
+                  className="w-full p-3 border-2 border-dashed border-slate-300 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 flex items-center justify-center gap-2 disabled:opacity-60"
+                >
+                  {uploadingImg ? <Loader2 size={16} className="text-slate-400 animate-spin" /> : <Upload size={16} className="text-slate-400" />}
+                  {uploadingImg ? '上传中…' : selected.src ? '更换图片' : '上传图片'}
+                </button>
+                <p className="text-[10px] leading-relaxed text-slate-400">
+                  支持 {ACCEPT_IMAGE_TEXT}；{ASSET_LIMIT_TEXT}。上传后存本站对象存储，导出 PDF 不会缺图。
+                </p>
+                {selected.src ? (
+                  <div className="border rounded-lg p-2 bg-slate-50">
+                    <img src={toSameOriginMediaUrl(selected.src)} alt="" className="max-h-24 mx-auto object-contain" />
+                  </div>
+                ) : null}
+                <label className="block">
+                  <span className="text-xs text-slate-500">或使用外链图片 URL</span>
+                  <input className="w-full mt-1 p-2 border rounded-lg font-mono text-xs" placeholder="https://…" value={selected.src || ''} onChange={(e) => updateSelected({ src: e.target.value })} />
+                  <span className="text-[10px] text-slate-400">外链图片可能跨域失效、导出缺图，建议改为上传。</span>
+                </label>
+              </div>
             )}
 
             {selected.type === 'qrcode' && (
@@ -618,15 +732,37 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
                   <label className="block">
                     <span className="text-xs text-slate-500">形状</span>
                     <select className="w-full mt-1 p-2 border rounded-lg" value={selected.shape || 'rect'} onChange={(e) => updateSelected({ shape: e.target.value })}>
-                      <option value="rect">矩形边框</option>
-                      <option value="line">直线</option>
+                      {SHAPES.map((s) => (
+                        <option key={s.value} value={s.value}>{s.label}</option>
+                      ))}
                     </select>
                   </label>
                   <label className="block">
                     <span className="text-xs text-slate-500">线宽 (mm)</span>
-                    <input type="number" step="0.1" className="w-full mt-1 p-2 border rounded-lg" value={selected.strokeWidth || 0.5} onChange={(e) => updateSelected({ strokeWidth: Number(e.target.value) || 0 })} />
+                    <input
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      className="w-full mt-1 p-2 border rounded-lg"
+                      value={selected.strokeWidth ?? 1}
+                      onChange={(e) => updateSelected({ strokeWidth: Math.max(0.1, Number(e.target.value) || 0.1) })}
+                    />
                   </label>
                 </div>
+                {selected.shape === 'roundRect' && (
+                  <label className="block">
+                    <span className="text-xs text-slate-500">圆角半径 (mm，留空为默认)</span>
+                    <input
+                      type="number"
+                      step="1"
+                      min="0"
+                      placeholder="默认"
+                      className="w-full mt-1 p-2 border rounded-lg"
+                      value={selected.radius ?? ''}
+                      onChange={(e) => updateSelected({ radius: e.target.value === '' ? undefined : Math.max(0, Number(e.target.value) || 0) })}
+                    />
+                  </label>
+                )}
                 <div className="grid grid-cols-2 gap-2">
                   <label className="block">
                     <span className="text-xs text-slate-500">边框色</span>
@@ -640,6 +776,9 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
                     </div>
                   </label>
                 </div>
+                <p className="text-[10px] leading-tight text-slate-400">
+                  形状可自由拉伸不变形；线宽按 mm 换算，编辑器里会自动保证至少 1 像素可见（打印仍按 mm）。
+                </p>
               </>
             )}
 

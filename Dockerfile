@@ -33,10 +33,14 @@ COPY server.js ./
 # 后端单体由 server.js + server/ 下各路由/服务组成，运行时必须整目录拷入
 COPY server ./server
 COPY docker ./docker
+# data/cty.dat 是**运行期必需数据**（呼号 → DXCC 归属反查）。
+# 漏拷的后果很重：日志上传 / 全部日志 / 实物材料审核都会因 ENOENT 直接 500
+# （2026-09-24 实测复现，服务端现已同时做了缺文件降级）。
+COPY data ./data
 
 # /data 用于持久化 config.json（由 compose 挂载命名卷）
-# /app/uploads 是 multer 的临时目录
-RUN mkdir -p /data /app/uploads
+# /app/uploads 是 multer 的临时目录，/app/data 存放 cty.dat（可被后台刷新接口覆写）
+RUN mkdir -p /data /app/uploads /app/data
 
 EXPOSE 9993
 

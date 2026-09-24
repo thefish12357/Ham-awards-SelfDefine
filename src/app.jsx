@@ -27,7 +27,7 @@ import AboutView from './pages/AboutView.jsx';
 import PrivacyView from './pages/PrivacyView.jsx';
 import TermsView from './pages/TermsView.jsx';
 import ProtocolView from './pages/ProtocolView.jsx';
-import { normalizeLayout } from './lib/awardLayout.js';
+import { normalizeLayout, presetAwardLayout } from './lib/awardLayout.js';
 // 实物材料的收集要素类型（QSL 卡 / Eyeball 卡 / SWL 收听报告）
 import { EVIDENCE_TYPES, evidenceType, evidenceTypeLabel, TZ_OPTIONS, tzOffsetOf, toUtcDateTime } from './lib/evidenceTypes.js';
 import { collectExternalImages, toSameOriginMediaUrl } from './lib/media.js';
@@ -1611,7 +1611,13 @@ const AwardDesigner = ({ initData, onClose }) => {
     const [step, setStep] = useState(1);
     const [bgUrl, setBgUrl] = useState(initData?.bg_url || '');
     // 可视化布局（v2 schema，单位 mm）。旧数据（[] 或旧结构）会被归一化成空布局。
-    const [layout, setLayout] = useState(() => normalizeLayout(initData?.layout, initData?.bg_url));
+    // ★ 新建（或历史数据里布局为空）时直接载入**预设模板**：标题 / 呼号 / 等级 /
+    //   证书编号 / 签发日期 / 颁发机构 / 校验二维码 / 双线边框，打开即可用。
+    //   已有元素的奖状照旧读自己的布局，不会被模板覆盖。
+    const [layout, setLayout] = useState(() => {
+        const saved = normalizeLayout(initData?.layout, initData?.bg_url);
+        return saved.elements.length > 0 ? saved : presetAwardLayout(initData?.bg_url || '');
+    });
     
     // Initial Rule Structure (Complex V2)
     const defaultRules = {

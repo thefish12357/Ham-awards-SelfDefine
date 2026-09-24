@@ -330,15 +330,32 @@ const DXCC_NUMBERS = {
 };
 
 let cache = null;
+let missingWarned = false;
 
 /**
  * 解析 cty.dat，构建 prefix → entity 索引。
  * 单进程只解析一次，缓存到模块级。
+ *
+ * ⚠️ 文件缺失时**降级为空索引**，不要抛异常：
+ *    cty.dat 只是「呼号 → DXCC 归属」的增强数据，缺了它核心流程必须照常工作。
+ *    曾经这里直接 `readFileSync` 抛 ENOENT，而 Docker 镜像又漏拷了 `data/` 目录，
+ *    结果是**日志上传、全部日志、实物材料审核全部 500**（2026-09-24 实测发现）。
+ *    查不到实体时 `lookupDxcc` 返回 null，各调用点本来就判了 null，可安全降级。
  */
 function loadCty() {
   if (cache) return cache;
 
-  const text = fs.readFileSync(CTY_PATH, 'utf8');
+  let text;
+  try {
+    text = fs.readFileSync(CTY_PATH, 'utf8');
+  } catch (e) {
+    if (!missingWarned) {
+      missingWarned = true;
+      console.warn(`[cty] 未能读取 ${CTY_PATH}（${e.code || e.message}），DXCC 反查功能暂停。可用后台「数据维护 → 更新 DXCC 库」或放入该文件后重启恢复。`);
+    }
+    cache = { entities: [], flat: [] };
+    return cache;
+  }
   const lines = text.split(/\r?\n/);
 
   /** @type {{ name: string, cqz: number, ituz: number, continent: string, primaryPrefix: string, prefixes: { prefix: string; isException: boolean; }[] }[]} */
@@ -470,8 +487,11 @@ export async function syncCtyFromWeb(opts = {}) {
     return { updated: false, reason: 'unchanged', stats: ctyStats() };
   }
 
+  // 目录可能不存在（例如精简部署只带了 server/），先确保父目录可写
+  fs.mkdirSync(path.dirname(CTY_PATH), { recursive: true });
   fs.writeFileSync(CTY_PATH, buf);
   cache = null; // 下次查询重新解析
+  missingWarned = false;
   return { updated: true, stats: ctyStats() };
 }
 

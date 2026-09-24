@@ -51,7 +51,9 @@
 │   ├── lib/            # ★ 新增：新功能的公共模块，不要再往 app.jsx 里塞
 │   │   ├── apiFetch.js #   统一请求封装（原 app.jsx 第 16–49 行抽出）
 │   │   ├── routes.js   #   Hash 路由工具（readRoute / writeRoute / isRouteAllowed）
-│   │   ├── awardLayout.js  #   奖状布局 schema（v2，mm 单位）+ 工具
+│   │   ├── awardLayout.js  #   奖状布局 schema（v2，mm）+ 形状几何（SHAPES/shapePath）+ 预设模板
+│   │   ├── uploadLimits.js #   ★ 上传体积上限/尺寸上限常量（前后端必须一致）
+│   │   ├── imageUpload.js  #   ★ 上传前置处理：类型/尺寸/体积校验 + 超尺寸自动等比缩小
 │   │   └── exportAwardPdf.js   #   客户端 PDF 导出（html-to-image + jsPDF，按需加载）
 │   ├── components/     # ★ 新增：可复用组件
 │   │   ├── AwardRenderer.jsx   #   布局 → DOM 渲染（编辑器/我的奖状/审核预览/PDF 共用）
@@ -200,9 +202,15 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | `/api/verify/:serial`                   | 奖状真伪校验，呼号脱敏（BH2VSQ → BH\*\*\*Q）                                                        | **公开**                                    |
 | `/api/verify/:serial/qr`                | 校验二维码 PNG（内容 = 本站 `/#/verify/<serial>`）                                                  | **公开**                                    |
 | `/api/media?key=awards/…`               | 同源图片代理。底图在 MinIO 属跨域，canvas 导出会被污染，走这里规避                                  | **公开**（仅限 `awards/` 一级前缀，禁穿越） |
-| `/api/awards/*`                         | 奖状：my、all_approved、`:id/check`、`:id/apply`、增删改、upload-bg                                 | 登录 / 奖状管理员                           |
+| `/api/awards/*`                         | 奖状：my、all_approved、`:id/check`、`:id/apply`、增删改、upload-bg（底图 ≤10MB）、upload-asset（图片元素 ≤2MB） | 登录 / 奖状管理员                           |
 | `/api/qsos/:id/awards`                  | 查某条 QSO 参与哪些奖状                                                                             | 登录                                        |
 | `/api/admin/*`                          | users、awards/pending、awards/approved、awards/audit、issued-awards、settings                       | **系统管理员**                              |
+
+**颁发记录（`user_awards`）生命周期（2026-09-24 明确）**
+
+- **打回 / 撤回只改状态**（`awards.status='returned'`），已颁发的记录**原样保留**（有序列号、可扫码校验的奖状必须留痕），仍出现在「颁发管理」里。
+- **删除奖状时颁发记录一并删除**：外键本就是 `ON DELETE CASCADE`，`DELETE /api/awards/:id` 仍显式删一遍兜底（老库外键可能不是 CASCADE），并把 `issued_deleted` 数量写进审计。
+- 该接口现在对越权/状态不符返回 **403**（不再静默返回 success）。
 
 ## 7. 编码约定与雷区
 
@@ -214,6 +222,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
    - 配置为 `tailwind.config.cjs` / `postcss.config.cjs`，**必须保持 `.cjs` 后缀**（`package.json` 是 `type: module`，用 `.js` 会加载失败）
    - 扫描范围是 `./index.html` + `./src/**/*.{js,jsx}`。**字符串拼接出的类名不会被扫描到**（如 `` `bg-${c}-500` ``），这类写法要改为完整类名或加 `safelist`
    - `Dockerfile` 里已把这两个配置文件与 `public/` 加进构建阶段的 `COPY`，改动结构时别漏
+   - ⚠️ **新增运行期依赖目录必须同步加进 `Dockerfile` 运行时阶段的 `COPY`**。`server/` 与 `data/` 都栽过同一个坑：漏拷 `server/` 让容器崩溃重启，漏拷 `data/` 让 `cty.dat` 缺失 → `lookupDxcc` 抛 ENOENT，日志上传 / 全部日志 / 实物审核全部 500。服务端现已对 cty.dat 缺失做**降级**（返回空索引 + 一条 warn），但目录仍必须拷全。
 4. **前端是轻量 Hash 路由**（`src/lib/routes.js`）。新增页面：先在 `app.jsx` 的菜单与渲染分发里加分支，**再把新 id 加进 `ALL_ROUTES` 与对应的 `ROUTES_BY_ROLE`**，否则 URL 同步和角色守卫都不认它。服务端 `express.static('dist')` 仍无 SPA fallback，但 hash 不会发给服务端，所以刷新安全。
 5. **改动后端端口/静态目录时同步检查** `vite.config.js` 的 proxy 目标。
 6. `adminPath` 是**名存实亡的配置**：只写进 `config.json` 并被 `/api/system-status` 回显，前端从未读取，改它不影响入口路径。
@@ -221,6 +230,8 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
    - ⚠️ **新接口不要用 401 表达"业务性失败"**（如密码错误、上游凭据错误）。前端只在 `401 且 error ∈ {TOKEN_MISSING, TOKEN_INVALID}` 时才自动登出；即便如此，业务失败也应改用 400 / 403 / 409，避免误导。（上游遗留的 `/api/user/password`、`requirePassword`、`/api/user/2fa/disable` 都误用了 401，已在 `apiFetch` 侧兼容；LoTW 凭据错误刻意返回 **400**。）
 8. **奖状判定逻辑只有一份**：`server/services/awardEngine.js`（纯函数，不碰 DB）。`server.js` 里的 `evaluateAward` 只是「取数据 + 调用引擎」的薄封装。**新增判定路径必须复用该引擎**（LoTW 会话就是这么做的），不要再复制一份规则逻辑。
 9. **奖状布局（layout）只有一份 schema**：`src/lib/awardLayout.js`，v2、单位 **mm**、A4 横版 297×210。编辑器、`AwardRenderer`、审核预览、PDF 导出读同一份；旧 `layout: []` 会被 `normalizeLayout` 归一化。改 schema 前先想清楚向后兼容。
+   - **形状只有一份几何**：`SHAPES`（Word 风格 22 种）+ `shapePath(shape, W, H, radiusPx)`，渲染端统一出一个 `<path>`。加新形状只改这两处。⚠️ 描边有 **1px 下限**（`Math.max(px(strokeWidth), 1)`）——编辑器画布只有 ~560px 宽，0.5mm 不足 1 个物理像素会让形状"加了却看不见"；PDF 按 1200px 宽渲染，下限不影响打印。
+   - **`presetAwardLayout()` 只用于新建/布局为空时的初始化**，**绝不能塞进 `normalizeLayout`**：否则所有历史空布局奖状都会凭空多出一套元素（数据事故）。
 10. **多等级差异写在元素的 `levelOverrides` 里**，不要在渲染层各写一套判断：
     ```js
     // 元素级：Gold 等级下换色、加大、上移
@@ -251,7 +262,11 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - 报错信息要用 `describeError()` 提取 —— `e.message || e` 遇到 Event 会输出「[object Event]」。
 - **★ `toPng` 必须开 `includeQueryParams: true`**：html-to-image 的资源缓存 key 默认会 `url.replace(/\?.*/, '')` **剥掉 query string**。而底图统一走 `/api/media?key=<对象名>`，不同奖状只有 key 不同 —— 剥掉 query 后缓存 key 全部退化成同一个 `/api/media`，**连续导出多份奖状时第二份会命中第一份的缓存，底图被替换成上一份奖状的图**（2026-09-21 实测：先导「测试」再导「M3 测试奖状」，后者 PDF 从 118 KB 涨到 4.2 MB，里面装着前者的底图）。开启后以完整 URL 作 key，互不污染；单份 PDF 内同 URL 仍正常复用。
 
-14. **上传文件不要用 `req.file.originalname` 当对象名**：multipart 的 filename 被 multer/busboy 按 **latin1** 解码，中文会变成乱码（`QQ截图` → `QQæªå¾`，还夹着不可见的控制字符），对象名与 URL 从此永久失配。`/api/awards/upload-bg` 现在只取**扩展名**，主体用 `时间戳 + 随机串`（`bg_<ts>_<hex>.png`）。
+14. **上传文件不要用 `req.file.originalname` 当对象名**：multipart 的 filename 被 multer/busboy 按 **latin1** 解码，中文会变成乱码（`QQ截图` → `QQæªå¾`，还夹着不可见的控制字符），对象名与 URL 从此永久失配。`/api/awards/upload-bg` 与 `/api/awards/upload-asset` 共用 `server.js` 的 `storeAwardImage(file, prefix)`，只取**扩展名**，主体用 `时间戳 + 随机串`（`bg_<ts>_<hex>.png` / `img_<ts>_<hex>.png`）。
+    - 两个接口的区别只有体积上限（底图 10MB / 图片元素 2MB），上限值统一写在 `src/lib/uploadLimits.js`，**改一处要改两处**（`server.js` 的 multer limits 与前端常量）。
+    - multer 的错误统一经 `handleUpload(mw, limitMB)` 包装成 **400 + 中文原因**；不包的话超限只会得到 500 + 一段 HTML，用户看不出是超大小还是格式不对。
+    - 前端**先校验再上传**（`src/lib/imageUpload.js` 的 `prepareImageForUpload`）：类型 / 最长边（底图 4000px、图片元素 2000px）/ 体积，超尺寸会用 canvas **等比缩小**后再校验体积。服务端没有图像库，尺寸只能在前端把控。
+    - 两个接口都注册在 `/api/awards/…` 下，所以经 `/api/media?key=` 代理，**不会**在 https 页面被混合内容拦掉。
 15. **实物材料（M4）的隐私红线**（2026-09-22 落地）：QSL 卡片照片**只能进私有桶 `ham-awards-evidence`**，**绝不放公开桶 `ham-awards`**（照片含地址/印章，公开桶是 `s3:GetObject` 对 `*`）。实现见 `server/routes/evidence.js`：
 
 - **权限归属（按奖状）**：`admin` 看/审**全部**材料；`award_admin` 只能看/审**自己创建的奖状**（`awards.creator_id = 自己`）收到的材料——待审列表按 `creator_id` 过滤，审核接口在删除前会二次校验归属（越权返回 403）。

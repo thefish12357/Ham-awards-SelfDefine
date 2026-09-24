@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { resolveElementForLevel, resolveElementValue } from '../lib/awardLayout.js';
+import { resolveElementForLevel, resolveElementValue, shapePath } from '../lib/awardLayout.js';
 import { toSameOriginMediaUrl } from '../lib/media.js';
 
 /**
@@ -46,12 +46,17 @@ export default function AwardRenderer({
   return (
     <div
       className="relative overflow-hidden select-none"
-      style={{ width: widthPx, height: px(h), background: '#fff' }}
+      // isolation:isolate 让这一层的 z-index 自成栈，元素层级不会泄漏到页面其它部分
+      style={{ width: widthPx, height: px(h), background: '#fff', isolation: 'isolate' }}
     >
       {/* 底图一律经 toSameOriginMediaUrl 换成 `/api/media?key=…`：
           历史数据里存的是 `http://localhost:9000/...` 绝对地址，在 https 页面下会被
           浏览器按「混合内容」拦掉（表现为「已设置底图但画布空白」），远程用户更是
-          解析到自己的机器。同源代理同时也避免 canvas 跨域污染。 */}
+          解析到自己的机器。同源代理同时也避免 canvas 跨域污染。
+
+          zIndex 固定为 0：显式保证底图永远在所有元素之下（元素用 z+1，见下方 box），
+          不再依赖 DOM 顺序 —— 之前元素的 z 只用于互相排序，底图靠"先渲染"来垫底，
+          容易让人以为底图没在底层（2026-09-24 用户反馈）。 */}
       {canvas.bgUrl ? (
         <img
           src={toSameOriginMediaUrl(canvas.bgUrl)}
@@ -64,6 +69,7 @@ export default function AwardRenderer({
             height: '100%',
             objectFit: canvas.bgFit || 'cover',
             opacity: canvas.bgOpacity ?? 1,
+            zIndex: 0,
           }}
         />
       ) : null}
@@ -76,6 +82,8 @@ export default function AwardRenderer({
           top: px(el.y),
           width: px(el.w),
           height: px(el.h),
+          // +1 让元素的 z 从 1 起算，与底图的 zIndex:0 明确分层
+          zIndex: (el.z || 0) + 1,
           transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined,
           opacity: el.opacity ?? 1,
           cursor: interactable ? 'move' : undefined,
@@ -136,20 +144,37 @@ export default function AwardRenderer({
             </div>
           );
         } else if (el.type === 'shape') {
-          const strokePx = px(el.strokeWidth || 0.5);
-          const s = {
-            width: '100%',
-            height: '100%',
-            background: el.fill && el.fill !== 'none' ? el.fill : 'transparent',
-            borderRadius: el.shape === 'rect' ? px(1.5) : undefined,
-          };
-          if (el.shape === 'line') {
-            s.border = 'none';
-            s.borderTop = `${strokePx}px solid ${el.stroke || '#c8a45c'}`;
-          } else {
-            s.border = `${strokePx}px solid ${el.stroke || '#c8a45c'}`;
-          }
-          content = <div style={s} />;
+          // 形状统一用 SVG path 渲染（含矩形/椭圆），支持 Word 风格的多边形/箭头/星形等。
+          //
+          // ⚠️ 三个关键点（2026-09-24 修「加了形状却看不见」）：
+          //  1) **描边最小 1px**：线宽按 mm→px 换算，编辑器画布只有 ~560px 宽时
+          //     0.5mm 不足 1 个物理像素，形状几乎不可见（用户误以为没添加成功）。
+          //     PDF 导出按 1200px 宽渲染（0.5mm≈2px），下限不会影响打印效果。
+          //  2) viewBox 直接取元素实际 px 尺寸，避免 preserveAspectRatio 缩放导致描边变形。
+          //  3) overflow:visible 让贴边的描边（如边框矩形）不被自身视口裁掉一半。
+          const W = px(el.w) || 1;
+          const H = px(el.h) || 1;
+          const strokePx = Math.max(px(el.strokeWidth || 0.5), 1);
+          const isLine = el.shape === 'line';
+          content = (
+            <svg
+              width="100%"
+              height="100%"
+              viewBox={`0 0 ${W} ${H}`}
+              preserveAspectRatio="none"
+              style={{ display: 'block', overflow: 'visible' }}
+            >
+              <path
+                d={shapePath(el.shape, W, H, el.radius ? px(el.radius) : 0)}
+                fill={!isLine && el.fill && el.fill !== 'none' ? el.fill : 'none'}
+                stroke={el.stroke || '#c8a45c'}
+                strokeWidth={strokePx}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+                shapeRendering="geometricPrecision"
+              />
+            </svg>
+          );
         } else {
           content = null;
         }

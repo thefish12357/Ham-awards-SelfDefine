@@ -52,6 +52,28 @@ const uploadBg = multer({
   limits: { fileSize: 10 * 1024 * 1024, files: 1 },
   fileFilter: (req, file, cb) => cb(null, /^image\//.test(file.mimetype)),
 });
+// 奖状里的元素图片（印章 / logo / 小图标）：比底图小得多。
+// 上限 2MB —— 与前端 `src/lib/uploadLimits.js` 的 ASSET_MAX_MB 必须一致；
+// 元素图片会参与 PDF 栅格化，限制小一点能显著减小 PDF 体积。
+const uploadAsset = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 2 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => cb(null, /^image\//.test(file.mimetype)),
+});
+
+/**
+ * 包装 multer 中间件：把超限 / 类型不符等错误转成 **400 + 明确中文原因**。
+ * 不包的话 express 会返回 500 + HTML 错误页，前端只能显示一句「上传失败」，
+ * 用户根本分不清是超了大小还是格式不对。
+ */
+const handleUpload = (mw, limitMB) => (req, res, next) =>
+  mw(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'FILE_TOO_LARGE', message: `图片超过 ${limitMB} MB 上限，请压缩后再上传` });
+    }
+    return res.status(400).json({ error: 'UPLOAD_FAILED', message: err.message || '上传失败' });
+  });
 
 // ---- 安全辅助函数 ----
 function clientIp(req) {
@@ -1090,6 +1112,9 @@ app.post('/api/admin/awards/audit', verifyToken, verifyAdmin, async (req, res) =
         if (action === 'approve') {
             newStatus = 'approved';
         } else if (action === 'reject' || action === 'recall') {
+            // 打回 / 撤回**只改状态**，刻意不动 user_awards：
+            // 已经发出去的奖状（有序列号、可扫码校验）必须留痕，不能因为奖状被打回就消失。
+            // 只有「删除奖状」才会连同颁发记录一起删（见 DELETE /api/awards/:id）。
             newStatus = 'returned';
             if (!reason) throw new Error("必须填写打回/撤回原因");
         } else {
@@ -1241,45 +1266,91 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
     }
 });
 
+/**
+ * 删除奖状（仅限自己的草稿 / 被打回的奖状）
+ *
+ * 关于「颁发记录」（user_awards）的既定规则：
+ *  - **打回只是改状态**（`awards.status='returned'`，见 /api/admin/awards/audit），
+ *    已颁发的记录**原样保留**，仍可在「颁发管理」里查到；
+ *  - **删除奖状时，颁发记录一并删除**。DB 外键已是 ON DELETE CASCADE，这里仍显式删一遍
+ *    兜底（老库的外键可能是 RESTRICT/NO ACTION，那样删除会直接报 500），保证行为一致。
+ *    同时把删除条数写进审计，避免"记录凭空消失"无从追溯。
+ */
 app.delete('/api/awards/:id', verifyToken, verifyAwardAdmin, async (req, res) => {
-    // 只能删除自己的 Draft 或 Returned
-    const del = await dbPool.query(`DELETE FROM awards WHERE id=$1 AND creator_id=$2 AND status IN ('draft', 'returned')`, [req.params.id, req.user.id]);
-    // 只有真的删掉了才记账（否则是越权/状态不符，空记录反而误导）
-    if (del.rowCount > 0) {
-        await logAudit(dbPool, req, { action: 'award.delete', targetType: 'award', targetId: req.params.id });
+    const client = await dbPool.connect();
+    try {
+        await client.query('BEGIN');
+        const own = await client.query(
+            `SELECT id, name FROM awards WHERE id=$1 AND creator_id=$2 AND status IN ('draft', 'returned')`,
+            [req.params.id, req.user.id],
+        );
+        if (own.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ error: 'FORBIDDEN', message: '只能删除自己的草稿或被打回的奖状' });
+        }
+        const issued = await client.query('SELECT count(*)::int AS n FROM user_awards WHERE award_id=$1', [req.params.id]);
+        await client.query('DELETE FROM user_awards WHERE award_id=$1', [req.params.id]);
+        await client.query('DELETE FROM awards WHERE id=$1', [req.params.id]);
+        await client.query('COMMIT');
+        await logAudit(dbPool, req, {
+            action: 'award.delete',
+            targetType: 'award',
+            targetId: req.params.id,
+            detail: { award: own.rows[0].name, issued_deleted: issued.rows[0].n },
+        });
+        res.json({ success: true, issuedDeleted: issued.rows[0].n });
+    } catch (e) {
+        await client.query('ROLLBACK');
+        res.status(500).json({ error: e.message });
+    } finally {
+        client.release();
     }
-    res.json({ success: true });
 });
 
-app.post('/api/awards/upload-bg', verifyToken, verifyAwardAdmin, uploadBg.single('bg'), async (req, res) => {
-    if (!req.file || !minioClient) return res.status(400).json({ error: 'Upload failed or MinIO not configured' });
-    const meta = { 'Content-Type': req.file.mimetype };
+/**
+ * 把上传的图片写入对象存储，返回给浏览器用的两个地址（底图与元素图片共用）。
+ * @param {object} file multer 文件对象（临时文件在 uploads/）
+ * @param {string} prefix 对象名前缀：'bg'（底图）/ 'img'（元素图片）
+ * @returns {Promise<{url:string, mediaUrl:string, key:string}>}
+ */
+async function storeAwardImage(file, prefix) {
     // ★ 绝不要用 originalname 做对象名：multipart 的 filename 被 multer/busboy 按 latin1 解码，
     //   中文会变成乱码（"QQ截图" → "QQæªå¾"），对象名与 URL 从此永久失配，图片再也加载不出来
     //   （表现为预览/导出 PDF 缺图，甚至因图片加载失败让导出卡住）。
     //   只取扩展名，主体用时间戳 + 随机串，彻底规避编码问题。
-    const rawExt = path.extname(req.file.originalname || '').toLowerCase();
+    const rawExt = path.extname(file.originalname || '').toLowerCase();
     const ext = /^\.[a-z0-9]{1,5}$/.test(rawExt) ? rawExt : '.png';
-    const fileName = `awards/bg_${Date.now()}_${crypto.randomBytes(3).toString('hex')}${ext}`;
-    try {
-        await minioClient.putObject(appConfig.minioBucket, fileName, fs.createReadStream(req.file.path), meta);
-        // 写进数据库的是给浏览器直接访问的绝对地址，需要能解析到 MinIO。
-        // 容器里存对象走服务名（minio:9000），但浏览器解析不了服务名，
-        // 因此允许配置/环境变量单独指定对外地址。
-        const mc = appConfig.minio;
-        const publicHost = mc.publicEndPoint || process.env.MINIO_PUBLIC_ENDPOINT || mc.endPoint;
-        const publicPort = mc.publicPort || process.env.MINIO_PUBLIC_PORT || mc.port;
-        const protocol = mc.useSSL ? 'https://' : 'http://';
-        const fullUrl = `${protocol}${publicHost}:${publicPort}/${appConfig.minioBucket}/${fileName}`;
-        // ★ 同源代理地址（前端应优先使用）：`/api/media?key=…`
-        //   1) 页面走 https（隧道 / 反向代理）时，`http://localhost:9000/...` 的图片会被
-        //      浏览器按「混合内容」直接拦掉 → 底图明明上传成功，画布却是空白；
-        //   2) 远程用户的 `localhost` 指向他们自己的机器，根本连不到对象存储。
-        //   同源代理还能避免 canvas 跨域污染（导出 PDF 需要），一举两得。
-        const mediaUrl = `/api/media?key=${encodeURIComponent(fileName)}`;
-        fs.unlinkSync(req.file.path);
-        res.json({ url: fullUrl, mediaUrl });
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    const fileName = `awards/${prefix}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}${ext}`;
+    await minioClient.putObject(appConfig.minioBucket, fileName, fs.createReadStream(file.path), { 'Content-Type': file.mimetype });
+    // 写进数据库的是给浏览器直接访问的绝对地址，需要能解析到 MinIO。
+    // 容器里存对象走服务名（minio:9000），但浏览器解析不了服务名，
+    // 因此允许配置/环境变量单独指定对外地址。
+    const mc = appConfig.minio;
+    const publicHost = mc.publicEndPoint || process.env.MINIO_PUBLIC_ENDPOINT || mc.endPoint;
+    const publicPort = mc.publicPort || process.env.MINIO_PUBLIC_PORT || mc.port;
+    const protocol = mc.useSSL ? 'https://' : 'http://';
+    const fullUrl = `${protocol}${publicHost}:${publicPort}/${appConfig.minioBucket}/${fileName}`;
+    // ★ 同源代理地址（前端应优先使用）：`/api/media?key=…`
+    //   1) 页面走 https（隧道 / 反向代理）时，`http://localhost:9000/...` 的图片会被
+    //      浏览器按「混合内容」直接拦掉 → 底图明明上传成功，画布却是空白；
+    //   2) 远程用户的 `localhost` 指向他们自己的机器，根本连不到对象存储。
+    //   同源代理还能避免 canvas 跨域污染（导出 PDF 需要），一举两得。
+    const mediaUrl = `/api/media?key=${encodeURIComponent(fileName)}`;
+    try { fs.unlinkSync(file.path); } catch (e) { /* 临时文件已被清理或不存在，忽略 */ }
+    return { url: fullUrl, mediaUrl, key: fileName };
+}
+
+// 奖状底图上传（上限 10MB，与前端 BG_MAX_MB 一致）
+app.post('/api/awards/upload-bg', verifyToken, verifyAwardAdmin, handleUpload(uploadBg.single('bg'), 10), async (req, res) => {
+    if (!req.file || !minioClient) return res.status(400).json({ error: 'UPLOAD_FAILED', message: '上传失败，或对象存储未配置' });
+    try { res.json(await storeAwardImage(req.file, 'bg')); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 奖状「图片元素」上传（上限 2MB，与前端 ASSET_MAX_MB 一致）。
+// 与底图分开一个接口是为了用不同的体积上限 —— 元素图片（印章/logo）不需要底图那么大。
+app.post('/api/awards/upload-asset', verifyToken, verifyAwardAdmin, handleUpload(uploadAsset.single('image'), 2), async (req, res) => {
+    if (!req.file || !minioClient) return res.status(400).json({ error: 'UPLOAD_FAILED', message: '上传失败，或对象存储未配置' });
+    try { res.json(await storeAwardImage(req.file, 'img')); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // --- 奖状申请 & 检查 API (New) ---
