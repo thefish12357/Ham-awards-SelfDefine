@@ -16,7 +16,7 @@ import multer from 'multer';
 
 // ---- 二次开发新增（M1：LoTW 直连，让用户不必上传日志）----
 import { parseAdif } from './server/services/adif.js';
-import { lookupDxcc } from './server/services/cty.js';
+import { lookupDxcc, syncCtyFromWeb, ctyStats } from './server/services/cty.js';
 import { evaluateAward as evaluateAwardCore } from './server/services/awardEngine.js';
 import { configureLotwSessions } from './server/services/lotwSessions.js';
 import { createLotwRouter } from './server/routes/lotw.js';
@@ -1690,6 +1690,29 @@ app.post('/api/admin/settings', verifyToken, verifyAdmin, require2FA, async (req
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(appConfig, null, 2));
     await logAudit(dbPool, req, { action: 'admin.settings_update', detail: { useHttps, adminPath } });
     res.json({ success: true });
+});
+
+// 从 country-files.com 同步最新 cty.dat（DXCC 前缀库）。同步后模块自动重新解析，无需重启。
+app.post('/api/admin/cty/refresh', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const result = await syncCtyFromWeb({ force: !!req.body?.force });
+        await logAudit(dbPool, req, {
+            action: 'admin.cty_refresh',
+            detail: { updated: result.updated, reason: result.reason, stats: result.stats },
+        });
+        res.json({ success: true, ...result });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// 当前 cty 解析统计（实体数 / 前缀数 / 已映射 DXCC 数），供后台展示与自检。
+app.get('/api/admin/cty/stats', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        res.json({ success: true, ...ctyStats() });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.message });
+    }
 });
 
 // 启动
