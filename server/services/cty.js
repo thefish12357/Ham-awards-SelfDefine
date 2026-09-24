@@ -21,10 +21,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CTY_PATH = path.join(__dirname, '..', '..', 'data', 'cty.dat');
+
+/** 官方源：Jim Reisert AD1C / N9JIM 维护，被 FLDigi/WSJT-X/JTDX/N1MM/DXKeeper 共用 */
+export const CTY_URL = 'https://www.country-files.com/cty/cty.dat';
 
 /**
  * cty.dat 里的实体名 → ARRL DXCC 编号。
@@ -437,6 +441,38 @@ function shape(entity) {
  */
 export function _resetCtyCache() {
   cache = null;
+}
+
+/**
+ * 从官网拉取最新 cty.dat 并就地替换（内容有变化才写盘）。
+ * 只比对内容 sha256，不依赖"上次同步时间"之类的状态文件。
+ * 写盘后清空模块缓存，下次 `lookupDxcc` 自动用新数据。
+ *
+ * @param {{ force?: boolean, url?: string }} [opts]
+ * @returns {Promise<{ updated: boolean, reason?: string, stats: ReturnType<typeof ctyStats> }>}
+ */
+export async function syncCtyFromWeb(opts = {}) {
+  const { force = false, url = CTY_URL } = opts;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`下载 cty.dat 失败: HTTP ${res.status}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+
+  let localSha = '';
+  try {
+    const cur = fs.readFileSync(CTY_PATH);
+    localSha = createHash('sha256').update(cur).digest('hex');
+  } catch {
+    /* 文件不存在 → 视为需要更新 */
+  }
+  const remoteSha = createHash('sha256').update(buf).digest('hex');
+
+  if (!force && localSha === remoteSha) {
+    return { updated: false, reason: 'unchanged', stats: ctyStats() };
+  }
+
+  fs.writeFileSync(CTY_PATH, buf);
+  cache = null; // 下次查询重新解析
+  return { updated: true, stats: ctyStats() };
 }
 
 /**
