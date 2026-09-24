@@ -25,6 +25,10 @@ pnpm-debug.log*
 design-drafts/
 /*.png
 
+# 从 LoTW 下载的导出样本（含个人通联记录，只用于本地分析，不入库）
+/*.adi
+/*.adif
+
 # IDE 与编辑器
 .vscode/
 .idea/
