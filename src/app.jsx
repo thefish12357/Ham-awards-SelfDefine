@@ -362,7 +362,7 @@ const DashboardView = ({ user }) => {
 const LogMatchMatrix = ({ qsos, award, checkResult }) => {
     // 2. 包含特定判定项收集的奖项，日志比对详情显示参考附件中图片所示
     const rules = award.rules || {};
-    const hasSpecificTargets = rules.targets?.type && ['callsign', 'dxcc', 'grid', 'iota', 'state'].includes(rules.targets.type) && rules.targets.list;
+    const hasSpecificTargets = rules.targets?.type && ['callsign', 'dxcc', 'grid', 'iota', 'state', 'district'].includes(rules.targets.type) && rules.targets.list;
 
     // View 1: Specific Target List View (The new requirement)
     if (hasSpecificTargets && checkResult?.breakdown) {
@@ -2138,6 +2138,7 @@ const AwardDesigner = ({ initData, onClose }) => {
                                             <option value="grid">特定网格 (Grid)</option>
                                             <option value="iota">特定 IOTA</option>
                                             <option value="state">特定州/省 (State)</option>
+                                            <option value="district">呼号分区 (BY1→1 区)</option>
                                         </select>
                                         {/* ★ 清单格式必须随类型变化（2026-09-24）：
                                             以前不管选哪种类型，placeholder 都写「例如: BA1AA, BA4AA…」，
@@ -2145,7 +2146,7 @@ const AwardDesigner = ({ initData, onClose }) => {
                                             qso.dxcc（实体编号，如 318），永远不可能相等 →
                                             进度恒为 0、明细全红且零报错（用户实测：'进度与明细未知'）。
                                             现在 placeholder / 说明 / 即时校验三处都跟着类型走。 */}
-                                        {['callsign', 'dxcc', 'grid', 'iota', 'state'].includes(rules.targets.type) && (() => {
+                                        {['callsign', 'dxcc', 'grid', 'iota', 'state', 'district'].includes(rules.targets.type) && (() => {
                                             const spec = TARGET_SPECS[rules.targets.type];
                                             const targetErr = validateRulesTargets(rules);
                                             return (

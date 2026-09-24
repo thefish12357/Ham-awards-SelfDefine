@@ -16,6 +16,24 @@
 // 目标类型规格（校验清单格式 / 产出 warnings）：与前端 src/lib/awardTargets.js 保持同步
 import { TARGET_SPECS, TARGET_FIELD_HINTS } from './awardTargets.js';
 
+/**
+ * 取呼号的「分区号」——中国 B 字头呼号里紧跟前缀的那一位数字。
+ *   BY1AA→1、BG5UWQ→5、BH7CSA→7、BV3AB→3、B1Z→1
+ * 便携写法 `BY1AA/5` 只看主体（正则锚在开头），后缀不影响。
+ *
+ * ⚠️ **只认 B 字头**：JA1ABC 的 "1" 是日本自己的分区、K1ABC 的 "1" 也不是中国区号，
+ *    把它们算进来会让「收集 0~9 区」这类奖状失真（随便通联几个日本台就集满了）。
+ * @returns {string} 单字符数字；非中国呼号返回空串
+ */
+const CALL_DISTRICT_RE = /^B[A-Z]{0,2}(\d)/;
+export const districtOfCallsign = (call) => {
+  const m = String(call || '')
+    .toUpperCase()
+    .trim()
+    .match(CALL_DISTRICT_RE);
+  return m ? m[1] : '';
+};
+
 export const categorizeMode = (mode) => {
   const m = (mode || '').toUpperCase();
   if (['CW'].includes(m)) return 'cw';
@@ -98,6 +116,8 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
     if (targetType === 'grid') return String(raw.gridsquare || '').substring(0, 4).toUpperCase();
     if (targetType === 'iota') return String(raw.iota || '').toUpperCase();
     if (targetType === 'state') return String(raw.state || '').toUpperCase();
+    // 呼号分区：从呼号里抽区号数字（只认中国 B 字头，见 districtOfCallsign）
+    if (targetType === 'district') return districtOfCallsign(qso.callsign || raw.call);
     return null;
   };
 

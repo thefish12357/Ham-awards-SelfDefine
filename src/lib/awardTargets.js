@@ -47,6 +47,13 @@ export const TARGET_SPECS = {
     fixHint: '请填 1~3 位字母的州/省代码',
     placeholder: '例如: CA, TX（州/省代码，逗号分隔）',
   },
+  district: {
+    label: '呼号分区',
+    re: /^[0-9]$/,
+    hint: '取中国 B 字头呼号里紧跟前缀的那一位数字：BY1AA→1、BG5UWQ→5、BH7CSA→7（国外呼号的数字不计入）',
+    fixHint: '想按整呼号收集请选「特定呼号列表」；想按国家收集请选「特定 DXCC 实体」',
+    placeholder: '例如: 0,1,2,3,4,5,6,7,8,9（区号数字，逗号分隔）',
+  },
 };
 
 export const parseTargetList = (list) =>

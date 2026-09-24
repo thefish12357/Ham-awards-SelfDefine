@@ -63,6 +63,13 @@ export const TARGET_SPECS = {
     fixHint: '请填 ADIF 里的州/省代码（1~3 位字母）',
     example: 'CA, TX',
   },
+  district: {
+    label: '呼号分区',
+    re: /^[0-9]$/,
+    hint: '取中国 B 字头呼号里紧跟前缀的那一位数字：BY1AA→1、BG5UWQ→5、BH7CSA→7',
+    fixHint: '国外呼号（JA1ABC / K1ABC）里的数字不是中国区号、不会计入；想按整呼号收集请选「特定呼号列表」',
+    example: '0,1,2,3,4,5,6,7,8,9',
+  },
 };
 
 /** 引擎里的目标值是从日志的哪个字段取的（用于"日志缺该字段"的提示） */
@@ -72,6 +79,7 @@ export const TARGET_FIELD_HINTS = {
   grid: '网格格网 gridsquare',
   iota: 'IOTA 编号 iota',
   state: '州/省 state',
+  district: '中国呼号（B 字头）里的区号数字',
 };
 
 export const parseTargetList = parseList;

@@ -343,6 +343,8 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     - 症状：进度**恒为 0 / N、明细全红、零报错**，用户只能说"进度与明细未知"。实测根因是设计器的目标清单输入框**不管选哪种类型都提示「例如: BA1AA, BA4AA…」**，于是有人在「特定 DXCC 实体」下填了呼号；而引擎比较的是 `qso.dxcc`（实体**编号**，如 318），与呼号永远不可能相等。
     - 规格只有一份：`server/services/awardTargets.js` 的 `TARGET_SPECS`（label / re / hint / fixHint）+ `validateTargetList`；前端镜像在 `src/lib/awardTargets.js`（**两份必须同步**，否则"前端能存、后端拒绝"）。
     - 三处必须一起改：① 设计器 placeholder + 行内红字提示；② `saveAward` 保存前拦截；③ `POST /api/awards` 返回 **400 `INVALID_RULES_TARGETS`**。新增目标类型时同时补 `TARGET_FIELD_HINTS`（日志里对应字段名）。
+    - ⚠️ **新增目标类型还要改另外 3 处白名单**（漏一处就会"能存但判定/明细不生效"）：`awardEngine.getTargetValue()` 的取值分支、`app.jsx` 里 `LogMatchMatrix` 的 `hasSpecificTargets` 数组、设计器目标清单输入框的显示条件数组。
+    - **现有类型（2026-09-25 起）**：`any` / `callsign` / `dxcc` / `grid` / `iota` / `state` / **`district`（呼号分区）**。`district` 取**中国 B 字头呼号**里紧跟前缀的那一位数字（`BY1AA→1`、`BG5UWQ→5`、`BH7CSA→7`；便携写法 `BY1AA/5` 只看主体），**国外呼号的数字不计入**（`JA1ABC`/`K1ABC` → 空），否则"收集 0~9 区"会被国外台灌水。典型用法：清单 `0,1,2,3,4,5,6,7,8,9` + 收集型 + 阈值 10 + 全收集。
     - 判定引擎另外产出 **`warnings` + `stats`**（`total_qsos` / `basic_filtered` / `target_matched`），进度区与明细页都会展示——凡是"进度是 0"必须在界面上说清是**目标没命中 / 基础筛选滤掉了 / 日志缺字段 / 没有日志**中的哪一种，不能只给一个 0。
 
 21. **★ 前端按需加载（动态 import）页面要做"旧版本自愈"**（2026-09-24 落地）。
