@@ -28,7 +28,8 @@ export const saveSession = (token, user) => {
 };
 export const clearSession = () => localStorage.clear();
 
-export const apiFetch = async (endpoint, options = {}) => {
+/** 组装请求头：JSON Content-Type + Authorization + 一次性 2FA 码 */
+const buildHeaders = (options = {}) => {
   const headers = { ...(options.headers || {}) };
 
   // 仅在有 body 且非 FormData 时添加 JSON Content-Type
@@ -46,7 +47,27 @@ export const apiFetch = async (endpoint, options = {}) => {
     sessionStorage.removeItem(TWO_FA_KEY);
   }
 
-  const res = await fetch(`/api${endpoint}`, { ...options, headers });
+  return headers;
+};
+
+// ⚠️ 只有「确实是本站登录态出问题」时才自动登出。
+// 上游原实现把**所有** 401 都当成掉线，导致这些正常业务错误会把用户莫名其妙踢出去：
+//   - `/api/user/password` 旧密码错误 → 401 {error:'旧密码错误'}
+//   - `requirePassword` 密码确认失败 → 401 {error:'PASSWORD_INVALID'}
+//   - `/api/user/2fa/disable` 密码错误 → 401 {error:'密码错误'}
+// 因此按错误码判定；没有响应体时（如代理返回的裸 401）仍按掉线处理。
+const TOKEN_ERRORS = ['TOKEN_MISSING', 'TOKEN_INVALID'];
+const logoutIfAuthProblem = (res, data) => {
+  if (!(res.status === 401 && (!data || TOKEN_ERRORS.includes(data.error)))) return false;
+  console.warn('Token expired or invalid. Logging out...');
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  window.location.reload();
+  return true;
+};
+
+export const apiFetch = async (endpoint, options = {}) => {
+  const res = await fetch(`/api${endpoint}`, { ...options, headers: buildHeaders(options) });
 
   let data = null;
   try {
@@ -55,20 +76,7 @@ export const apiFetch = async (endpoint, options = {}) => {
     data = null;
   }
 
-  // ⚠️ 只有「确实是本站登录态出问题」时才自动登出。
-  // 上游原实现把**所有** 401 都当成掉线，导致这些正常业务错误会把用户莫名其妙踢出去：
-  //   - `/api/user/password` 旧密码错误 → 401 {error:'旧密码错误'}
-  //   - `requirePassword` 密码确认失败 → 401 {error:'PASSWORD_INVALID'}
-  //   - `/api/user/2fa/disable` 密码错误 → 401 {error:'密码错误'}
-  // 因此这里改成按错误码判定；没有响应体时（如代理返回的裸 401）仍按掉线处理。
-  const TOKEN_ERRORS = ['TOKEN_MISSING', 'TOKEN_INVALID'];
-  const tokenProblem = res.status === 401 && (!data || TOKEN_ERRORS.includes(data.error));
-
-  if (tokenProblem) {
-    console.warn('Token expired or invalid. Logging out...');
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    window.location.reload();
+  if (logoutIfAuthProblem(res, data)) {
     throw { status: 401, message: '登录已过期，正在跳转...' };
   }
 
@@ -81,6 +89,38 @@ export const apiFetch = async (endpoint, options = {}) => {
     };
   }
   return data;
+};
+
+/**
+ * 取二进制内容（目前用于实物材料照片）。
+ * ------------------------------------------------------------------
+ * 为什么需要它：这类资源放在**私有桶**，必须带 Authorization 才能取；而 `<img src>`
+ * 无法自定义请求头。旧实现返回 MinIO **预签名直链**，但直链 host 是
+ * `MINIO_PUBLIC_ENDPOINT`（本部署里是 `localhost:9000`）：
+ *   - 页面走 https（cloudflared 隧道）时会被浏览器按**混合内容**拦掉；
+ *   - 管理员在别的机器上时，`localhost` 指向管理员自己的电脑。
+ * 结果：审核页明明有待审材料，照片位置只显示「图片不可用（可能已删除）」（2026-09-24 用户实测）。
+ * 改为同源鉴权代理 `GET /api/evidence/:id/photo`，在这里转成 blob URL 交给 <img>。
+ *
+ * 鉴权头与 401 处理与 apiFetch 完全一致（复用 buildHeaders / logoutIfAuthProblem）。
+ */
+export const apiFetchBlob = async (endpoint, options = {}) => {
+  const res = await fetch(`/api${endpoint}`, { ...options, headers: buildHeaders(options) });
+
+  if (logoutIfAuthProblem(res, null)) {
+    throw { status: 401, message: '登录已过期，正在跳转...' };
+  }
+  if (!res.ok) {
+    let msg = `资源加载失败 (HTTP ${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && body.message) msg = body.message;
+    } catch {
+      /* 二进制响应解析失败就用默认文案 */
+    }
+    throw { status: res.status, message: msg };
+  }
+  return res.blob();
 };
 
 export default apiFetch;

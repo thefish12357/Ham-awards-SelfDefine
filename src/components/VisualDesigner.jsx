@@ -20,6 +20,7 @@ import {
   FolderOpen,
   Save,
   Pencil,
+  Palette,
 } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch.js';
 import {
@@ -31,6 +32,7 @@ import {
   VALIGN,
   SHAPES,
   shapeLabel,
+  DEFAULT_BG_URL,
   uid,
   newTextElement,
   newShapeElement,
@@ -444,6 +446,12 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
   };
 
   // ---------------- 底图上传（修复「上传按钮无响应」） ----------------
+  /** 一键套用内置底图（同源 SVG，随程序发布，导出 PDF 不会跨域） */
+  const useBuiltinBg = () => {
+    setError(null);
+    onChange({ ...layoutRef.current, canvas: { ...layoutRef.current.canvas, bgUrl: DEFAULT_BG_URL } });
+  };
+
   const onBgFile = async (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
@@ -548,7 +556,19 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
               {uploadingBg ? <Loader2 size={20} className="text-slate-400 animate-spin" /> : <Upload size={20} className="text-slate-400" />}
               <span className="font-bold">{uploadingBg ? '上传中…' : layout?.canvas?.bgUrl ? '更换底图' : '点击上传底图'}</span>
             </button>
-            <p className="text-xs text-slate-400 mt-1">{layout?.canvas?.bgUrl ? '已设置底图' : '未设置底图（保存前必须上传）'}</p>
+            {/* 内置底图：同源 SVG，不想找图时一键得到像样的纸面底色（导出 PDF 不会跨域） */}
+            <button
+              type="button"
+              onClick={useBuiltinBg}
+              disabled={uploadingBg}
+              title="套用随程序内置的默认纸面底色（不含边框，边框由模板元素提供）"
+              className="mt-2 w-full p-2.5 border rounded-xl hover:bg-white flex items-center justify-center gap-1.5 text-xs font-bold text-slate-600 disabled:opacity-60"
+            >
+              <Palette size={15} /> 使用内置底图
+            </button>
+            <p className="text-xs text-slate-400 mt-1">
+              {layout?.canvas?.bgUrl ? '已设置底图' : '未设置底图（可选：不上传就是白底 + 元素排版，可直接保存草稿）'}
+            </p>
             <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
               支持 JPG / PNG / WebP / GIF，{BG_LIMIT_TEXT}。
             </p>

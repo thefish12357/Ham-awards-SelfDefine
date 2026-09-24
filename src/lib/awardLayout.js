@@ -14,6 +14,14 @@
 
 export const CANVAS_MM = { w: 297, h: 210 };
 
+/**
+ * 内置默认底图（`public/default-award-bg.svg`）。
+ * 不想找图又希望奖状有个像样的纸面底色时，设计器里一键套用。
+ * ⚠️ 必须保持**同源相对路径**：导出 PDF 走 html-to-image 栅格化，
+ *    跨域图片会污染 canvas；放在 public/ 下天然同源。
+ */
+export const DEFAULT_BG_URL = '/default-award-bg.svg';
+
 /** 可绑定到文字/二维码的动态字段 */
 export const FIELD_BINDINGS = [
   { value: 'callsign', label: '呼号' },

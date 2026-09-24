@@ -1,18 +1,27 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Loader2, Check, X, RefreshCw, Inbox, ZoomIn, ZoomOut, ExternalLink } from 'lucide-react';
-import { apiFetch } from '../lib/apiFetch.js';
+import { apiFetch, apiFetchBlob } from '../lib/apiFetch.js';
 import { confirmDialog, promptDialog } from '../lib/confirm.jsx';
 import { evidenceType, evidenceTypeLabel } from '../lib/evidenceTypes.js';
 
 /**
- * 实物材料审核页（仅 admin）—— M4
- * 列出待审的 QSL 卡片照片（presigned URL），管理员查看后通过 / 驳回。
- * 审核后后端会**立即删除对象**，照片不再占用空间。
+ * 实物材料审核页（仅 admin / award_admin）—— M4
+ * 列出待审的 QSL 卡片照片，管理员查看后通过 / 驳回。审核后后端会**立即删除对象**。
+ *
+ * ★ 照片取用方式（2026-09-24 修）：材料在**私有桶**里，必须带 Authorization 才能读，
+ *   而 `<img src>` 无法自定义请求头。曾经返回 MinIO **预签名直链**，但直链 host 是
+ *   `MINIO_PUBLIC_ENDPOINT`（本部署为 localhost:9000）：页面走 https（cloudflared 隧道）时
+ *   被浏览器按**混合内容**拦掉 → 审核页照片位置只有一句「图片不可用（可能已删除）」。
+ *   现在改为：列表接口只给 `has_photo`，照片本体用 `apiFetchBlob('/evidence/:id/photo')`
+ *   逐条取回（服务端同源代理读私有桶），再转成 blob URL 交给 <img>。
  */
 const EvidenceAuditView = () => {
     const [items, setItems] = useState([]);
     const [loading, setLoading] = useState(true);
     const [reviewingId, setReviewingId] = useState(null);
+    // 照片：evidenceId → blob URL / 加载失败原因
+    const [photoUrls, setPhotoUrls] = useState({});
+    const [photoErrors, setPhotoErrors] = useState({});
     // 大图预览（2026-09-24）：卡片照片只有 14rem 高的缩略图，QSL 上的字根本看不清，
     //   管理员必须能放大核对呼号/日期。这里做一个轻量的 lightbox（滚轮 + 按钮 + 键盘）。
     const [preview, setPreview] = useState(null); // { url, title }
@@ -51,10 +60,10 @@ const EvidenceAuditView = () => {
         return () => el.removeEventListener('wheel', onWheel);
     }, [preview, zoomBy]);
 
-    const openPreview = (ev) => {
-        if (!ev.photo_url) return;
+    const openPreview = (ev, url) => {
+        if (!url) return;
         setZoom(1);
-        setPreview({ url: ev.photo_url, title: `#${ev.id} · ${ev.user_callsign} · ${evidenceTypeLabel(ev.type)}` });
+        setPreview({ url, title: `#${ev.id} · ${ev.user_callsign} · ${evidenceTypeLabel(ev.type)}` });
     };
 
     const load = () => {
@@ -67,8 +76,38 @@ const EvidenceAuditView = () => {
 
     useEffect(() => { load(); }, []);
 
+    // 逐条把照片取成 blob URL（私有桶需要 Authorization，见文件头说明）。
+    // items 变化（刷新 / 审核后移除某条）时回收旧的 blob URL，避免内存泄漏。
+    useEffect(() => {
+        let cancelled = false;
+        const created = [];
+        setPhotoErrors({});
+        (async () => {
+            for (const ev of items) {
+                if (!ev.has_photo) continue;
+                try {
+                    const blob = await apiFetchBlob(`/evidence/${ev.id}/photo`);
+                    if (cancelled) break;
+                    const url = URL.createObjectURL(blob);
+                    created.push(url);
+                    setPhotoUrls((prev) => ({ ...prev, [ev.id]: url }));
+                } catch (err) {
+                    if (cancelled) break;
+                    setPhotoErrors((prev) => ({ ...prev, [ev.id]: err?.message || '照片加载失败' }));
+                }
+            }
+        })();
+        return () => {
+            cancelled = true;
+            created.forEach((u) => URL.revokeObjectURL(u));
+            setPhotoUrls({});
+        };
+    }, [items]);
+
     const review = async (ev, action) => {
         const id = ev.id;
+        // 审核后该条会从待审列表移除、blob URL 被回收，先把大图关掉
+        setPreview(null);
         const label = evidenceTypeLabel(ev.type);
         let reason = '';
         if (action === 'reject') {
@@ -155,21 +194,31 @@ const EvidenceAuditView = () => {
                     {items.map((ev) => (
                         <div key={ev.id} className="bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col">
                             <div className="h-56 bg-slate-100 flex items-center justify-center overflow-hidden">
-                                {ev.photo_url ? (
+                                {photoUrls[ev.id] ? (
                                     // 点缩略图 → 打开大图（可滚轮/按钮/键盘缩放）
                                     <button
                                         type="button"
-                                        onClick={() => openPreview(ev)}
+                                        onClick={() => openPreview(ev, photoUrls[ev.id])}
                                         title="点击放大查看"
                                         className="group relative h-full w-full cursor-zoom-in"
                                     >
-                                        <img src={ev.photo_url} alt="实物卡片" className="w-full h-full object-contain" />
+                                        <img src={photoUrls[ev.id]} alt="实物卡片" className="w-full h-full object-contain" />
                                         <span className="pointer-events-none absolute bottom-2 right-2 rounded bg-black/60 px-2 py-1 text-[11px] font-bold text-white opacity-0 transition-opacity group-hover:opacity-100">
                                             <ZoomIn size={12} className="mr-1 inline -mt-0.5" />点击放大
                                         </span>
                                     </button>
+                                ) : photoErrors[ev.id] ? (
+                                    <span className="px-4 text-center text-xs text-red-500">
+                                        照片加载失败：{photoErrors[ev.id]}
+                                        <br />
+                                        点右上「刷新」重试
+                                    </span>
+                                ) : ev.has_photo ? (
+                                    <span className="flex items-center gap-2 text-xs text-slate-400">
+                                        <Loader2 size={14} className="animate-spin" /> 照片加载中…
+                                    </span>
                                 ) : (
-                                    <span className="text-xs text-slate-400">图片不可用（可能已删除）</span>
+                                    <span className="px-4 text-center text-xs text-slate-400">该记录没有照片（已按审核流程删除）</span>
                                 )}
                             </div>
                             <div className="p-4 flex-1 flex flex-col gap-2">

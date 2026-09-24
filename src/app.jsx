@@ -610,7 +610,13 @@ const MyAwardsView = ({ user }) => {
                                     <ResponsiveAwardRenderer layout={layout} data={renderData} className="absolute inset-0" />
                                 ) : (
                                     <>
-                                        <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${toSameOriginMediaUrl(ua.bg_url)})` }}></div>
+                                        {/* 底图可空（允许无底图保存）：没有底图时给个深色底，
+                                            否则下面那层 white 文字会落在白底上看不见 */}
+                                        {ua.bg_url ? (
+                                            <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${toSameOriginMediaUrl(ua.bg_url)})` }}></div>
+                                        ) : (
+                                            <div className="absolute inset-0 bg-slate-800"></div>
+                                        )}
                                         <div className="absolute inset-0 bg-black/10"></div>
                                         <div className="absolute inset-0 p-8 flex flex-col justify-between text-white drop-shadow-md">
                                             <div className="flex justify-between items-start">
@@ -1782,8 +1788,10 @@ const AwardDesigner = ({ initData, onClose }) => {
         try {
             if (!meta.name) throw new Error("请输入奖状名称");
 
-            const finalBgUrl = layout.canvas?.bgUrl || bgUrl;
-            if (!finalBgUrl) throw new Error("请先在「视觉设计」里上传奖状底图");
+            // ★ 底图**不再必填**（2026-09-24 用户要求）：没有底图时就是「白底 + 元素排版」，
+            //   默认模板本身已含双线边框与全部字段，完全可用，不该拦着不让存草稿。
+            const finalBgUrl = layout.canvas?.bgUrl || bgUrl || '';
+            const elementCount = (layout.elements || []).length;
 
             // ★ 保存前检测外站图片：跨域会污染 canvas 导致导出失败 + 随时可能失效
             const external = collectExternalImages({
@@ -1807,7 +1815,9 @@ const AwardDesigner = ({ initData, onClose }) => {
                 const go = await confirmDialog({
                     title: '提交审核',
                     message: `确认提交「${meta.name}」进入审核？`,
-                    detail: '提交后管理员会收到待审提醒，审核期间这份奖状不能再编辑；若被退回，可在「草稿箱 → 打回草稿」修改后重新提交。',
+                    detail: finalBgUrl
+                        ? '提交后管理员会收到待审提醒，审核期间这份奖状不能再编辑；若被退回，可在「草稿箱 → 打回草稿」修改后重新提交。'
+                        : `⚠️ 这份奖状还没有底图，将以「白色背景 + ${elementCount} 个元素」呈现（默认模板的边框与文字都还在）。\n提交后管理员会收到待审提醒，审核期间不能再编辑；若被退回，可在「草稿箱 → 打回草稿」修改后重新提交。`,
                     confirmText: '提交审核',
                 });
                 if (!go) return;
@@ -1819,7 +1829,7 @@ const AwardDesigner = ({ initData, onClose }) => {
                     id: initData?.id,
                     name: meta.name,
                     description: meta.description,
-                    bg_url: finalBgUrl,
+                    bg_url: finalBgUrl || null,
                     rules,
                     layout: { ...layout, canvas: { ...layout.canvas, bgUrl: finalBgUrl } },
                     status
@@ -1870,7 +1880,8 @@ const AwardDesigner = ({ initData, onClose }) => {
                                 </div>
                                 <ul className="list-disc space-y-1 pl-4 text-xs leading-relaxed text-slate-600">
                                     <li>共三步：基本信息 → 规则配置 → 视觉设计，可随时点顶部标签切换。</li>
-                                    <li><b>奖状名称</b>与<b>底图</b>为必填项，缺少任一项都无法保存草稿或提交审核。</li>
+                                    <li><b>奖状名称</b>为必填项；<b>底图是可选的</b> —— 不上传就是「白色背景 + 元素排版」，
+                                        默认模板的双线边框与全部字段都还在，可以直接保存草稿；也可以在视觉设计里一键套用「内置底图」。</li>
                                     <li>提交后进入管理员审核；若被打回，可在「草稿箱 → 打回草稿」查看原因，修改后重新提交。</li>
                                     <li>底图与素材须为你有权使用的图片与字体（勿用未授权商业字体）。</li>
                                 </ul>

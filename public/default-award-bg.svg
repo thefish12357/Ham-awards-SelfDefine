@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1188" height="840" viewBox="0 0 1188 840" preserveAspectRatio="xMidYMid slice">
+  <!--
+    奖状「内置底图」（2026-09-24）
+    A4 横版 297×210（比例 1.4143，此处按 4 倍尺寸 1188×840 绘制）。
+    用途：用户不想找图、又希望奖状有个像样的纸面底色时，在设计器里一键套用。
+
+    注意：刻意不画边框。默认模板自己已有双线金框（10mm / 13.5mm），
+          这里再画一圈会叠成三框。只用纸色渐变 + 极淡纹理 + 四角装饰。
+
+    注意：放在 public/ 下，与站点同源，导出 PDF 时不会污染 canvas，
+          也不受浏览器「混合内容」限制。
+
+    注意：XML 注释里不能出现连续两个短横线，否则整个 SVG 解析失败、
+          图片会加载不出来（naturalWidth 为 0）。所以下面的分隔线只用等号。
+  ============================================================
+  -->
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="0.55" y2="1">
+      <stop offset="0" stop-color="#fffdf7"/>
+      <stop offset="0.55" stop-color="#fbf7ee"/>
+      <stop offset="1" stop-color="#f3ecdf"/>
+    </linearGradient>
+    <radialGradient id="vignette" cx="50%" cy="45%" r="78%">
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#c8a45c" stop-opacity="0.12"/>
+    </radialGradient>
+    <pattern id="grain" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <path d="M0 0 H7" stroke="#c8a45c" stroke-opacity="0.045" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1188" height="840" fill="url(#paper)"/>
+  <rect width="1188" height="840" fill="url(#grain)"/>
+  <rect width="1188" height="840" fill="url(#vignette)"/>
+
+  <g stroke="#c8a45c" stroke-opacity="0.38" fill="none" stroke-width="2.5" stroke-linecap="square">
+    <path d="M26 78 V26 H78"/>
+    <path d="M1110 26 H1162 V78"/>
+    <path d="M1162 762 V814 H1110"/>
+    <path d="M78 814 H26 V762"/>
+  </g>
+  <g fill="#c8a45c" fill-opacity="0.5">
+    <circle cx="26" cy="26" r="3.5"/>
+    <circle cx="1162" cy="26" r="3.5"/>
+    <circle cx="1162" cy="814" r="3.5"/>
+    <circle cx="26" cy="814" r="3.5"/>
+  </g>
+</svg>

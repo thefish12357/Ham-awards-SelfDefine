@@ -5,7 +5,9 @@
  *
  * 隐私与安全设计：
  *   - 照片存**私有桶** `ham-awards-evidence`（不设公开读 policy，与公开桶 `ham-awards` 分开）；
- *   - 管理员查看走 **presigned GET**（15 分钟有效期），URL 不落库、不返回给申请人；
+ *   - 管理员查看走**同源鉴权代理** `GET /api/evidence/:id/photo`（内部客户端读私有桶，
+ *     前端用 apiFetchBlob 转 blob URL 给 <img>）。**不要改回 presigned 直链**：直链 host 是
+ *     MINIO_PUBLIC_ENDPOINT（本部署为 localhost:9000），https 页面下会被混合内容拦掉；
  *   - 上传用 multer **memoryStorage**（不落磁盘），限 5 MB，校验 PNG/JPEG **magic bytes**；
  *   - 审核 approve/reject 后**立即 `removeObject`**，DB 把 `object_key` 置空并记 `purged_at`，
  *     只保留审核结论，不保留图片；
@@ -21,7 +23,6 @@ import { notifyUsers } from '../services/notifications.js';
 import { lookupDxcc } from '../services/cty.js';
 
 const EVIDENCE_BUCKET = 'ham-awards-evidence';
-const PRESIGN_TTL_SECONDS = 15 * 60;
 const MAX_BYTES = 5 * 1024 * 1024;
 
 /**
@@ -69,8 +70,6 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
   const minio = () => getMinio();
   // 审计写入由 server.js 注入；未注入时静默跳过（best-effort，不影响主流程）
   const audit = (req, entry) => (typeof logAudit === 'function' ? logAudit(db(), req, entry) : Promise.resolve());
-  // presigned URL 用对外客户端（浏览器可达的 host），未配置时退回内部客户端
-  const minioPublic = () => (getMinioPublic ? getMinioPublic() : getMinio());
   const bucket = () => (getConfig() && getConfig().evidenceBucket) || EVIDENCE_BUCKET;
 
   // ---- 上传实物材料 ----
@@ -178,7 +177,8 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
     }
   });
 
-  // ---- 待审材料（admin 看全部 / award_admin 只看自己创建的奖状，附 presigned 图片地址）----
+  // ---- 待审材料（admin 看全部 / award_admin 只看自己创建的奖状；只返回 has_photo 标志，
+  //      照片本体由前端逐条走 GET /:id/photo 取 blob）----
   router.get('/admin', verifyToken, verifyAwardAdmin, async (req, res) => {
     try {
       if (!minio()) return res.status(503).json({ error: 'MINIO_NOT_CONFIGURED', message: '对象存储未配置' });
@@ -196,22 +196,59 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
         ? await db().query(`${baseSql} ORDER BY e.created_at ASC`)
         : await db().query(`${baseSql} AND a.creator_id = $1 ORDER BY e.created_at ASC`, [req.user.id]);
 
-      const items = await Promise.all(r.rows.map(async (row) => {
-        let photo_url = null;
-        if (row.object_key) {
-          try {
-            photo_url = await minioPublic().presignedGetObject(bucket(), row.object_key, PRESIGN_TTL_SECONDS);
-          } catch (err) {
-            console.error('evidence presign error:', err.message);
-          }
-        }
+      // ⚠️ 不再返回 MinIO 预签名直链：那个直链的 host 是 MINIO_PUBLIC_ENDPOINT（本部署是
+      //    localhost:9000），页面走 https（cloudflared 隧道）时会被浏览器按**混合内容**拦掉，
+      //    管理员在别的机器上 localhost 更是指向他自己 —— 表现就是审核页明明有待审材料，
+      //    照片位置只有一句「图片不可用（可能已删除）」（2026-09-24 用户实测）。
+      //    现在只告诉前端「有没有照片」，本体走同源鉴权代理 GET /api/evidence/:id/photo。
+      const items = r.rows.map((row) => {
         // 不把 object_key 泄露给前端
         const { object_key, ...rest } = row;
-        return { ...rest, photo_url };
-      }));
+        return { ...rest, has_photo: !!object_key };
+      });
       res.json(items);
     } catch (e) {
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ---- 查看材料照片（同源鉴权代理，2026-09-24 新增）----
+  // 为什么不让前端直接用预签名直链：那个直链 host 是 MINIO_PUBLIC_ENDPOINT（本部署是
+  //   localhost:9000），https 页面下会被**混合内容**拦掉、远程管理员的 localhost 又指向他自己。
+  //   而 <img src> 无法带 Authorization，所以只能由服务端代理（内部客户端读私有桶）。
+  // 权限与「待审列表」一致：admin 看全部；award_admin 只看自己创建的奖状收到的材料。
+  // ⚠️ 已审核的记录 object_key 已被置空（照片按隐私设计即刻删除）→ 返回 404 PHOTO_PURGED。
+  router.get('/:id/photo', verifyToken, verifyAwardAdmin, async (req, res) => {
+    try {
+      if (!minio()) return res.status(503).json({ error: 'MINIO_NOT_CONFIGURED', message: '对象存储未配置' });
+      const id = Number(req.params.id);
+      if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'BAD_ID', message: '参数不正确' });
+
+      const r = await db().query(
+        `SELECT e.object_key, e.mime, a.creator_id
+           FROM award_evidence e
+           LEFT JOIN awards a ON a.id = e.award_id
+          WHERE e.id = $1`,
+        [id],
+      );
+      if (r.rows.length === 0) return res.status(404).json({ error: 'NOT_FOUND', message: '材料不存在' });
+      const row = r.rows[0];
+      if (req.user.role !== 'admin' && row.creator_id !== req.user.id) {
+        return res.status(403).json({ error: 'PERMISSION_DENIED', message: '只能查看自己创建的奖状收到的材料' });
+      }
+      if (!row.object_key) {
+        return res.status(404).json({ error: 'PHOTO_PURGED', message: '照片已按审核流程删除' });
+      }
+
+      const stat = await minio().statObject(bucket(), row.object_key);
+      const contentType = row.mime || (stat.metaData && stat.metaData['content-type']) || 'application/octet-stream';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'private, max-age=300'); // 私有材料，禁止共享缓存
+      const stream = await minio().getObject(bucket(), row.object_key);
+      stream.on('error', () => { if (!res.headersSent) res.status(500).end(); else res.destroy(); });
+      stream.pipe(res);
+    } catch (e) {
+      res.status(404).json({ error: 'PHOTO_UNAVAILABLE', message: '照片读取失败或已被清理' });
     }
   });
 

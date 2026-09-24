@@ -206,6 +206,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | `/api/qsos/:id/awards`                  | 查某条 QSO 参与哪些奖状                                                                             | 登录                                        |
 | `/api/admin/*`                          | users、awards/pending、awards/approved、awards/audit、issued-awards（含 `/orphans` 一键清理失效记录）、settings | **系统管理员**                              |
 | `/api/award-templates/*`                | 奖状布局模板库：list / `:id` / 增 / PATCH 改名 / 删。**按创建者私有**，layout 存库时剥掉 `canvas.bgUrl` | 登录 / 奖状管理员                           |
+| `/api/evidence/:id/photo`               | 实物材料照片**同源鉴权代理**（内部客户端读私有桶，admin 全部 / award_admin 仅自己奖状；已审核的返回 404） | 登录 / 奖状管理员                           |
 
 **颁发记录（`user_awards`）生命周期（2026-09-24 修订）**
 
@@ -246,6 +247,10 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
    - **形状只有一份几何**：`SHAPES`（Word 风格 22 种）+ `shapePath(shape, W, H, radiusPx)`，渲染端统一出一个 `<path>`。加新形状只改这两处。⚠️ 描边有 **1px 下限**（`Math.max(px(strokeWidth), 1)`）——编辑器画布只有 ~560px 宽，0.5mm 不足 1 个物理像素会让形状"加了却看不见"；PDF 按 1200px 宽渲染，下限不影响打印。
    - **`presetAwardLayout()` 只用于新建/布局为空时的初始化**，**绝不能塞进 `normalizeLayout`**：否则所有历史空布局奖状都会凭空多出一套元素（数据事故）。
    - **模板库**（`award_templates`）：设计器左栏「存为模板 / 我的模板」走 `/api/award-templates`，**按创建者私有**、每人上限 50 个、**不存底图**（后端 `sanitizeTemplateLayout` 剥掉 `canvas.bgUrl`）；套用时**保留当前底图**、画布样式从模板带入、元素 id 用 `uid()` 重新生成（避免与当前布局撞 id）。
+   - **底图是可选的**（2026-09-24 起）：不再强制上传才能存草稿/提交审核。没有底图时就是「白色背景 + 元素排版」，默认模板自带双线边框与全部字段，完全可用；
+     提交审核时只做一次**软提示**。另有内置底图 `public/default-award-bg.svg`（`DEFAULT_BG_URL`，同源 → 导出不会跨域），设计器里一键套用。
+     ⚠️ 该 SVG 是手写 XML：**XML 注释里不能出现连续两个短横线**，否则解析失败、`naturalWidth` 恒为 0（已踩过一次，注释分隔线只用等号）。
+     `MyAwardsView` 的旧卡片在无底图时会退回深色兜底，避免白字落白底看不见。
 10. **多等级差异写在元素的 `levelOverrides` 里**，不要在渲染层各写一套判断：
     ```js
     // 元素级：Gold 等级下换色、加大、上移
@@ -284,11 +289,13 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 15. **实物材料（M4）的隐私红线**（2026-09-22 落地）：QSL 卡片照片**只能进私有桶 `ham-awards-evidence`**，**绝不放公开桶 `ham-awards`**（照片含地址/印章，公开桶是 `s3:GetObject` 对 `*`）。实现见 `server/routes/evidence.js`：
 
 - **权限归属（按奖状）**：`admin` 看/审**全部**材料；`award_admin` 只能看/审**自己创建的奖状**（`awards.creator_id = 自己`）收到的材料——待审列表按 `creator_id` 过滤，审核接口在删除前会二次校验归属（越权返回 403）。
-- 管理员查看走 **presigned GET**（15 分钟），URL 不落库、不返回给申请人；
+- 管理员查看走**同源鉴权代理** `GET /api/evidence/:id/photo`（用内部 `minioClient` 读私有桶流式返回；前端 `apiFetchBlob` 转 blob URL 给 `<img>`）。
+  ⚠️ **不要再改回 presigned 直链**：直链 host 是 `MINIO_PUBLIC_ENDPOINT`（本部署为 `localhost:9000`），https 页面下会被**混合内容**拦掉、远程管理员的 `localhost` 又指向他自己
+  → 审核页只显示「图片不可用（可能已删除）」（2026-09-24 用户实测）。待审列表只返回 `has_photo`，**不再**吐出 object_key 或直链；
 - 审核 `approve`/`reject` 后**立即 `removeObject`**，DB 把 `object_key` 置空 + 记 `purged_at`，只留审核结论；
 - 上传用 multer `memoryStorage`（5 MB 上限）+ PNG/JPEG **magic bytes** 校验，不落本地磁盘；
 - 孤儿图**不自动删除**（用户拍板 2026-09-22，撤销了此前的 ILM 自动删除）：照片保留，靠**站内通知**催审核员处理；审核通过/驳回后仍立即 `removeObject`。
-- **presigned URL 走对外客户端 `minioPublicClient`**（2026-09-22 落地）：容器部署时 `minioClient.endPoint` 是内部服务名（`minio:9000`），浏览器解析不了，且 SigV4 签名绑定 host，改 URL host 会验签失败。故启动时用 `publicEndPoint`/`MINIO_PUBLIC_ENDPOINT`（+ `publicPort`/`MINIO_PUBLIC_PORT`）另建 `minioPublicClient`（凭据相同），`evidence.js` 生成 presigned 一律走它；未配置时退化为 `minioClient`（本机 `localhost` 等价）。
+- **`minioPublicClient` 已不再用于实物照片**（2026-09-24 改为同源代理后，`evidence.js` 不再 presign）。该客户端仍在 `server.js` 启动时初始化并注入（`getMinioPublic`），保留是因为 `MINIO_PUBLIC_ENDPOINT/PORT` 仍被 `storeAwardImage()` 用来拼「绝对地址」字段；**新增涉及私有桶的展示位时应走同源代理，而不是 presigned 直链**。
 - **★ 判定打通（2026-09-22 落地）**：上传卡片时填**对方呼号（必填）/ 波段 / 模式 / 日期**（存 `match_callsign/band/mode/date`）；审核 `approve` 时据此匹配该用户的 QSO 并 `jsonb_set(adif_raw, '{qsl_rcvd}', '"Y"')`，使「实物卡片确认」真正参与 `qslRequired` 判定（`awardEngine` 只读 `adif_raw.qsl_rcvd` / `lotw_qsl_rcvd`）。匹配规则：呼号 `UPPER(callsign)` 等值；波段/模式 `LOWER()` 等值（可选）；日期 `REPLACE(qso_date,'-','')` 去横线比较（可选，兼容 `YYYYMMDD` 与 `YYYY-MM-DD`）。审核接口返回 `matched_qso` 供前端提示打了几条。
 
 16. **站内通知（M4.1，2026-09-22 落地）**：`server/services/notifications.js` 提供 `notifyUsers(pool, userIds, {type,title,body})`（去重）+ `createNotificationsRouter`（`GET /api/notifications` 返回 `{list,unread}`、`POST /api/notifications/read` 支持 `{all:true}` 或 `{id}`）。`notifications` 表：`id/user_id/type/title/body/read/created_at`。已接入的事件：
