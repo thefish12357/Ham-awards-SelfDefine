@@ -28,6 +28,9 @@ import PrivacyView from './pages/PrivacyView.jsx';
 import TermsView from './pages/TermsView.jsx';
 import ProtocolView from './pages/ProtocolView.jsx';
 import { normalizeLayout, presetAwardLayout } from './lib/awardLayout.js';
+// 统一的日期约束/校验（原生 date 控件年份可超 4 位，全站必须统一拦）
+import { DATE_FAR_MAX, validateDateInput, validateDateRangeInput } from './lib/dateInput.js';
+import DateInput from './components/DateInput.jsx';
 // 实物材料的收集要素类型（QSL 卡 / Eyeball 卡 / SWL 收听报告）
 import { EVIDENCE_TYPES, evidenceType, evidenceTypeLabel, TZ_OPTIONS, tzOffsetOf, toUtcDateTime } from './lib/evidenceTypes.js';
 import { collectExternalImages, toSameOriginMediaUrl } from './lib/media.js';
@@ -717,6 +720,8 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
     const evType = evidenceType(evForm.type);
     const evIsEyeball = evForm.type === 'eyeball'; // 当面交换：没有波段/模式
     const evIsSwl = evForm.type === 'swl';
+    // 日期字段的中文名（随材料类型变化）：label 与校验提示共用，避免两处文案漂移
+    const evDateLabel = evIsEyeball ? '交换日期' : evIsSwl ? '收听日期' : '通联日期';
     const evHasTime = /^\d{2}:\d{2}$/.test(evForm.time || '');
     const evTzOffset = tzOffsetOf(evForm.tz);
     const evTzLabel = (TZ_OPTIONS.find((t) => t.value === evForm.tz) || TZ_OPTIONS[0]).label;
@@ -837,7 +842,17 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
         //   也无法参与任何按时间判定规则的奖状，所以审核通过时不会补建日志（用户曾因此
         //   「看不到新建的日志」却没有任何提示）。这里直接从源头拦掉。
         if (!evForm.date) {
-            alert(`请先填写${evIsEyeball ? '交换日期' : evIsSwl ? '收听日期' : '通联日期'}：审核通过后要靠它把这条记录补进你的日志。`);
+            alert(`请先填写${evDateLabel}：审核通过后要靠它把这条记录补进你的日志。`);
+            return;
+        }
+        // ★ 日期合法性（2026-09-24 加深）：`<input type="date">` 原生允许年份超过 4 位，
+        //   而 `toUtcDateTime()` 对非 4 位年份返回 ok:false，下面 `if (evUtc.ok)` 会
+        //   **静默丢掉日期**→ 提示"上传成功"，审核端却显示"没填通联日期"。
+        //   所以这里必须显式拦下并说明原因，不能让它悄悄变成没填。
+        const dateError = validateDateInput(evForm.date, evDateLabel);
+        if (dateError) { alert(`${dateError}。`); return; }
+        if (!evUtc.ok) {
+            alert(`${evDateLabel}无法换算成 UTC，请检查日期与时间是否填写完整。`);
             return;
         }
         const ok = await confirmDialog({
@@ -1163,10 +1178,17 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                 <label className="block">
                                     {/* ★ 日期必填：它是补建日志的主键组成部分（user_id + 呼号 + 波段 + 模式 + 日期） */}
                                     <span className="text-xs text-slate-500">
-                                        {evIsEyeball ? '交换日期' : evIsSwl ? '收听日期' : '通联日期'} <b className="text-red-500">*</b>
+                                        {evDateLabel} <b className="text-red-500">*</b>
                                         <span className="ml-1 text-slate-400">（必填，审核通过后据此入账）</span>
                                     </span>
-                                    <input type="date" value={evForm.date} onChange={(e) => setEvForm({ ...evForm, date: e.target.value })} className="w-full mt-1 p-2 border rounded-lg text-sm" />
+                                    {/* 统一走 DateInput：带 min/max（年份被浏览器卡在 4 位）+ 即时中文校验 */}
+                                    <DateInput
+                                        label={evDateLabel}
+                                        required
+                                        value={evForm.date}
+                                        onChange={(v) => setEvForm({ ...evForm, date: v })}
+                                        className="w-full mt-1 p-2 border rounded-lg text-sm"
+                                    />
                                 </label>
                                 <label className="block">
                                     <span className="text-xs text-slate-500">{evIsEyeball ? '交换时间' : evIsSwl ? '收听时间' : '通联时间'}</span>
@@ -1795,6 +1817,14 @@ const AwardDesigner = ({ initData, onClose }) => {
         try {
             if (!meta.name) throw new Error("请输入奖状名称");
 
+            // ★ 规则有效期必须合法（2026-09-24）：awardEngine 是拿 QSO 日期与这两端做
+            //   **字符串比较**，年份填成 6 位（原生 date 控件允许）会让所有日志都判不过，
+            //   而且完全没有报错。这里在保存前拦下并说明原因。
+            const rangeError = validateDateRangeInput(rules.basic?.startDate, rules.basic?.endDate, {
+                max: DATE_FAR_MAX,
+            });
+            if (rangeError) throw new Error(`${rangeError}。`);
+
             // ★ 底图**不再必填**（2026-09-24 用户要求）：没有底图时就是「白底 + 元素排版」，
             //   默认模板本身已含双线边框与全部字段，完全可用，不该拦着不让存草稿。
             const finalBgUrl = layout.canvas?.bgUrl || bgUrl || '';
@@ -1905,13 +1935,30 @@ const AwardDesigner = ({ initData, onClose }) => {
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
                                         <label className="block text-sm font-bold text-slate-700 mb-1">开始日期 (可选)</label>
-                                        <input type="date" className="w-full p-3 border rounded-xl" value={rules.basic.startDate} onChange={e=>setRules({...rules, basic: {...rules.basic, startDate: e.target.value}})} />
+                                        {/* 奖状有效期允许**计划到未来**，所以上界用 DATE_FAR_MAX 而不是今天 */}
+                                        <DateInput
+                                            label="开始日期"
+                                            max={DATE_FAR_MAX}
+                                            value={rules.basic.startDate}
+                                            onChange={(v)=>setRules({...rules, basic: {...rules.basic, startDate: v}})}
+                                            className="w-full p-3 border rounded-xl"
+                                        />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-bold text-slate-700 mb-1">结束日期 (可选)</label>
-                                        <input type="date" className="w-full p-3 border rounded-xl" value={rules.basic.endDate} onChange={e=>setRules({...rules, basic: {...rules.basic, endDate: e.target.value}})} />
+                                        <DateInput
+                                            label="结束日期"
+                                            max={DATE_FAR_MAX}
+                                            value={rules.basic.endDate}
+                                            onChange={(v)=>setRules({...rules, basic: {...rules.basic, endDate: v}})}
+                                            className="w-full p-3 border rounded-xl"
+                                        />
                                     </div>
                                 </div>
+                                <p className="text-xs text-slate-400 -mt-2">
+                                    留空表示不限制。判定时按 QSO 日期与这两端做比较，所以年份必须是 4 位（如 2026）；
+                                    填错年份会让所有日志都判不过，提交前会拦下。
+                                </p>
                                 <label className="flex items-center gap-3 p-4 border rounded-xl bg-slate-50 cursor-pointer">
                                     <input type="checkbox" checked={rules.basic.qslRequired} onChange={e=>setRules({...rules, basic: {...rules.basic, qslRequired: e.target.checked}})} className="w-5 h-5"/>
                                     <div>

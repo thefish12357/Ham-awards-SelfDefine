@@ -18,6 +18,8 @@ import multer from 'multer';
 import { parseAdif } from './server/services/adif.js';
 import { lookupDxcc, syncCtyFromWeb, ctyStats } from './server/services/cty.js';
 import { evaluateAward as evaluateAwardCore } from './server/services/awardEngine.js';
+// 服务端日期边界校验（与前端 src/lib/dateInput.js 同规则）
+import { validateRulesDateRange } from './server/services/dates.js';
 import { configureLotwSessions } from './server/services/lotwSessions.js';
 import { createLotwRouter } from './server/routes/lotw.js';
 import { createEvidenceRouter } from './server/routes/evidence.js';
@@ -1229,6 +1231,14 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
     const allowedStatus = role === 'admin' ? ['draft', 'pending', 'returned'] : ['draft', 'pending'];
     if (!allowedStatus.includes(status)) {
         return res.status(403).json({ error: 'STATUS_FORBIDDEN', message: `当前角色不允许将奖状设为「${status}」状态（发布须由系统管理员审核）` });
+    }
+
+    // ★ 规则有效期边界校验（2026-09-24）：`awardEngine` 是拿 QSO 日期与这两端做**字符串比较**，
+    //   年份填成 5~6 位（浏览器原生 date 控件允许）会让所有日志都判不过（或反过来全部放行），
+    //   且完全没有报错。前端已拦一道，这里是服务端兜底（旧客户端 / 直接调接口都绕不过）。
+    const rulesDateError = validateRulesDateRange(rules);
+    if (rulesDateError) {
+        return res.status(400).json({ error: 'INVALID_RULES_DATE', message: rulesDateError });
     }
 
     // 生成/更新 tracking_id 和日志

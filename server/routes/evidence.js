@@ -21,6 +21,8 @@ import multer from 'multer';
 import crypto from 'crypto';
 import { notifyUsers } from '../services/notifications.js';
 import { lookupDxcc } from '../services/cty.js';
+// 日期边界校验（与 src/lib/dateInput.js 同规则）：match_date 会作为日志日期入库
+import { validateDate, utcDateOffset } from '../services/dates.js';
 
 const EVIDENCE_BUCKET = 'ham-awards-evidence';
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -100,6 +102,12 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
       const matchBand = String(req.body.match_band || '').trim().slice(0, 10);
       const matchMode = String(req.body.match_mode || '').trim().slice(0, 10);
       const matchDate = String(req.body.match_date || '').trim().slice(0, 20);
+      // ★ 日期边界校验（2026-09-24）：`<input type="date">` 原生允许年份超过 4 位，而 match_date
+      //   会被当作**日志日期**入库（匹配不到就自动补建一条），一个荒唐年份就会污染用户日志。
+      //   上界留 1 天余量：用户在 UTC-11 等时区提交时，本地日期换算出的 UTC 日期可能「跨到明天」。
+      const dateLabel = typeValue === 'eyeball' ? '交换日期' : typeValue === 'swl' ? '收听日期' : '通联日期';
+      const dateError = validateDate(matchDate, dateLabel, { max: utcDateOffset(1) });
+      if (dateError) return res.status(400).json({ error: 'BAD_DATE', message: dateError });
       // 通联时间：前端已按用户所选时区换算成 **UTC 的 HHMM** 再提交（校验一律 UTC）
       const matchTime = String(req.body.match_time || '').trim();
       if (matchTime && !/^([01]\d|2[0-3])[0-5]\d$/.test(matchTime)) {

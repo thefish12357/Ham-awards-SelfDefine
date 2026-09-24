@@ -40,7 +40,11 @@ const generateSerial = () => {
   return serial;
 };
 
-/** 报表可选日期区间的下界（与 lotwClient 的 HISTORY_START 一致） */
+/**
+ * 报表可选日期区间的下界。
+ * 与 `lotwClient` 的 `HISTORY_START`、前端 `src/lib/dateInput.js` 的 `DATE_MIN`、
+ * 以及 `server/services/dates.js` 的 `DATE_MIN` 保持一致（取值相同，改的时候四处对齐）。
+ */
 const REPORT_MIN_DATE = '1900-01-01';
 
 /** 严格 YYYY-MM-DD：**年份必须正好 4 位**（原生 date 控件允许 5~6 位年份，必须挡住） */

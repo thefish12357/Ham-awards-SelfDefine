@@ -54,10 +54,12 @@
 │   │   ├── awardLayout.js  #   奖状布局 schema（v2，mm）+ 形状几何（SHAPES/shapePath）+ 预设模板
 │   │   ├── uploadLimits.js #   ★ 上传体积上限/尺寸上限常量（前后端必须一致）
 │   │   ├── imageUpload.js  #   ★ 上传前置处理：类型/尺寸/体积校验 + 超尺寸自动等比缩小
+│   │   ├── dateInput.js    #   ★ 日期约束/校验唯一真源（DATE_MIN / DATE_FAR_MAX / validateDateInput）
 │   │   └── exportAwardPdf.js   #   客户端 PDF 导出（html-to-image + jsPDF，按需加载）
 │   ├── components/     # ★ 新增：可复用组件
 │   │   ├── AwardRenderer.jsx   #   布局 → DOM 渲染（编辑器/我的奖状/审核预览/PDF 共用）
 │   │   ├── VisualDesigner.jsx  #   可视化布局编辑器（拖拽/缩放/属性/撤销重做/底图上传/多等级）
+│   │   ├── DateInput.jsx       #   ★ 统一日期输入（强制 min/max + 行内中文校验）
 │   │   └── PasswordInput.jsx   #   带「显示密码」眼睛图标的密码框（登录/注册/用户中心）
 │   └── pages/          # ★ 新增：独立页面（app.jsx 只做最小接入）
 │       ├── LotwImportView.jsx  #   LoTW 直连页（需求①）
@@ -322,6 +324,16 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - **绝不记录凭据**：密码 / TOTP secret / LoTW 账号密码只记"是否发生过"（如 `password_reset: true`），不进 `detail`。
 - 写入是 **best-effort**：审计失败只打 `console.error`，绝不阻断业务；`actor_id` 用 `ON DELETE SET NULL` + 冗余 `actor_callsign`，删号后仍能追溯。
 - **与「单奖状审核流水」分清**：`awards.audit_log`（JSONB）是**单张奖状**的业务时间线，可见范围 = 该奖状的管理员 + `admin`；`audit_logs` 表是**全站**记录，只有 `admin` 能查（页面 `#/admin_logs`）。
+
+19. **★ 日期输入一律走 `src/components/DateInput.jsx`，校验逻辑只有一份 `src/lib/dateInput.js`**（2026-09-24 落地）。
+    - 为什么：原生 `<input type="date">` 的**年份段允许超过 4 位**（Chrome 上限 275760），直接用它会让下游**静默出错**：
+      - 实物材料 `match_date` → `toUtcDateTime()` 对非 4 位年份返回 `ok:false`，调用点 `if (evUtc.ok)` 会**把日期悄悄丢掉**（提示"上传成功"，审核端却显示"没填通联日期"）；
+      - 奖状规则 `rules.basic.startDate/endDate` → `awardEngine` 拿 QSO 日期与它们做**字符串比较**，年份错位会让所有日志判不过（或反过来全部放行），零报错；
+      - LoTW 日期范围 → 服务端 `fetchLotwReports()` 对非法日期**静默回退**成全部历史，只表现为变慢/超时。
+    - 约定：前端用 `DateInput`（自动 `min`/`max` + 行内中文校验）；上界默认**今天**，「允许计划到未来」的场景（奖状规则有效期）显式传 `max={DATE_FAR_MAX}`（2100-12-31）。
+    - 服务端同规则兜底 `server/services/dates.js`（`validateDate` / `validateRulesDateRange`）：`/api/awards` 的 rules 日期、`/api/evidence` 的 `match_date` 不合法一律 **400**，不信任前端。
+    - ⚠️ 实物材料日期的服务端上界是**今天 +1 天**（`utcDateOffset(1)`）：用户在 UTC-11 等时区提交时，本地日期换算出的 UTC 日期可能"跨到明天"。
+    - ⚠️ 历史数据里已有一条 `match_date='1111-11-11'`（用户 42 的 SWL 材料，被 4 位截断后仍越界）。SWL/Eyeball 不建日志所以没污染 QSO；新校验的下限 1900 已能拦住这一类。
 - ⚠️ **`/api/awards/all_approved` 必须用显式列名**（已剔除 `audit_log` / `reject_reason`）：它是任何登录用户都能调的公开大厅接口，**不要改回 `SELECT *`**，否则每个奖状的审核流水都会泄露。
 - 前端：侧边栏按菜单项的 `group` 字段输出分组标题，`admin` 的「后台管理」分组集中了用户管理 / 奖状审核 / 实物材料审核 / 审计日志 / 颁发管理 / 奖状总览。
 
