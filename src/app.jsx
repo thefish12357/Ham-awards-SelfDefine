@@ -57,6 +57,20 @@ const getContrastColor = (hexColor) => {
 };
 
 /**
+ * 「判定条件」展示用：筛选字段 / 操作符 → 中文。
+ * 以前直接把 `f.field` / `f.operator` 打在界面上（`dxcc = 318`），加了「呼号分区」后
+ * 更看不懂了，所以统一转成中文显示（`DXCC ID 等于 318`）。
+ */
+const FILTER_FIELD_LABELS = {
+    band: '波段', mode: '模式', call: '对方呼号', dxcc: 'DXCC ID', state: '州/省',
+    gridsquare: '网格', iota: 'IOTA', freq: '频率', station_callsign: '己方呼号',
+    district: '呼号分区',
+};
+const FILTER_OP_LABELS = { eq: '等于', neq: '不等于', contains: '包含', gt: '大于', lt: '小于' };
+const filterFieldLabel = (v) => FILTER_FIELD_LABELS[String(v || '').toLowerCase()] || v;
+const filterOpLabel = (v) => FILTER_OP_LABELS[v] || v;
+
+/**
  * 导出 PDF 后提示"有哪些图片没加载出来"。
  * 必须提示：否则用户以为导出成功，实际拿到的是一张缺图的奖状。
  * 常见原因：设计时贴了外部链接（图床 / 网盘），跨域或已失效。
@@ -1028,7 +1042,10 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                             {rules.basic?.qslRequired && <div className="text-green-600 font-bold">✅ 需要 QSL 确认</div>}
                                             {rules.filters?.length > 0 ? (
                                                 rules.filters.map((f, i) => (
-                                                    <div key={i} className="flex gap-2"><span className="font-mono bg-white px-1 border rounded text-xs">{f.field}</span> {f.operator} <b>{f.value}</b></div>
+                                                    <div key={i} className="flex gap-2">
+                                                        <span className="bg-white px-1 border rounded text-xs">{filterFieldLabel(f.field)}</span>
+                                                        {filterOpLabel(f.operator)} <b>{f.value}</b>
+                                                    </div>
                                                 ))
                                             ) : <div className="text-slate-400 text-xs">无特殊筛选条件</div>}
                                         </>
@@ -1050,7 +1067,12 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                         <h4 className="font-bold text-sm text-slate-500 mb-2 uppercase flex items-center gap-2"><Calculator size={14}/> 计分模式</h4>
                                         <div className="bg-slate-50 p-3 rounded-lg border text-sm">
                                             <div className="font-bold text-slate-700 mb-1">{rules.logic === 'collection' ? '📦 收集型 (计数)' : '🔢 计分型 (累计)'}</div>
-                                            <div className="text-xs text-slate-500">目标: {rules.targets?.type?.toUpperCase() || '任意 QSO'}</div>
+                                            <div className="text-xs text-slate-500">
+                                                目标: {rules.targets?.type && rules.targets.type !== 'any'
+                                                    ? (TARGET_SPECS[rules.targets.type]?.label || rules.targets.type)
+                                                    : '任意 QSO'}
+                                                {rules.targets?.list ? ` · ${rules.targets.list}` : ''}
+                                            </div>
                                         </div>
                                     </div>
                                     <div>
@@ -1060,7 +1082,11 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                                 <div key={i} className="flex justify-between text-xs">
                                                     <span>{t.name}</span>
                                                     <span className="font-bold">
-                                                        {t.value} {t.fullCollection ? '+ Full' : ''}
+                                                        {/* 收集型 + 全收集时，真正的门槛是清单条数（引擎 scoreTargetOf），
+                                                            这里要显示成 "10 项全收集"，否则会写着 "1 + Full" 让人以为通联 1 个就够 */}
+                                                        {t.fullCollection && rules.logic === 'collection' && rules.targets?.list
+                                                            ? `${rules.targets.list.split(',').map(s => s.trim()).filter(Boolean).length} 项全收集`
+                                                            : `${t.value}${t.fullCollection ? ' + 全收集' : ''}`}
                                                     </span>
                                                 </div>
                                             ))}
@@ -2104,6 +2130,10 @@ const AwardDesigner = ({ initData, onClose }) => {
                                                     <option value="iota">IOTA</option>
                                                     <option value="freq">频率 (FREQ)</option>
                                                     <option value="station_callsign">己方呼号 (STATION_CALLSIGN)</option>
+                                                    {/* 呼号分区（2026-09-25）：引擎现算呼号里的区号，
+                                                        可与「目标对象类型=呼号分区」配合（先筛选、再收集），
+                                                        也可单独用于"只算某区发起的通联"这类规则 */}
+                                                    <option value="district">呼号分区 (BY1→1 区)</option>
                                                 </select>
                                                 <select className="p-2 border rounded text-sm" value={f.operator} onChange={e=>{const n=[...rules.filters];n[idx].operator=e.target.value;setRules({...rules, filters:n})}}>
                                                     <option value="eq">等于 (=)</option><option value="neq">不等于 (!=)</option><option value="gt">大于 (&gt;)</option><option value="contains">包含</option>
@@ -2212,6 +2242,11 @@ const AwardDesigner = ({ initData, onClose }) => {
                                     <h4 className="font-bold text-lg flex items-center gap-2"><Trophy className="text-yellow-500"/> 4. 达标等级 (Thresholds)</h4>
                                     <div className="bg-yellow-50 p-4 rounded-xl border border-yellow-200 space-y-3">
                                         <p className="text-xs text-yellow-800 mb-2">设置不同的奖项等级（如金、银、铜），系统将自动判定最高达成等级。</p>
+                                        <p className="text-xs text-yellow-800 mb-3">
+                                            「分数」对<b>收集型</b>就是"要收集多少个目标"（如 10 个区）；
+                                            勾了<b>必须全收集</b>后，门槛自动等于上面清单的条数，分数填多少都不影响判定
+                                            （进度与明细也会按清单条数显示，如 0/10）。
+                                        </p>
                                         {(rules.thresholds || [{name: 'Award', value: 1}]).map((t, idx) => (
                                             <div key={idx} className="flex items-center gap-2">
                                                 <input 

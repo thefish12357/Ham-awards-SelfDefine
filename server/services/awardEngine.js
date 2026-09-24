@@ -84,14 +84,36 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
     }
 
     // Custom Filters
+    // 顺序说明：**先按筛选条件过滤（Step 1），再按目标对象收集（Step 2）** ——
+    // 两者是"与"的关系，所以可以这样组合：「DXCC ID = 318（只算中国台）」+
+    // 「目标对象类型 = 呼号分区 0~9」= 收集中国的 0~9 区。
     if (Array.isArray(rules.filters)) {
       for (const f of rules.filters) {
         if (!f.field || !f.value || f.value === 'ANY') continue;
-        const val = String(raw[f.field.toLowerCase()] ?? q[f.field.toLowerCase()] ?? '').toUpperCase();
+        const fieldKey = String(f.field).toLowerCase();
+        // 「呼号分区」不是 ADIF 字段，得现算 —— 与目标类型 district 共用同一套抽取规则，
+        // 否则会出现"目标按分区算、筛选按 undefined 比"的错位。
+        const rawVal =
+          fieldKey === 'district'
+            ? districtOfCallsign(q.callsign || raw.call)
+            : (raw[fieldKey] ?? q[fieldKey] ?? '');
+        const val = String(rawVal).toUpperCase();
         const targetVal = String(f.value).toUpperCase();
         if (f.operator === 'eq' && val !== targetVal) return false;
         if (f.operator === 'neq' && val === targetVal) return false;
         if (f.operator === 'contains' && !val.includes(targetVal)) return false;
+        // 大于/小于：以前下拉里有「大于」但引擎**完全没实现** → 选了等于没选（静默失效）。
+        // 两端都能转成数字时按数值比（如频率 14.2 > 14），否则按字符串比。
+        if (f.operator === 'gt' || f.operator === 'lt') {
+          const na = Number(val);
+          const nb = Number(targetVal);
+          const numeric = val !== '' && targetVal !== '' && !Number.isNaN(na) && !Number.isNaN(nb);
+          const cmp = numeric
+            ? na < nb ? -1 : na > nb ? 1 : 0
+            : val < targetVal ? -1 : val > targetVal ? 1 : 0;
+          if (f.operator === 'gt' && cmp <= 0) return false;
+          if (f.operator === 'lt' && cmp >= 0) return false;
+        }
       }
     }
     return true;
@@ -235,19 +257,30 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
   if (!Array.isArray(thresholds)) thresholds = [thresholds];
   thresholds = thresholds.slice().sort((a, b) => b.value - a.value);
 
+  /**
+   * 阈值对应的「分数门槛」。
+   * ★ 收集型 + 勾了「全收集」时，真正的门槛是**目标清单的条数**（例如 10 个区），而不是 value。
+   *   否则进度会显示成 "0 / 1"（看着像通联 1 个就够），与实际判定（必须集齐）不符 ——
+   *   用户新建"收集 0~9 区"奖状时阈值就默认是 1，正是这个坑（2026-09-25 修）。
+   *   计分型 + 全收集时 value 仍是分数门槛，另外还要集齐清单。
+   */
+  const scoreTargetOf = (t) =>
+    logic === 'collection' && t.fullCollection && breakdown ? breakdown.total_required : t.value;
+
   const achieved = thresholds.find((t) => {
-    const scoreMet = score >= t.value;
+    const scoreMet = score >= scoreTargetOf(t);
     // 全收集独立于分数，与分数并列为判定条件
     const collectionMet = !t.fullCollection || (breakdown && breakdown.missing.length === 0);
     return scoreMet && collectionMet;
   });
 
-  const next_target = thresholds.slice().reverse().find((t) => score < t.value) || thresholds[0];
+  const next_target = thresholds.slice().reverse().find((t) => score < scoreTargetOf(t)) || thresholds[0];
 
   return {
     eligible: !!achieved,
     current_score: score,
-    target_score: next_target.value,
+    // 收集型 + 全收集 → 门槛是清单条数（如 10 个区），见 scoreTargetOf
+    target_score: scoreTargetOf(next_target),
     achieved_level: achieved || null,
     next_level: next_target,
     claimed_levels: claimedLevels,
@@ -272,8 +305,8 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
       : undefined,
     details: {
       msg: achieved
-        ? `已达成: ${achieved.name} (${score}${achieved.fullCollection ? ' + Full' : ''})`
-        : `当前 ${score}，下一目标 ${next_target.value} (${next_target.name})`,
+        ? `已达成: ${achieved.name} (${score}${achieved.fullCollection ? ' + 已集齐' : ''})`
+        : `当前 ${score}，下一目标 ${scoreTargetOf(next_target)} (${next_target.name})`,
     },
   };
 }

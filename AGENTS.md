@@ -344,7 +344,10 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     - 规格只有一份：`server/services/awardTargets.js` 的 `TARGET_SPECS`（label / re / hint / fixHint）+ `validateTargetList`；前端镜像在 `src/lib/awardTargets.js`（**两份必须同步**，否则"前端能存、后端拒绝"）。
     - 三处必须一起改：① 设计器 placeholder + 行内红字提示；② `saveAward` 保存前拦截；③ `POST /api/awards` 返回 **400 `INVALID_RULES_TARGETS`**。新增目标类型时同时补 `TARGET_FIELD_HINTS`（日志里对应字段名）。
     - ⚠️ **新增目标类型还要改另外 3 处白名单**（漏一处就会"能存但判定/明细不生效"）：`awardEngine.getTargetValue()` 的取值分支、`app.jsx` 里 `LogMatchMatrix` 的 `hasSpecificTargets` 数组、设计器目标清单输入框的显示条件数组。
-    - **现有类型（2026-09-25 起）**：`any` / `callsign` / `dxcc` / `grid` / `iota` / `state` / **`district`（呼号分区）**。`district` 取**中国 B 字头呼号**里紧跟前缀的那一位数字（`BY1AA→1`、`BG5UWQ→5`、`BH7CSA→7`；便携写法 `BY1AA/5` 只看主体），**国外呼号的数字不计入**（`JA1ABC`/`K1ABC` → 空），否则"收集 0~9 区"会被国外台灌水。典型用法：清单 `0,1,2,3,4,5,6,7,8,9` + 收集型 + 阈值 10 + 全收集。
+    - **现有类型（2026-09-25 起）**：`any` / `callsign` / `dxcc` / `grid` / `iota` / `state` / **`district`（呼号分区）**。`district` 取**中国 B 字头呼号**里紧跟前缀的那一位数字（`BY1AA→1`、`BG5UWQ→5`、`BH7CSA→7`；便携写法 `BY1AA/5` 只看主体），**国外呼号的数字不计入**（`JA1ABC`/`K1ABC` → 空），否则"收集 0~9 区"会被国外台灌水。典型用法：清单 `0,1,2,3,4,5,6,7,8,9` + 收集型 + 全收集。
+    - **筛选条件与目标对象是「与」的关系**：`evaluateAward` 先跑 Step 1 `rules.filters`（基础筛选），再跑 Step 2 目标匹配。所以"DXCC ID=318（只算中国台）+ 目标=呼号分区 0~9"直接可用（实测：1538 条日志 → 515 条中国台 → 10/10 达标）。
+    - `filters[].field` 支持 `band/mode/call/dxcc/state/gridsquare/iota/freq/station_callsign` + **`district`**（2026-09-25 新增，引擎里现算呼号区号，不是 ADIF 字段）。操作符 `eq/neq/contains` 一直有，**`gt`/`lt` 以前只在下拉里、引擎完全没实现（选了等于没选）**，2026-09-25 才补上（两端可转数字按数值比，否则字符串比）。新增筛选字段时若它不是 ADIF 字段，必须在引擎里显式解析，否则会"选了但静默不生效"。
+    - ⚠️ **收集型 + 勾「必须全收集」时，分数门槛应等于清单条数**（`scoreTargetOf`）：`target_score` 取 `breakdown.total_required` 而不是 `thresholds[].value`。否则用户新建"收集 0~9 区"奖状时阈值默认是 1，进度会显示 `0 / 1`（像通联 1 个就够）而实际必须集齐。计分型 + 全收集时 `value` 仍是分数门槛，另外还要求集齐。
     - 判定引擎另外产出 **`warnings` + `stats`**（`total_qsos` / `basic_filtered` / `target_matched`），进度区与明细页都会展示——凡是"进度是 0"必须在界面上说清是**目标没命中 / 基础筛选滤掉了 / 日志缺字段 / 没有日志**中的哪一种，不能只给一个 0。
 
 21. **★ 前端按需加载（动态 import）页面要做"旧版本自愈"**（2026-09-24 落地）。
