@@ -96,6 +96,17 @@ async function main() {
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length) throw new Error(`缺少必需环境变量：${missing.join(', ')}`);
 
+  // 安全加固（审计整改）：安装即强制强口令，避免沿用公开弱默认值被接管
+  const weakPasswords = new Set(['ham_pass', 'minioadmin123', 'ChangeMe_123', 'changeme', 'password', 'admin', 'minioadmin']);
+  const adminPass = process.env.ADMIN_PASSWORD || '';
+  if (adminPass.length < 12) throw new Error('ADMIN_PASSWORD 至少 12 位');
+  if (weakPasswords.has(adminPass)) throw new Error('ADMIN_PASSWORD 不能使用公开弱口令');
+  const minioPass = process.env.MINIO_ROOT_PASSWORD || '';
+  if (minioPass.length < 8) throw new Error('MINIO_ROOT_PASSWORD 至少 8 位（MinIO 要求）');
+  if (weakPasswords.has(minioPass)) throw new Error('MINIO_ROOT_PASSWORD 不能使用公开弱口令');
+  const dbPass = process.env.POSTGRES_PASSWORD || '';
+  if (dbPass.length < 8) throw new Error('POSTGRES_PASSWORD 至少 8 位');
+
   await waitForMinio();
 
   const payload = {
@@ -107,6 +118,8 @@ async function main() {
     adminCall: process.env.ADMIN_CALLSIGN || 'ADMIN',
     adminPass: process.env.ADMIN_PASSWORD,
     adminPath: process.env.ADMIN_PATH || 'admin',
+    // 若设置了 INSTALL_TOKEN，安装接口需要携带它（防公网抢注）
+    installToken: process.env.INSTALL_TOKEN || undefined,
     minioBucket: process.env.MINIO_BUCKET || 'ham-awards',
     useHttps: false,
     // 容器内访问用服务名；浏览器读图用的对外地址由 app 的 MINIO_PUBLIC_* 环境变量决定

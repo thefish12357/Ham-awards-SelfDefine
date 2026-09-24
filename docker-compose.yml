@@ -11,14 +11,15 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ham}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ham_pass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-ham_awards}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      # 只为本机用客户端连库而暴露，容器之间走 5432
-      - "${DB_HOST_PORT:-55432}:5432"
+      # 只为本机用客户端连库而暴露，且默认仅绑定 127.0.0.1（容器之间仍走 5432）；
+      # 如需从其他机器访问，请显式改成 0.0.0.0:${DB_HOST_PORT}:5432 并自行做好防火墙。
+      - "127.0.0.1:${DB_HOST_PORT:-55432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ham} -d ${POSTGRES_DB:-ham_awards}"]
       interval: 5s
@@ -35,13 +36,13 @@ services:
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - miniodata:/data
     ports:
-      - "${MINIO_HOST_PORT:-9000}:9000"        # S3 API
-      - "${MINIO_CONSOLE_HOST_PORT:-9001}:9001" # Web 控制台
+      - "127.0.0.1:${MINIO_HOST_PORT:-9000}:9000"        # S3 API（默认仅本机）
+      - "127.0.0.1:${MINIO_CONSOLE_HOST_PORT:-9001}:9001" # Web 控制台（默认仅本机）
 
   # ---------------- 应用（Express 单体，托管 dist） ----------------
   app:
@@ -67,7 +68,9 @@ services:
     volumes:
       - appdata:/data
     ports:
-      - "${APP_HOST_PORT:-9993}:9993"
+      # 默认仅绑定 127.0.0.1：应用只对本机浏览器可见，容器间仍可通过服务名 app:9993 通信
+      # （installer 容器走内网调用安装接口，不受影响）。公网暴露前务必加反向代理 + HTTPS + 防火墙。
+      - "127.0.0.1:${APP_HOST_PORT:-9993}:9993"
 
   # ---------------- 一次性初始化（跑完即退出） ----------------
   # 只用 node 官方镜像 + 挂载脚本，不依赖 app 镜像，避免 compose 去“拉”本地构建的镜像。
@@ -84,15 +87,17 @@ services:
       DB_HOST: db
       DB_PORT: "5432"
       DB_USER: ${POSTGRES_USER:-ham}
-      DB_PASS: ${POSTGRES_PASSWORD:-ham_pass}
+      DB_PASS: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB:-ham_awards}
       MINIO_ENDPOINT: minio
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-ham-awards}
       ADMIN_CALLSIGN: ${ADMIN_CALLSIGN:-ADMIN}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-ChangeMe_123}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      # 可选：设置后安装接口需携带此一次性 bootstrap 令牌（推荐容器部署设置强随机值）
+      INSTALL_TOKEN: ${INSTALL_TOKEN:-}
       ADMIN_PATH: ${ADMIN_PATH:-admin}
     volumes:
       # 只读挂载脚本，改完直接 compose up 即可，无需重建镜像

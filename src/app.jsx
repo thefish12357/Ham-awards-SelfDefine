@@ -2725,21 +2725,27 @@ export default function App() {
     // OAuth 回调/绑定（M5）：后端 302 跳回，URL 带 token 或 bind_token，
     // 必须在 system-status 初始化之前处理，避免竞态覆盖。
     const hash = window.location.hash || '';
-    if (hash.startsWith('#/oauth/callback')) {
+    if (hash.startsWith('#/oauth/code')) {
       const q = new URLSearchParams(hash.split('?')[1] || '');
-      const token = q.get('token');
-      const userStr = q.get('user');
-      if (token && userStr) {
-        try {
-          const u = JSON.parse(userStr);
-          localStorage.setItem('ham_token', token);
-          localStorage.setItem('ham_user', JSON.stringify(u));
-          setUser(u);
-          setView('main');
-          setSubView(DEFAULT_ROUTE);
-          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/dashboard`);
-          return;
-        } catch (e) { /* 落到正常初始化 */ }
+      const code = q.get('code');
+      if (code) {
+        // 安全加固（审计整改）：URL 里只有一次性短码，POST 向后端换 JWT，
+        // 避免长期 JWT 暴露在地址栏/历史/浏览器扩展可见范围。
+        apiFetch('/auth/oauth/code', { method: 'POST', body: JSON.stringify({ code }) })
+          .then((data) => {
+            if (data && data.token && data.user) {
+              localStorage.setItem('ham_token', data.token);
+              localStorage.setItem('ham_user', JSON.stringify(data.user));
+              setUser(data.user);
+              setView('main');
+              setSubView(DEFAULT_ROUTE);
+              window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/dashboard`);
+            } else {
+              setView('auth');
+            }
+          })
+          .catch(() => setView('auth'));
+        return;
       }
     }
     if (hash.startsWith('#/oauth/complete')) {

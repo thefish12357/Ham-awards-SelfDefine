@@ -75,9 +75,10 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   // 一次性 state 与「待绑定」会话，进程内存即可（重启即清，不落盘）
   const states = new Map(); // state -> expiresAt
   const pendingBinds = new Map(); // bindToken -> { expiresAt, provider, sub, callsign, profile }
+  const sessionCodes = new Map(); // 一次性换码 code -> { userId, exp }（短时效，防长期 JWT 进 URL）
 
   const signToken = (user) =>
-    jwt.sign({ id: user.id, role: user.role, callsign: user.callsign }, getConfig().jwtSecret, { expiresIn: '24h' });
+    jwt.sign({ id: user.id, role: user.role, callsign: user.callsign, tv: user.token_version ?? 0 }, getConfig().jwtSecret, { expiresIn: '24h' });
 
   // ---- 前端查询：当前启用的 OAuth 提供方（登录页据此渲染按钮）----
   router.get('/providers', (req, res) => {
@@ -153,7 +154,12 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       const bound = await db().query('SELECT * FROM users WHERE oauth_provider=$1 AND oauth_sub=$2', [cfg.provider, sub]);
       if (bound.rows.length > 0) {
         const u = bound.rows[0];
-        return res.redirect(`${frontendOrigin(cfg)}/#/oauth/callback?token=${signToken(u)}&user=${encodeURIComponent(JSON.stringify(publicUser(u)))}`);
+        // 安全加固（审计整改）：不直接把长期 JWT 放进 URL（会进浏览器历史/扩展/截图）。
+        // 改为签发一次性短时效换码，前端再 POST /code 换取 JWT。
+        const oauthCode = crypto.randomBytes(16).toString('hex');
+        sessionCodes.set(oauthCode, { userId: u.id, exp: Date.now() + 60_000 });
+        for (const [k, v] of sessionCodes) if (v.exp < Date.now()) sessionCodes.delete(k);
+        return res.redirect(`${frontendOrigin(cfg)}/#/oauth/code?code=${oauthCode}`);
       }
 
       // 4) 未绑定 → 跳「补全信息」页，由用户确认呼号。
@@ -241,6 +247,27 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       await audit(req, { action: 'invite.use', targetType: 'invite', targetId: usedCode, detail: { callsign: u.callsign, channel: 'hamcq' } });
     }
     return res.json({ token: signToken(u), user: publicUser(u) });
+  });
+
+  // ---- 一次性换码：前端拿 URL 里的 code 来换 JWT（code 不长期留在 URL/历史里）----
+  router.post('/code', async (req, res) => {
+    const { code } = (req.body || {});
+    if (!code) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少换码' });
+    const entry = sessionCodes.get(code);
+    if (!entry || entry.exp < Date.now()) {
+      sessionCodes.delete(code);
+      return res.status(401).json({ error: 'CODE_INVALID', message: '登录码无效或已过期，请重新登录' });
+    }
+    sessionCodes.delete(code); // 一次性消费
+    try {
+      const r = await db().query('SELECT * FROM users WHERE id=$1', [entry.userId]);
+      const u = r.rows[0];
+      if (!u) return res.status(401).json({ error: 'USER_NOT_FOUND', message: '账号不存在' });
+      if (u.status === 'disabled') return res.status(401).json({ error: 'ACCOUNT_DISABLED', message: '账号已被禁用' });
+      res.json({ token: signToken(u), user: publicUser(u) });
+    } catch (e) {
+      res.status(500).json({ error: 'SERVER_ERROR' });
+    }
   });
 
   return router;

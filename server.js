@@ -32,12 +32,60 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+
+// 7. 安全加固（审计整改）：收紧 CORS，仅允许配置的可信源，默认拒绝跨域
+const corsOrigins = (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const corsOptions = corsOrigins.length ? { origin: corsOrigins } : { origin: false };
+app.use(cors(corsOptions));
+
+// 请求体上限从 50MB 降到 2MB，缓解未认证大请求造成的 DoS
+app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// 配置上传
-const upload = multer({ dest: 'uploads/' });
+// 配置上传：日志 ADIF 与奖状底图分别限大小；底图额外限制为图片类型，避免磁盘耗尽
+const upload = multer({ dest: 'uploads/', limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+const uploadBg = multer({
+  dest: 'uploads/',
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => cb(null, /^image\//.test(file.mimetype)),
+});
+
+// ---- 安全辅助函数 ----
+function clientIp(req) {
+  const xff =
+    req.headers['cf-connecting-ip'] ||
+    req.headers['x-real-ip'] ||
+    (req.headers['x-forwarded-for'] && String(req.headers['x-forwarded-for']).split(',')[0].trim());
+  return xff || req.ip;
+}
+// 仅允许本机回环或私有网段（含 Docker 网桥 172.16-31）——公网来源一律拒绝
+function isPrivateOrLoopback(ip) {
+  if (!ip) return false;
+  const v = String(ip).replace('::ffff:', '');
+  if (v === '::1' || v === '127.0.0.1' || v === 'localhost') return true;
+  if (/^10\./.test(v)) return true;
+  if (/^192\.168\./.test(v)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(v)) return true;
+  if (/^169\.254\./.test(v)) return true;
+  return false;
+}
+// 极简内存限流（无外部依赖）：按 key（多为 IP）滑动窗口计数
+const rateLimitStore = new Map();
+function rateLimit({ windowMs, max, keyFn }) {
+  return (req, res, next) => {
+    const key = keyFn(req);
+    const now = Date.now();
+    const hits = (rateLimitStore.get(key) || []).filter((t) => now - t < windowMs);
+    if (hits.length >= max) {
+      return res.status(429).json({ error: 'RATE_LIMITED', message: '请求过于频繁，请稍后再试' });
+    }
+    hits.push(now);
+    rateLimitStore.set(key, hits);
+    next();
+  };
+}
+const loginLimiter = rateLimit({ windowMs: 5 * 60 * 1000, max: 10, keyFn: (req) => 'login:' + clientIp(req) });
+const installLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 20, keyFn: (req) => 'install:' + clientIp(req) });
 
 // 允许用环境变量把配置指向容器卷（Docker 部署），默认仍为项目根目录下的 config.json
 const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, 'config.json');
@@ -215,6 +263,10 @@ async function upgradeSchema() {
     if (!userColNames.includes('oauth_provider')) await client.query("ALTER TABLE users ADD COLUMN oauth_provider VARCHAR(32)");
     if (!userColNames.includes('oauth_sub')) await client.query("ALTER TABLE users ADD COLUMN oauth_sub VARCHAR(128)");
     if (!userColNames.includes('oauth_raw')) await client.query("ALTER TABLE users ADD COLUMN oauth_raw JSONB");
+    // token_version：改密/改角色/禁用时自增，使旧 JWT 立即失效（审计整改：JWT 角色即时失效）
+    if (!userColNames.includes('token_version')) await client.query("ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0");
+    // status：账号状态（active/disabled）。禁用账号后其旧令牌立即失效（审计整改）。
+    if (!userColNames.includes('status')) await client.query("ALTER TABLE users ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'active'");
     await client.query("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL");
     await client.query("CREATE UNIQUE INDEX IF NOT EXISTS users_oauth_uniq ON users(oauth_provider, oauth_sub) WHERE oauth_provider IS NOT NULL");
 
@@ -446,6 +498,7 @@ const verifyToken = async (req, res, next) => {
   // 公开路径（M3 新增）：
   //   /api/verify/*  奖状真伪校验 + 二维码，供拿到纸质/PDF 奖状的人扫码查验，必须免登录
   //   /api/media     同源图片代理，供前端 canvas 导出 PDF 时避免跨域污染画布
+  //   /api/auth/oauth/*  OAuth 回调/换码，免登录（换码用一次性短码保护）
   if (req.path.startsWith('/api/verify') || req.path.startsWith('/api/media') || req.path.startsWith('/api/auth/oauth')) return next();
 
   const token = req.headers['authorization'];
@@ -458,7 +511,25 @@ const verifyToken = async (req, res, next) => {
     return res.status(401).json({ error: 'TOKEN_INVALID', message: '无效或过期的令牌' }); 
   }
 
-  req.user = decoded; 
+  // 安全加固（审计整改）：每次鉴权都实时查库，确保管理员被降权/禁用或改密后旧令牌立即失效，
+  // 不再只信任 JWT 里写死的 24h role。token_version 在改密/改角色/禁用时自增。
+  if (dbPool && decoded && decoded.id) {
+    try {
+      const r = await dbPool.query('SELECT id, role, status, token_version FROM users WHERE id=$1', [decoded.id]);
+      const row = r.rows[0];
+      if (!row) return res.status(401).json({ error: 'TOKEN_INVALID', message: '账号不存在' });
+      if (row.status === 'disabled') return res.status(401).json({ error: 'ACCOUNT_DISABLED', message: '账号已被禁用' });
+      if (row.token_version !== (decoded.tv ?? 0)) {
+        return res.status(401).json({ error: 'TOKEN_REVOKED', message: '凭证已失效，请重新登录' });
+      }
+      req.user = { id: row.id, role: row.role, callsign: decoded.callsign, tokenVersion: row.token_version };
+    } catch (e) {
+      return res.status(401).json({ error: 'TOKEN_INVALID', message: '凭证校验失败' });
+    }
+  } else {
+    req.user = decoded;
+  }
+
   if (dbPool && req.user && req.user.id) {
       dbPool.query('UPDATE users SET last_seen = NOW() WHERE id = $1', [req.user.id])
           .catch(err => console.error("Update last_seen failed:", err.message));
@@ -561,8 +632,28 @@ app.get('/api/system-status', (req, res) => {
     });
 });
 
-app.post('/api/install', async (req, res) => {
+// 防抢注：安装进行中的内存锁（避免并发竞态），进程级即可（单实例）
+let installInProgress = false;
+app.post('/api/install', installLimiter, async (req, res) => {
   if (appConfig.installed) return res.status(400).json({ error: '系统已安装' });
+  if (installInProgress) return res.status(409).json({ error: 'INSTALL_IN_PROGRESS', message: '已有安装进程进行中' });
+
+  // 安全加固（审计整改）：防公网抢注。
+  //  - 若配置了 INSTALL_TOKEN：必须携带正确的一次性 bootstrap 令牌（生产/容器部署推荐）；
+  //  - 否则仅允许本机回环或私有网段（本地向导 / Docker 内网），公网来源直接拒绝。
+  const expectedToken = process.env.INSTALL_TOKEN;
+  const providedToken = req.body.installToken || req.get('x-install-token') || req.query.token;
+  if (expectedToken) {
+    const a = Buffer.from(providedToken || '');
+    const b = Buffer.from(expectedToken);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return res.status(403).json({ error: 'INSTALL_TOKEN_REQUIRED', message: '需要正确的安装令牌' });
+    }
+  } else if (!isPrivateOrLoopback(req.ip)) {
+    return res.status(403).json({ error: 'INSTALL_LOCAL_ONLY', message: '安装接口仅允许本机或内网访问' });
+  }
+
+  installInProgress = true;
   const { dbHost, dbPort, dbUser, dbPass, dbName, adminCall, adminPass, adminPath, minio, useHttps, minioBucket } = req.body;
   
   let tempPool = new Pool({ user: dbUser, host: dbHost, database: dbName, password: dbPass, port: dbPort });
@@ -603,10 +694,10 @@ app.post('/api/install', async (req, res) => {
     
     await upgradeSchema();
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: err.message }); } finally { if (client) client.release(); }
+  } catch (err) { res.status(500).json({ error: err.message }); } finally { if (client) client.release(); installInProgress = false; }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
     const { callsign, password, code } = req.body;
     try {
         const result = await dbPool.query(`SELECT * FROM users WHERE callsign = $1`, [callsign.toUpperCase()]);
@@ -634,13 +725,13 @@ app.post('/api/auth/login', async (req, res) => {
             }
         }
 
-        const token = jwt.sign({ id: user.id, role: user.role, callsign: user.callsign }, appConfig.jwtSecret, { expiresIn: '24h' });
+        const token = jwt.sign({ id: user.id, role: user.role, callsign: user.callsign, tv: user.token_version ?? 0 }, appConfig.jwtSecret, { expiresIn: '24h' });
         await logAudit(dbPool, req, { action: 'auth.login', targetType: 'user', targetId: user.id, actor: { id: user.id, callsign: user.callsign, role: user.role } });
         res.json({ token, user: { id: user.id, callsign: user.callsign, role: user.role, has2fa: !!user.totp_secret } });
     } catch (e) { console.error(e); res.status(500).json({ error: 'SERVER_ERROR' }); }
 });
 
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', loginLimiter, async (req, res) => {
     const { callsign, password, invite_code: inviteCode } = req.body;
     const callsignUp = String(callsign || '').toUpperCase();
     try {
@@ -812,6 +903,8 @@ app.post('/api/user/password', verifyToken, require2FA, async (req, res) => {
         if(!match) return res.status(401).json({error: '旧密码错误'});
         const hash = await bcrypt.hash(newPassword, 10);
         await client.query('UPDATE users SET password_hash=$1 WHERE id=$2', [hash, req.user.id]);
+        // 改密后立即令旧令牌失效（强制重新登录）
+        await client.query('UPDATE users SET token_version = token_version + 1 WHERE id=$1', [req.user.id]);
         await logAudit(dbPool, req, { action: 'user.password_change', targetType: 'user', targetId: req.user.id });
         res.json({ success: true });
     } finally { client.release(); }
@@ -1038,10 +1131,19 @@ app.post('/api/admin/awards/audit', verifyToken, verifyAdmin, async (req, res) =
 // 创建/更新奖状 (奖状管理员)
 app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
     const { id, name, description, rules, layout, bg_url, status } = req.body;
-    
+
+    // 安全加固（审计整改）：状态流转白名单。
+    //  - approved 只能由系统管理员审核接口（/api/admin/awards/audit）设置，普通奖状管理员绝不能直接发布；
+    //  - 普通奖状管理员仅允许保存草稿(draft)或提交审核(pending)。
+    const role = req.user.role;
+    const allowedStatus = role === 'admin' ? ['draft', 'pending', 'returned'] : ['draft', 'pending'];
+    if (!allowedStatus.includes(status)) {
+        return res.status(403).json({ error: 'STATUS_FORBIDDEN', message: `当前角色不允许将奖状设为「${status}」状态（发布须由系统管理员审核）` });
+    }
+
     // 生成/更新 tracking_id 和日志
     const trackingId = id ? undefined : crypto.randomBytes(4).toString('hex').toUpperCase();
-    
+
     const client = await dbPool.connect();
     try {
         await client.query('BEGIN');
@@ -1054,25 +1156,35 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
         };
 
         if (id) {
-            // 更新
-            const old = await client.query('SELECT audit_log FROM awards WHERE id=$1', [id]);
+            // 更新：越权防护
+            //  - 普通奖状管理员只能改自己创建的奖状（WHERE creator_id）；
+            //  - 系统管理员可编辑任意奖状（用于纠错），但仍受上面的 status 白名单约束（不能直接 approved）。
+            const whereSql = role === 'admin' ? 'id=$1' : 'id=$1 AND creator_id=$2';
+            const existParams = role === 'admin' ? [id] : [id, req.user.id];
+            const old = await client.query(`SELECT audit_log FROM awards WHERE ${whereSql}`, existParams);
+            if (old.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'FORBIDDEN', message: '无权修改该奖状（不属于你或不存在）' });
+            }
             let logs = old.rows[0].audit_log || [];
             logs.push(logEntry);
-            
-            // 如果是重新提交，清空拒绝原因
-            const rejectReasonUpdate = status === 'pending' ? null : undefined;
-            
+
             let updateSql = `UPDATE awards SET name=$1, description=$2, rules=$3, layout=$4, bg_url=$5, status=$6, audit_log=$7`;
             let params = [name, description, JSON.stringify(rules), JSON.stringify(layout), bg_url, status, JSON.stringify(logs)];
-            
+
             if (status === 'pending') {
                 updateSql += `, reject_reason=NULL`; // 清空原因
             }
-            
-            updateSql += ` WHERE id=$8`;
+
+            updateSql += role === 'admin' ? ` WHERE id=$8` : ` WHERE id=$8 AND creator_id=$9`;
             params.push(id);
-            
-            await client.query(updateSql, params);
+            if (role !== 'admin') params.push(req.user.id);
+
+            const upd = await client.query(updateSql, params);
+            if (upd.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: 'FORBIDDEN', message: '无权修改该奖状' });
+            }
             await logAudit(dbPool, req, {
                 action: 'award.save',
                 targetType: 'award',
@@ -1092,11 +1204,9 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
             }
             res.json({ success: true, id });
         } else {
-            // 新建
-            // 修复：必须把新建记录的 id 返回给前端，否则调用方拿不到新对象
-            // （既无法继续编辑，也无法在列表中定位刚创建的奖状）
+            // 新建：creator 永远是本人
             const inserted = await client.query(
-                `INSERT INTO awards (name, description, rules, layout, bg_url, status, creator_id, tracking_id, audit_log) 
+                `INSERT INTO awards (name, description, rules, layout, bg_url, status, creator_id, tracking_id, audit_log)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
                 [name, description, JSON.stringify(rules), JSON.stringify(layout), bg_url, status, req.user.id, trackingId, JSON.stringify([logEntry])]
             );
@@ -1136,7 +1246,7 @@ app.delete('/api/awards/:id', verifyToken, verifyAwardAdmin, async (req, res) =>
     res.json({ success: true });
 });
 
-app.post('/api/awards/upload-bg', verifyToken, verifyAwardAdmin, upload.single('bg'), async (req, res) => {
+app.post('/api/awards/upload-bg', verifyToken, verifyAwardAdmin, uploadBg.single('bg'), async (req, res) => {
     if (!req.file || !minioClient) return res.status(400).json({ error: 'Upload failed or MinIO not configured' });
     const meta = { 'Content-Type': req.file.mimetype };
     // ★ 绝不要用 originalname 做对象名：multipart 的 filename 被 multer/busboy 按 latin1 解码，
@@ -1452,6 +1562,8 @@ app.put('/api/admin/users/:id', verifyToken, verifyAdmin, require2FA, async (req
     if (password) { const hash = await bcrypt.hash(password, 10); updates.push(`password_hash=$${idx++}`); values.push(hash); }
     values.push(req.params.id);
     await dbPool.query(`UPDATE users SET ${updates.join(',')} WHERE id=$${idx}`, values);
+    // 改角色/重置密码后立即令该用户的旧令牌失效
+    await dbPool.query('UPDATE users SET token_version = token_version + 1 WHERE id=$1', [req.params.id]);
     await logAudit(dbPool, req, {
         action: 'admin.user_update',
         targetType: 'user',
@@ -1567,6 +1679,8 @@ app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async 
         const approved = action === 'approve';
         if (approved) {
             await client.query(`UPDATE users SET role = 'award_admin' WHERE id = $1`, [old.rows[0].user_id]);
+            // 角色提升后立即令旧令牌失效
+            await client.query('UPDATE users SET token_version = token_version + 1 WHERE id = $1', [old.rows[0].user_id]);
         }
         await client.query(
             `UPDATE role_requests SET status=$1, reviewer_id=$2, reviewed_at=NOW(), reject_reason=$3 WHERE id=$4`,
