@@ -56,6 +56,12 @@ export const ROUTES_BY_ROLE = {
   ],
   admin: [
     ...COMMON_ROUTES,
+    // admin 同样可以建奖状并发起审核（2026-09-24），所以奖状制作这几条也要放行，
+    // 否则菜单点了会被守卫踢回 dashboard
+    'award_create',
+    'award_drafts',
+    'award_returned',
+    'award_audit_list',
     'admin_audit',
     'admin_overview',
     'issuanceManager',

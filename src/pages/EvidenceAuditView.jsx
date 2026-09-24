@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { Loader2, Check, X, RefreshCw, Inbox } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Loader2, Check, X, RefreshCw, Inbox, ZoomIn, ZoomOut, ExternalLink } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch.js';
 import { confirmDialog, promptDialog } from '../lib/confirm.jsx';
+import { evidenceType, evidenceTypeLabel } from '../lib/evidenceTypes.js';
 
 /**
  * 实物材料审核页（仅 admin）—— M4
@@ -12,6 +13,49 @@ const EvidenceAuditView = () => {
     const [items, setItems] = useState([]);
     const [loading, setLoading] = useState(true);
     const [reviewingId, setReviewingId] = useState(null);
+    // 大图预览（2026-09-24）：卡片照片只有 14rem 高的缩略图，QSL 上的字根本看不清，
+    //   管理员必须能放大核对呼号/日期。这里做一个轻量的 lightbox（滚轮 + 按钮 + 键盘）。
+    const [preview, setPreview] = useState(null); // { url, title }
+    const [zoom, setZoom] = useState(1);
+    const stageRef = useRef(null);
+
+    const ZOOM_MIN = 0.4;
+    const ZOOM_MAX = 5;
+    const clampZoom = (z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100));
+    const zoomBy = useCallback(
+        (delta) => setZoom((z) => clampZoom(z + delta)),
+        [],
+    );
+
+    // Esc 关闭、+/- 缩放
+    useEffect(() => {
+        if (!preview) return;
+        const onKey = (e) => {
+            if (e.key === 'Escape') setPreview(null);
+            else if (e.key === '+' || e.key === '=') zoomBy(0.25);
+            else if (e.key === '-' || e.key === '_') zoomBy(-0.25);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [preview, zoomBy]);
+
+    // 滚轮缩放：React 的 onWheel 是被动监听，preventDefault 会失效，所以用原生 listener
+    useEffect(() => {
+        const el = stageRef.current;
+        if (!preview || !el) return;
+        const onWheel = (e) => {
+            e.preventDefault();
+            zoomBy(e.deltaY < 0 ? 0.15 : -0.15);
+        };
+        el.addEventListener('wheel', onWheel, { passive: false });
+        return () => el.removeEventListener('wheel', onWheel);
+    }, [preview, zoomBy]);
+
+    const openPreview = (ev) => {
+        if (!ev.photo_url) return;
+        setZoom(1);
+        setPreview({ url: ev.photo_url, title: `#${ev.id} · ${ev.user_callsign} · ${evidenceTypeLabel(ev.type)}` });
+    };
 
     const load = () => {
         setLoading(true);
@@ -23,11 +67,13 @@ const EvidenceAuditView = () => {
 
     useEffect(() => { load(); }, []);
 
-    const review = async (id, action) => {
+    const review = async (ev, action) => {
+        const id = ev.id;
+        const label = evidenceTypeLabel(ev.type);
         let reason = '';
         if (action === 'reject') {
             const r = await promptDialog({
-                title: '驳回实物材料',
+                title: `驳回${label}`,
                 message: '请填写驳回原因，申请人会收到这条说明。',
                 detail: '照片会在驳回后立即从服务器删除，只保留这条驳回说明。',
                 placeholder: '例如：卡片信息不清晰 / 与填写的通联不符',
@@ -38,9 +84,18 @@ const EvidenceAuditView = () => {
             reason = r;
         } else {
             const ok = await confirmDialog({
-                title: '通过实物材料',
-                message: '确认通过这份实物卡片材料？',
-                detail: '通过后会按卡片填写的信息匹配该用户的通联日志并打上「已确认」标记；照片随后立即从服务器删除，只保留审核结论。',
+                title: `通过${label}`,
+                message: `确认通过这份${label}？`,
+                // QSO 卡会写「已确认」标记；Eyeball / SWL 是收集凭证，不动日志
+                detail: evidenceType(ev.type).value === 'qsl_card'
+                    ? [
+                        '通过后会先按填写的信息匹配该用户的通联日志并打上「已确认」标记；',
+                        ev.match_date
+                            ? '若日志里没有这条通联，会按卡片信息为该用户自动补建一条（可用于其它奖状申请）。'
+                            : '⚠️ 这份材料**没填通联日期**，无法去重也无法判定，因此不会补建任何日志 —— 只有审核结论入库。',
+                        '照片随后立即从服务器删除，只保留审核结论。',
+                      ].join('\n')
+                    : '该类型属于收集凭证（不是通联），通过后**不会**改动任何日志；照片随后立即从服务器删除，只保留审核结论。',
                 confirmText: '通过',
             });
             if (!ok) return;
@@ -52,9 +107,18 @@ const EvidenceAuditView = () => {
                 body: JSON.stringify({ action, reason }),
             });
             if (action === 'approve') {
-                alert(res.matched_qso > 0
-                    ? `已通过，并自动将 ${res.matched_qso} 条日志标记为「已确认」`
-                    : '已通过（未匹配到对应日志，未做确认标记）');
+                const matched = res.matched_qso || 0;
+                const created = res.created_qso || 0;
+                // 三种结果要让管理员当场看明白，否则会像用户一样"以为功能没生效"
+                alert(
+                    matched > 0
+                        ? `已通过，并自动将 ${matched} 条日志标记为「已确认」`
+                        : created > 0
+                            ? '已通过，并已按卡片信息为该用户新增 1 条日志（可在「全部日志」看到，也能用于其它奖状申请）'
+                            : evidenceType(ev.type).value === 'qsl_card'
+                                ? '已通过。这份材料没填通联日期（也没匹配到已有日志），因此**没有新建任何日志**，仅有审核结论。'
+                                : '已通过。该类型属于收集凭证，不动任何日志。',
+                );
             }
             load();
         } catch (err) {
@@ -92,7 +156,18 @@ const EvidenceAuditView = () => {
                         <div key={ev.id} className="bg-white rounded-2xl border shadow-sm overflow-hidden flex flex-col">
                             <div className="h-56 bg-slate-100 flex items-center justify-center overflow-hidden">
                                 {ev.photo_url ? (
-                                    <img src={ev.photo_url} alt="实物卡片" className="w-full h-full object-contain" />
+                                    // 点缩略图 → 打开大图（可滚轮/按钮/键盘缩放）
+                                    <button
+                                        type="button"
+                                        onClick={() => openPreview(ev)}
+                                        title="点击放大查看"
+                                        className="group relative h-full w-full cursor-zoom-in"
+                                    >
+                                        <img src={ev.photo_url} alt="实物卡片" className="w-full h-full object-contain" />
+                                        <span className="pointer-events-none absolute bottom-2 right-2 rounded bg-black/60 px-2 py-1 text-[11px] font-bold text-white opacity-0 transition-opacity group-hover:opacity-100">
+                                            <ZoomIn size={12} className="mr-1 inline -mt-0.5" />点击放大
+                                        </span>
+                                    </button>
                                 ) : (
                                     <span className="text-xs text-slate-400">图片不可用（可能已删除）</span>
                                 )}
@@ -102,14 +177,23 @@ const EvidenceAuditView = () => {
                                     <span className="font-bold text-sm">呼号 {ev.user_callsign}</span>
                                     <span className="text-xs text-slate-400">#{ev.id}</span>
                                 </div>
-                                <div className="text-xs text-slate-500">
-                                    奖状：<span className="font-semibold text-slate-700">{ev.award_name}</span>
+                                <div className="flex items-center gap-2">
+                                    {/* 收集要素类型：QSO 卡才参与「已确认」标记，Eyeball/SWL 只是收集凭证 */}
+                                    <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-600">
+                                        {evidenceTypeLabel(ev.type)}
+                                    </span>
+                                    <span className="text-xs text-slate-500">
+                                        奖状：<span className="font-semibold text-slate-700">{ev.award_name}</span>
+                                    </span>
                                 </div>
                                 <div className="text-xs text-slate-700 bg-blue-50 rounded p-2">
-                                    卡片通联：<b>{ev.match_callsign || '—'}</b>
+                                    {evidenceType(ev.type).value === 'eyeball' ? '当面交换：' : evidenceType(ev.type).value === 'swl' ? '收听记录：' : '卡片通联：'}
+                                    <b>{ev.match_callsign || '—'}</b>
                                     {ev.match_band ? ` · ${ev.match_band}` : ''}
                                     {ev.match_mode ? ` · ${ev.match_mode}` : ''}
-                                    {ev.match_date ? ` · ${ev.match_date}` : ''}
+                                    {/* 时间统一按 UTC 显示；若申请人填的是 BJT 等时区，附注他填的是哪个 */}
+                                    {ev.match_date ? ` · ${ev.match_date}${ev.match_time ? ' ' + String(ev.match_time).slice(0, 2) + ':' + String(ev.match_time).slice(2) : ''} UTC` : ''}
+                                    {ev.match_time && ev.match_tz_offset ? `（申请人按 UTC${ev.match_tz_offset > 0 ? '+' : '-'}${Math.abs(ev.match_tz_offset) / 60} 填写）` : ''}
                                 </div>
                                 {ev.note && <div className="text-xs text-slate-500 bg-slate-50 rounded p-2">备注：{ev.note}</div>}
                                 <div className="text-[11px] text-slate-400">
@@ -117,14 +201,14 @@ const EvidenceAuditView = () => {
                                 </div>
                                 <div className="flex gap-2 mt-auto pt-2">
                                     <button
-                                        onClick={() => review(ev.id, 'approve')}
+                                        onClick={() => review(ev, 'approve')}
                                         disabled={reviewingId === ev.id}
                                         className="flex-1 py-2 rounded-lg bg-green-600 text-white text-sm font-bold flex items-center justify-center gap-1 hover:bg-green-700 disabled:opacity-60"
                                     >
                                         {reviewingId === ev.id ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} 通过
                                     </button>
                                     <button
-                                        onClick={() => review(ev.id, 'reject')}
+                                        onClick={() => review(ev, 'reject')}
                                         disabled={reviewingId === ev.id}
                                         className="flex-1 py-2 rounded-lg bg-red-500 text-white text-sm font-bold flex items-center justify-center gap-1 hover:bg-red-600 disabled:opacity-60"
                                     >
@@ -134,6 +218,51 @@ const EvidenceAuditView = () => {
                             </div>
                         </div>
                     ))}
+                </div>
+            )}
+
+            {/* 大图预览（2026-09-24）：缩略图只有 14rem 高，QSL 上的小字看不清，
+                管理员必须能放大核对呼号/日期。滚轮缩放 / +/- 快捷键 / Esc 关闭 / 原图新窗口。
+                —— 预览用的是上传时剥离过 EXIF 的那份，不含 GPS。 */}
+            {preview && (
+                <div className="fixed inset-0 z-[300] flex flex-col bg-black/85" onClick={() => setPreview(null)}>
+                    <div
+                        className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-white"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="truncate text-sm font-bold">{preview.title}</div>
+                        <div className="flex items-center gap-2">
+                            <button onClick={() => zoomBy(-0.25)} title="缩小（-）" className="rounded-lg bg-white/10 p-2 hover:bg-white/20"><ZoomOut size={16} /></button>
+                            <span className="w-14 text-center font-mono text-xs">{Math.round(zoom * 100)}%</span>
+                            <button onClick={() => zoomBy(0.25)} title="放大（+）" className="rounded-lg bg-white/10 p-2 hover:bg-white/20"><ZoomIn size={16} /></button>
+                            <button onClick={() => setZoom(1)} className="rounded-lg bg-white/10 px-3 py-2 text-xs font-bold hover:bg-white/20">适应屏幕</button>
+                            <a
+                                href={preview.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="flex items-center gap-1 rounded-lg bg-white/10 px-3 py-2 text-xs font-bold hover:bg-white/20"
+                            >
+                                <ExternalLink size={14} /> 原图新窗口
+                            </a>
+                            <button onClick={() => setPreview(null)} className="flex items-center gap-1 rounded-lg bg-white/10 px-3 py-2 text-xs font-bold hover:bg-white/20">
+                                <X size={14} /> 关闭 (Esc)
+                            </button>
+                        </div>
+                    </div>
+                    <div ref={stageRef} className="flex-1 overflow-hidden p-4">
+                        <div className="flex h-full w-full items-center justify-center">
+                            <img
+                                src={preview.url}
+                                alt="实物材料大图"
+                                onClick={(e) => e.stopPropagation()}
+                                style={{ transform: `scale(${zoom})`, transformOrigin: 'center center', transition: 'transform .12s ease-out' }}
+                                className="max-h-full max-w-full object-contain"
+                            />
+                        </div>
+                    </div>
+                    <div className="px-4 pb-4 text-center text-xs text-white/60">
+                        滚轮缩放 · +/- 快捷键 · 点击空白处或 Esc 关闭
+                    </div>
                 </div>
             )}
         </div>
