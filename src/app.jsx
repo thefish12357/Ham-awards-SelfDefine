@@ -199,6 +199,9 @@ function InstallView({ onComplete }) {
 const DashboardView = ({ user }) => {
     const [stats, setStats] = useState(null);
     const [error, setError] = useState(null);
+    const [ctyStats, setCtyStats] = useState(null);
+    const [ctyLoading, setCtyLoading] = useState(false);
+    const [ctyMsg, setCtyMsg] = useState('');
 
     useEffect(() => {
         apiFetch('/stats/dashboard')
@@ -210,6 +213,30 @@ const DashboardView = ({ user }) => {
                 }
             });
     }, []);
+
+    // 管理员：拉取 DXCC 前缀库（cty.dat）当前解析统计
+    useEffect(() => {
+        if (user.role !== 'admin') return;
+        apiFetch('/admin/cty/stats')
+            .then(setCtyStats)
+            .catch(err => console.error('cty stats', err));
+    }, []);
+
+    // 管理员：从 country-files.com 拉取最新 cty.dat 并热加载（无需重启）
+    const refreshCty = async () => {
+        if (ctyLoading) return;
+        setCtyLoading(true);
+        setCtyMsg('');
+        try {
+            const r = await apiFetch('/admin/cty/refresh', { method: 'POST' });
+            setCtyStats(r.stats);
+            setCtyMsg(r.updated ? '✅ 已更新到最新版' : 'ℹ️ 已是最新，无需更新');
+        } catch (e) {
+            setCtyMsg('❌ 更新失败：' + (e.message || '网络错误'));
+        } finally {
+            setCtyLoading(false);
+        }
+    };
 
     if (error) return <div className="p-8 text-center text-red-500 bg-red-50 rounded-lg border border-red-200 m-8">❌ 统计数据加载失败: {error}</div>;
 
@@ -288,6 +315,34 @@ const DashboardView = ({ user }) => {
                             <StatCard title="已发布奖状" value={stats.awards_approved} icon={Award} color="bg-green-100 text-green-700" />
                             <StatCard title="待审核奖状" value={stats.awards_pending} icon={AlertCircle} color="bg-orange-100 text-orange-700" sub="需立即处理" />
                             <StatCard title="已颁发奖状总次" value={stats.awards_issued || 0} icon={Trophy} color="bg-yellow-100 text-yellow-700" />
+                        </div>
+                    </div>
+
+                    {/* 第三排：数据维护 */}
+                    <div>
+                        <h3 className="font-bold text-lg mb-4 text-slate-600">数据维护</h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+                                <div className="flex items-center justify-between gap-3 mb-3">
+                                    <div className="text-slate-500 text-xs font-bold uppercase whitespace-nowrap">DXCC 前缀库 (cty.dat)</div>
+                                    <button
+                                        onClick={refreshCty}
+                                        disabled={ctyLoading}
+                                        className="shrink-0 px-3 py-1.5 text-sm rounded-lg bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50"
+                                    >
+                                        {ctyLoading ? '更新中…' : '更新 DXCC 库'}
+                                    </button>
+                                </div>
+                                <div className="text-sm text-slate-600 space-y-1">
+                                    {ctyStats ? (
+                                        <div>实体 {ctyStats.entities} · 前缀 {ctyStats.prefixes} · 已映射 DXCC {ctyStats.dxccMapped}</div>
+                                    ) : (
+                                        <div className="text-slate-400">加载中…</div>
+                                    )}
+                                    <div className="text-xs text-slate-400">来源：country-files.com（FLDigi/WSJT-X/JTDX 共用）</div>
+                                    {ctyMsg && <div className="text-xs text-slate-500">{ctyMsg}</div>}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
