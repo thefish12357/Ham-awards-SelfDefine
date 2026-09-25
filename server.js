@@ -152,6 +152,28 @@ const DEFAULT_LOTW_CONFIG = {
     maxMemoryMb: 64,             // 所有临时会话合计的下载量上限
 };
 
+/**
+ * HamCQ OAuth 登录（M5）默认参数。
+ * 与 lotw 一样可在 config.json 的 oauth 段覆盖；另支持 OAUTH_* 环境变量覆盖，
+ * 便于临时隧道地址变化时只改 .env（无需进容器改 config.json）。
+ */
+const DEFAULT_OAUTH_CONFIG = {
+    enabled: false,                                   // 关掉时登录页不显示「使用 HamCQ 登录」
+    provider: 'hamcq',
+    label: '使用 HamCQ 登录',
+    clientId: '',
+    clientSecret: '',
+    authorizeUrl: 'https://forum.hamcq.cn/oauth/authorize',
+    tokenUrl: 'https://forum.hamcq.cn/oauth/token',
+    userInfoUrl: 'https://forum.hamcq.cn/api/user',
+    scope: 'user.read',
+    callsignField: 'username',                        // HamCQ 无独立呼号字段，用户名即呼号
+    userSubField: 'id',                               // 用 id 做稳定唯一标识（呼号会变）
+    redirectUri: '',
+    usePkce: false,                                   // 官方参数表无 PKCE
+    tokenRequestFormat: 'form',                       // HamCQ token 端点收 form-urlencoded
+};
+
 let appConfig = { 
     installed: false, 
     useHttps: false,
@@ -160,6 +182,7 @@ let appConfig = {
     jwtSecret: 'default_secret_change_on_install',
     adminPath: 'admin',
     lotw: { ...DEFAULT_LOTW_CONFIG },
+    oauth: { ...DEFAULT_OAUTH_CONFIG },
     // 内测门禁：requireInvite=false 时注册/建号完全不看邀请码（默认关闭，不影响存量用户）
     beta: { requireInvite: false }
 };
@@ -251,6 +274,48 @@ function applyLotwConfig() {
   });
 }
 
+/**
+ * 用环境变量覆盖 config.json 的 oauth 段（容器部署推荐把凭据放 .env）。
+ * 只覆盖“显式设置且非空”的字段，避免把 config.json 里的有效值清空。
+ * 这样临时隧道地址变化时，改 .env 的 OAUTH_REDIRECT_URI 并重启即可，无需进容器改 JSON。
+ */
+function applyOauthEnvOverrides() {
+  const o = { ...(appConfig.oauth || {}) };
+  const pick = (key, val) => { if (val !== undefined && val !== null && val !== '') o[key] = val; };
+  pick('provider', process.env.OAUTH_PROVIDER);
+  pick('label', process.env.OAUTH_LABEL);
+  pick('clientId', process.env.OAUTH_CLIENT_ID);
+  pick('clientSecret', process.env.OAUTH_CLIENT_SECRET);
+  pick('authorizeUrl', process.env.OAUTH_AUTHORIZE_URL);
+  pick('tokenUrl', process.env.OAUTH_TOKEN_URL);
+  pick('userInfoUrl', process.env.OAUTH_USERINFO_URL);
+  pick('scope', process.env.OAUTH_SCOPE);
+  pick('redirectUri', process.env.OAUTH_REDIRECT_URI);
+  if (process.env.OAUTH_ENABLED !== undefined && process.env.OAUTH_ENABLED !== '') {
+    o.enabled = String(process.env.OAUTH_ENABLED).toLowerCase() === 'true';
+  }
+  // 没有 clientId 就拉不起授权：强制关闭，避免登录页出现点了必失败的按钮
+  if (!o.clientId) o.enabled = false;
+  appConfig.oauth = o;
+}
+
+/**
+ * 安装时把安装器/向导传来的 oauth 段收敛成合法配置。
+ * 缺 clientId 时一律 enabled=false，避免写入“半配置”导致按钮假显示。
+ */
+function normalizeInstallOauth(input) {
+  const o = { ...DEFAULT_OAUTH_CONFIG };
+  const src = input || {};
+  for (const k of ['provider', 'label', 'clientId', 'clientSecret', 'authorizeUrl', 'tokenUrl',
+                   'userInfoUrl', 'scope', 'callsignField', 'userSubField', 'redirectUri', 'tokenRequestFormat']) {
+    if (src[k] !== undefined && src[k] !== null && String(src[k]) !== '') o[k] = String(src[k]);
+  }
+  if (src.usePkce !== undefined) o.usePkce = !!src.usePkce;
+  o.enabled = src.enabled === true || src.enabled === 'true';
+  if (!o.clientId) o.enabled = false;
+  return o;
+}
+
 function loadConfig() {
   applyLotwConfig(); // 先用默认值套一遍，下面读到 config.json 后再覆盖
   if (fs.existsSync(CONFIG_FILE)) {
@@ -276,6 +341,8 @@ function loadConfig() {
   } else {
     appConfig.installed = false;
   }
+  // 环境变量覆盖最后执行，优先级高于 config.json（供 .env 管理 HamCQ 凭据/隧道地址）
+  applyOauthEnvOverrides();
 }
 
 async function upgradeSchema() {
@@ -783,12 +850,15 @@ app.post('/api/install', installLimiter, async (req, res) => {
         useHttps: !!useHttps,
         adminPath: adminPath || 'admin',
         // LoTW 直连参数（M1 新增），写进 config.json 方便直接调整
-        lotw: { ...DEFAULT_LOTW_CONFIG }
+        lotw: { ...DEFAULT_LOTW_CONFIG },
+        // OAuth（HamCQ）登录：安装时一并写入，避免重装后登录按钮消失（2026-09-25 踩坑）
+        oauth: normalizeInstallOauth(req.body.oauth)
     };
     
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2));
     appConfig = newConfig; 
     applyLotwConfig(); // 让 lotw 段的 TTL / 容量立即生效
+    applyOauthEnvOverrides(); // .env 里的 OAUTH_* 优先于安装负载
     dbPool = tempPool;
     
     if (appConfig.minio) {

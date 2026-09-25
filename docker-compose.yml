@@ -93,6 +93,16 @@ services:
       MINIO_PUBLIC_PORT: ${MINIO_HOST_PORT:-9000}
       # 生产站落地页“体验演示系统”按钮指向的公网地址（演示实例 profile 才会用到）
       DEMO_URL: ${DEMO_URL:-}
+      # OAuth（HamCQ）凭据：由 .env 注入，覆盖 config.json 的 oauth 段。
+      # 这样重装/换隧道地址都不怕（config.json 丢失也能靠这里恢复登录按钮）。
+      OAUTH_ENABLED: ${OAUTH_ENABLED:-}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-}
+      OAUTH_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:-}
+      OAUTH_AUTHORIZE_URL: ${OAUTH_AUTHORIZE_URL:-}
+      OAUTH_TOKEN_URL: ${OAUTH_TOKEN_URL:-}
+      OAUTH_USERINFO_URL: ${OAUTH_USERINFO_URL:-}
+      OAUTH_SCOPE: ${OAUTH_SCOPE:-}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - appdata:/data
@@ -131,6 +141,15 @@ services:
       # 可选：设置后安装接口需携带此一次性 bootstrap 令牌（推荐容器部署设置强随机值）
       INSTALL_TOKEN: ${INSTALL_TOKEN:-}
       ADMIN_PATH: ${ADMIN_PATH:-admin}
+      # OAuth（HamCQ）配置：首次安装即写入 config.json 的 oauth 段（未设 OAUTH_CLIENT_ID 则跳过）
+      OAUTH_ENABLED: ${OAUTH_ENABLED:-}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID:-}
+      OAUTH_CLIENT_SECRET: ${OAUTH_CLIENT_SECRET:-}
+      OAUTH_AUTHORIZE_URL: ${OAUTH_AUTHORIZE_URL:-}
+      OAUTH_TOKEN_URL: ${OAUTH_TOKEN_URL:-}
+      OAUTH_USERINFO_URL: ${OAUTH_USERINFO_URL:-}
+      OAUTH_SCOPE: ${OAUTH_SCOPE:-}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-}
     volumes:
       # 只读挂载脚本，改完直接 compose up 即可，无需重建镜像
       - ./docker/autoinstall.mjs:/scripts/autoinstall.mjs:ro

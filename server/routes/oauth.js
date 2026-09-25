@@ -132,6 +132,8 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: tokenBody.toString(),
+        // 防止 HamCQ 卡住时我们的回调页无限转圈（无超时 = 浏览器一直等）
+        signal: AbortSignal.timeout(15000),
       });
       if (!tokenRes.ok) {
         const t = await tokenRes.text().catch(() => '');
@@ -142,7 +144,9 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       if (!accessToken) throw new Error('授权服务器未返回 access_token');
 
       // 2) 取用户信息（HamCQ：token 走 query）
-      const uiRes = await fetch(`${cfg.userInfoUrl}?access_token=${encodeURIComponent(accessToken)}`);
+      const uiRes = await fetch(`${cfg.userInfoUrl}?access_token=${encodeURIComponent(accessToken)}`, {
+        signal: AbortSignal.timeout(15000),
+      });
       if (!uiRes.ok) throw new Error(`获取用户信息失败（${uiRes.status}）`);
       const profile = await uiRes.json();
 

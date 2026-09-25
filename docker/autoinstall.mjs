@@ -138,6 +138,28 @@ async function main() {
     },
   };
 
+  // OAuth（HamCQ）配置：凭据放 .env，安装时写进 config.json 的 oauth 段，
+  // 避免重装后 config.json 被清空导致登录按钮消失（2026-09-25 踩坑）。
+  // 演示实例一般不配 OAUTH_CLIENT_ID，故自动跳过（演示站不显示 HamCQ 登录）。
+  if (process.env.OAUTH_CLIENT_ID) {
+    payload.oauth = {
+      enabled: String(process.env.OAUTH_ENABLED ?? 'true').toLowerCase() !== 'false',
+      provider: process.env.OAUTH_PROVIDER || 'hamcq',
+      label: process.env.OAUTH_LABEL || '使用 HamCQ 登录',
+      clientId: process.env.OAUTH_CLIENT_ID,
+      clientSecret: process.env.OAUTH_CLIENT_SECRET || '',
+      authorizeUrl: process.env.OAUTH_AUTHORIZE_URL || 'https://forum.hamcq.cn/oauth/authorize',
+      tokenUrl: process.env.OAUTH_TOKEN_URL || 'https://forum.hamcq.cn/oauth/token',
+      userInfoUrl: process.env.OAUTH_USERINFO_URL || 'https://forum.hamcq.cn/api/user',
+      scope: process.env.OAUTH_SCOPE || 'user.read',
+      callsignField: 'username',
+      userSubField: 'id',
+      redirectUri: process.env.OAUTH_REDIRECT_URI || '',
+      usePkce: false,
+      tokenRequestFormat: 'form',
+    };
+  }
+
   await install(payload);
   log(`安装完成。管理员呼号：${payload.adminCall}，后台路径：/#/${payload.adminPath}`);
   log(`访问地址：本机 http://localhost:${process.env.APP_HOST_PORT || 9993}`);
