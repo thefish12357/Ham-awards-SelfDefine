@@ -2,6 +2,9 @@
 node_modules/
 dist/
 
+# 数据库定时备份（含全部账号与通联数据，严禁提交）
+backups/
+
 # 运行时生成的敏感配置（内含 jwtSecret / 数据库口令），严禁提交
 config.json
 config.demo*.json

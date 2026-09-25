@@ -9,7 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "node server.js",
-    "serve": "vite build && node server.js"
+    "serve": "vite build && node server.js",
+    "backup": "node scripts/backup-db.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
