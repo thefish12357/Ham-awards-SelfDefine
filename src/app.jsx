@@ -1772,6 +1772,8 @@ const SystemAdminAwardManager = ({ viewMode }) => {
 
             {/* Content Table */}
             <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+                {/* 窄屏表格横向滚动：表内容宽于卡片时让卡片内部可横滚，避免最右列被裁掉点不到（手机端反馈 2026-09-25） */}
+                <div className="overflow-x-auto">
                 <table className="w-full text-left">
                     <thead className="bg-slate-50 border-b">
                         <tr>
@@ -1812,6 +1814,7 @@ const SystemAdminAwardManager = ({ viewMode }) => {
                         ))}
                     </tbody>
                 </table>
+                </div>
             </div>
 
             {actionModal && (
@@ -1963,6 +1966,8 @@ const IssuanceManager = () => {
                     <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{activeList.length}</span>
                 </div>
                 <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
+                    {/* 窄屏表格横向滚动：见 admin_overview 同款注释 */}
+                    <div className="overflow-x-auto">
                     <table className="w-full text-left">
                         {tableHead}
                         <tbody className="divide-y">
@@ -1970,6 +1975,7 @@ const IssuanceManager = () => {
                             {activeList.map(renderRow)}
                         </tbody>
                     </table>
+                    </div>
                 </div>
             </div>
 
@@ -1980,12 +1986,15 @@ const IssuanceManager = () => {
                         <span className="text-xs font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">{detachedList.length}</span>
                     </div>
                     <div className="bg-white rounded-2xl shadow-sm border border-amber-200 overflow-hidden">
+                        {/* 窄屏表格横向滚动：见 admin_overview 同款注释 */}
+                        <div className="overflow-x-auto">
                         <table className="w-full text-left">
                             {tableHead}
                             <tbody className="divide-y">
                                 {detachedList.map(renderRow)}
                             </tbody>
                         </table>
+                        </div>
                     </div>
                 </div>
             )}
