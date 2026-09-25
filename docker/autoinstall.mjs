@@ -109,7 +109,7 @@ async function main() {
     if (minioPass.length < 8) throw new Error('MINIO_ROOT_PASSWORD 至少 8 位（MinIO 要求）');
     // 注意：MinIO 弱口令黑名单不在此校验——MinIO 自身已强制 ≥8 位；
     // DB 与管理员口令仍走上面的弱口令黑名单。
-    const dbPass = process.env.POSTGRES_PASSWORD || '';
+    const dbPass = process.env.DB_PASS || '';
     if (dbPass.length < 8) throw new Error('POSTGRES_PASSWORD 至少 8 位');
   }
 

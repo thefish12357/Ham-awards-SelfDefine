@@ -744,7 +744,23 @@ app.post('/api/install', installLimiter, async (req, res) => {
 
   installInProgress = true;
   const { dbHost, dbPort, dbUser, dbPass, dbName, adminCall, adminPass, adminPath, minio, useHttps, minioBucket } = req.body;
-  
+
+  // 安全加固（审计整改）：服务端强制管理员强口令，避免绕过安装器直接调 /api/install
+  // 设置弱口令导致系统被接管。规则与 docker/autoinstall.mjs 对齐；演示实例由 demo 容器
+  // 设置 SKIP_CREDENTIAL_CHECKS=true 豁免（其管理员口令为随机强口令，且演示数据本就公开）。
+  const skipCredChecks = process.env.SKIP_CREDENTIAL_CHECKS === 'true';
+  if (!skipCredChecks && adminPass) {
+    const weakPasswords = new Set(['ham_pass', 'minioadmin123', 'ChangeMe_123', 'changeme', 'password', 'admin']);
+    if (adminPass.length < 12) {
+      installInProgress = false;
+      return res.status(400).json({ error: 'WEAK_ADMIN_PASSWORD', message: '管理员密码至少 12 位' });
+    }
+    if (weakPasswords.has(adminPass)) {
+      installInProgress = false;
+      return res.status(400).json({ error: 'WEAK_ADMIN_PASSWORD', message: '管理员密码不能使用公开弱口令' });
+    }
+  }
+
   let tempPool = new Pool({ user: dbUser, host: dbHost, database: dbName, password: dbPass, port: dbPort });
   let client;
 

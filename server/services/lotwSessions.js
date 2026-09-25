@@ -1,22 +1,27 @@
 /**
- * LoTW 临时会话（**纯内存，绝不落盘 / 落库**）
+ * LoTW 临时会话（**绝不落盘 / 落库**，多实例安全）
  * ------------------------------------------------------------------
  * 需求：用户可以不上传日志，直接把 LoTW 的日志读进来申请奖状，但
  *      「读取的日志在用户关闭界面后就删除，也不能保存在服务器上」。
  *
  * 落实手段：
- *   1. 只存在进程内存里，进程重启即全清；
- *   2. 每条会话带 TTL（默认 30 分钟），到期由定时器清除；
+ *   1. 只存在 TTL 存储里（配 REDIS_URL 走 Redis，否则内存回退），进程重启即全清；
+ *   2. 每条会话带 TTL（默认 30 分钟），到期由存储自动淘汰；
  *   3. 单用户同时只保留一个会话，新会话覆盖旧会话；
  *   4. 前端关闭/切走页面时用 sendBeacon 主动通知删除；
- *   5. 整个 Map 有总容量上限，超限拒绝新建，避免被刷爆内存。
+ *   5. 整个存储有总容量上限，超限拒绝新建，避免被刷爆内存。
  *
  * ⚠️ 这里存的是**精简后的 ADIF 字段对象**，不存原始 ADIF 文本。
+ *
+ * 与旧版区别：原本用进程内存 Map，多实例部署时节点间互不可见（用户登录态 /
+ * 临时日志在节点间丢失）。现统一走 server/services/sessionStore.js，配了
+ * REDIS_URL 即多实例共享，未配则内存回退（单实例 / 本地开发行为不变）。
  */
 
 import crypto from 'crypto';
+import { createTtlStore } from './sessionStore.js';
 
-const sessions = new Map(); // sessionId -> session
+const store = createTtlStore('lotw:session');
 
 const defaults = {
   ttlMs: 30 * 60 * 1000, // 30 分钟
@@ -34,40 +39,32 @@ export function configureLotwSessions(next = {}) {
 
 export const getLotwSessionConfig = () => ({ ...config });
 
-/** 当前所有会话占用的字节数（按下载到的 ADIF 原文长度计） */
-function totalBytes() {
-  let sum = 0;
-  for (const s of sessions.values()) sum += s.bytes;
-  return sum;
-}
-
-function prune(now = Date.now()) {
-  let removed = 0;
-  for (const [id, s] of sessions) {
-    if (s.expiresAt <= now) {
-      sessions.delete(id);
-      removed += 1;
-    }
+// 每分钟扫描一次：内存回退时顺手清掉过期项释放内存；Redis 后端 TTL 自动淘汰（扫描即为 no-op）。
+setInterval(async () => {
+  try {
+    await store.scan();
+  } catch {
+    /* 忽略 */
   }
-  return removed;
-}
-
-// 每分钟清理一次；unref 避免定时器拖住进程退出
-setInterval(() => prune(), 60 * 1000).unref();
+}, 60 * 1000).unref();
 
 /**
  * 建立会话。同一 userId 的旧会话会被删除（单会话策略）。
  * @throws 容量超限时抛错，由上层转成 507 / 413
  */
-export function createSession(userId, data) {
+export async function createSession(userId, data) {
   const now = Date.now();
-  prune(now);
+  const all = await store.scan();
 
-  for (const [id, s] of sessions) {
-    if (s.userId === userId) sessions.delete(id);
+  let usedBytes = 0;
+  let oldKey = null;
+  for (const { key, value } of all) {
+    usedBytes += value.bytes || 0;
+    if (value.userId === userId) oldKey = key;
   }
+  if (oldKey) await store.del(oldKey);
 
-  if (totalBytes() + data.bytes > config.maxTotalBytes) {
+  if (usedBytes + (data.bytes || 0) > config.maxTotalBytes) {
     const err = new Error('服务端临时日志容量已满，请稍后重试或先清除其他会话');
     err.code = 'LOTW_CAPACITY';
     throw err;
@@ -85,24 +82,22 @@ export function createSession(userId, data) {
     range: data.range || null,
     includeAll: !!data.includeAll,
     createdAt: now,
-    lastAccess: now,
     expiresAt: now + config.ttlMs,
   };
-  sessions.set(sessionId, session);
+  await store.set(sessionId, session, config.ttlMs);
   return session;
 }
 
 /** 取会话，并校验归属。过期/不存在返回 null。 */
-export function getSession(sessionId, userId) {
+export async function getSession(sessionId, userId) {
   if (!sessionId) return null;
-  const s = sessions.get(sessionId);
+  const s = await store.get(sessionId);
   if (!s) return null;
   if (s.expiresAt <= Date.now()) {
-    sessions.delete(sessionId);
+    await store.del(sessionId);
     return null;
   }
   if (userId != null && s.userId !== userId) return null;
-  s.lastAccess = Date.now();
   return s;
 }
 
@@ -110,14 +105,13 @@ export function getSession(sessionId, userId) {
  * 取该用户当前的会话（单会话策略下最多一个）。
  * 用途：前端刷新页面后 sessionId 丢失，可用它把会话状态捞回来。
  */
-export function getSessionForUser(userId) {
+export async function getSessionForUser(userId) {
+  const all = await store.scan();
   const now = Date.now();
-  prune(now);
   let found = null;
-  for (const s of sessions.values()) {
-    if (s.userId === userId) found = s;
+  for (const { value } of all) {
+    if (value.userId === userId && value.expiresAt > now) found = value;
   }
-  if (found) found.lastAccess = now;
   return found;
 }
 
@@ -125,20 +119,20 @@ export function getSessionForUser(userId) {
  * 按 sessionId 直接取（不校验归属）。
  * 仅供「携凭据清除」用：sessionId 本身是随机不可猜的，作为 capability token 使用。
  */
-export function getSessionByCapability(sessionId) {
-  const s = getSession(sessionId, null);
-  return s;
+export async function getSessionByCapability(sessionId) {
+  return getSession(sessionId, null);
 }
 
-export function deleteSession(sessionId) {
-  return sessions.delete(sessionId);
+export async function deleteSession(sessionId) {
+  return store.del(sessionId);
 }
 
-export function deleteUserSessions(userId) {
+export async function deleteUserSessions(userId) {
+  const all = await store.scan();
   let n = 0;
-  for (const [id, s] of sessions) {
-    if (s.userId === userId) {
-      sessions.delete(id);
+  for (const { key, value } of all) {
+    if (value.userId === userId) {
+      await store.del(key);
       n += 1;
     }
   }
@@ -163,15 +157,19 @@ export function describeSession(session) {
   };
 }
 
-export function sessionStats() {
-  prune();
+export async function sessionStats() {
+  const all = await store.scan();
+  let bytes = 0;
+  for (const { value } of all) bytes += value.bytes || 0;
   return {
-    sessionCount: sessions.size,
-    bytes: totalBytes(),
+    sessionCount: all.length,
+    bytes,
     maxTotalBytes: config.maxTotalBytes,
     ttlMs: config.ttlMs,
   };
 }
 
 /** 仅供测试/自检使用 */
-export const __pruneForTest = prune;
+export const __pruneForTest = async () => {
+  await store.scan();
+};

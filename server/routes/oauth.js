@@ -27,6 +27,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 // 内测门禁：OAuth 首次建号也要邀请码，否则会绕过注册关（绑定已有账号不需要）
 import { consumeInviteCode, inviteError, isInviteRequired } from '../services/invites.js';
+import { createTtlStore } from '../services/sessionStore.js';
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -72,10 +73,11 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   // 审计由 server.js 注入；未注入时静默跳过（best-effort）
   const audit = (req, entry) => (typeof logAudit === 'function' ? logAudit(db(), req, entry) : Promise.resolve());
 
-  // 一次性 state 与「待绑定」会话，进程内存即可（重启即清，不落盘）
-  const states = new Map(); // state -> expiresAt
-  const pendingBinds = new Map(); // bindToken -> { expiresAt, provider, sub, callsign, profile }
-  const sessionCodes = new Map(); // 一次性换码 code -> { userId, exp }（短时效，防长期 JWT 进 URL）
+  // 一次性 state / 待绑定 / 一次性换码：用统一 TTL 存储。
+  // 配了 REDIS_URL 时走 Redis（多实例共享），否则内存回退（单实例 / 本地开发）。
+  const states = createTtlStore('oauth:state'); // state -> true（一次性，TTL 10 分钟）
+  const pendingBinds = createTtlStore('oauth:bind'); // bindToken -> { expiresAt, provider, sub, username, profile }
+  const sessionCodes = createTtlStore('oauth:code'); // code -> { userId, exp }（短时效，防长期 JWT 进 URL）
 
   const signToken = (user) =>
     jwt.sign({ id: user.id, role: user.role, callsign: user.callsign, tv: user.token_version ?? 0 }, getConfig().jwtSecret, { expiresIn: '24h' });
@@ -88,15 +90,13 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   });
 
   // ---- 发起授权：生成 state，302 到 HamCQ 授权页 ----
-  router.get('/start', (req, res) => {
+  router.get('/start', async (req, res) => {
     const cfg = oauthConfig(getConfig);
     if (!cfg.enabled || !cfg.clientId) {
       return res.status(503).send('OAuth 登录未启用');
     }
     const state = crypto.randomBytes(16).toString('hex');
-    states.set(state, Date.now() + STATE_TTL_MS);
-    // 顺手清理过期 state，避免内存无限增长
-    for (const [k, exp] of states) if (exp < Date.now()) states.delete(k);
+    await states.set(state, true, STATE_TTL_MS); // TTL 自动过期，无需手动清理
 
     const params = new URLSearchParams({
       client_id: cfg.clientId,
@@ -114,9 +114,9 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
     if (error) return res.status(400).send('授权被取消或失败');
     if (!code || !state) return res.status(400).send('缺少 code 或 state');
 
-    const exp = states.get(state);
-    if (!exp || exp < Date.now()) return res.status(400).send('state 无效或已过期');
-    states.delete(state); // 一次性消费
+    const stateOk = await states.get(state);
+    if (!stateOk) return res.status(400).send('state 无效或已过期');
+    await states.del(state); // 一次性消费
 
     const cfg = oauthConfig(getConfig);
     try {
@@ -157,8 +157,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         // 安全加固（审计整改）：不直接把长期 JWT 放进 URL（会进浏览器历史/扩展/截图）。
         // 改为签发一次性短时效换码，前端再 POST /code 换取 JWT。
         const oauthCode = crypto.randomBytes(16).toString('hex');
-        sessionCodes.set(oauthCode, { userId: u.id, exp: Date.now() + 60_000 });
-        for (const [k, v] of sessionCodes) if (v.exp < Date.now()) sessionCodes.delete(k);
+        await sessionCodes.set(oauthCode, { userId: u.id, exp: Date.now() + 60_000 }, 60_000);
         return res.redirect(`${frontendOrigin(cfg)}/#/oauth/code?code=${oauthCode}`);
       }
 
@@ -167,14 +166,13 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       //   因此无论本站是否已有同名账号，都让用户输入/确认呼号，再决定
       //   「绑定已有账号（需密码，防冒名接管）」还是「创建新账号」。
       const pendingToken = crypto.randomBytes(16).toString('hex');
-      pendingBinds.set(pendingToken, {
+      await pendingBinds.set(pendingToken, {
         expiresAt: Date.now() + STATE_TTL_MS,
         provider: cfg.provider,
         sub,
         username: callsign, // HamCQ 用户名，仅作输入框预填
         profile,
-      });
-      for (const [k, v] of pendingBinds) if (v.expiresAt < Date.now()) pendingBinds.delete(k);
+      }, STATE_TTL_MS);
       return res.redirect(
         `${frontendOrigin(cfg)}/#/oauth/complete?pending_token=${pendingToken}&username=${encodeURIComponent(callsign)}`,
       );
@@ -188,7 +186,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   router.post('/complete', async (req, res) => {
     const { pending_token: pendingToken, callsign, password, invite_code: inviteCode } = req.body || {};
     if (!pendingToken) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少参数' });
-    const pending = pendingBinds.get(pendingToken);
+    const pending = await pendingBinds.get(pendingToken);
     if (!pending || pending.expiresAt < Date.now()) {
       return res.status(400).json({ error: 'BIND_EXPIRED', message: '会话已过期，请重新登录' });
     }
@@ -218,7 +216,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         JSON.stringify(pending.profile),
         u.id,
       ]);
-      pendingBinds.delete(pendingToken);
+      await pendingBinds.del(pendingToken);
       return res.json({ token: signToken(u), user: publicUser(u) });
     }
 
@@ -240,7 +238,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
        VALUES ($1, $2, 'user', $3, $4, $5, $6) RETURNING *`,
       [cs, hash, pending.provider, pending.sub, JSON.stringify(pending.profile), usedCode],
     );
-    pendingBinds.delete(pendingToken);
+    await pendingBinds.del(pendingToken);
     const u = created.rows[0];
     await audit(req, { action: 'auth.register', targetType: 'user', targetId: u.id, detail: { callsign: u.callsign, channel: 'hamcq', invite_code: usedCode || undefined } });
     if (usedCode) {
@@ -253,12 +251,12 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   router.post('/code', async (req, res) => {
     const { code } = (req.body || {});
     if (!code) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少换码' });
-    const entry = sessionCodes.get(code);
+    const entry = await sessionCodes.get(code);
     if (!entry || entry.exp < Date.now()) {
-      sessionCodes.delete(code);
+      await sessionCodes.del(code);
       return res.status(401).json({ error: 'CODE_INVALID', message: '登录码无效或已过期，请重新登录' });
     }
-    sessionCodes.delete(code); // 一次性消费
+    await sessionCodes.del(code); // 一次性消费
     try {
       const r = await db().query('SELECT * FROM users WHERE id=$1', [entry.userId]);
       const u = r.rows[0];

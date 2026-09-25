@@ -138,7 +138,7 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
         maxDepth: cfg.maxSplitDepth,
       });
 
-      const session = sessions.createSession(req.user.id, result);
+      const session = await sessions.createSession(req.user.id, result);
 
       // 注意：这里刻意不记录任何请求体内容，避免凭据进入日志
       res.json({
@@ -176,7 +176,7 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
   // ---------------------------------------------------------------
   router.post('/evaluate', verifyToken, async (req, res) => {
     const body = req.body || {};
-    const session = sessions.getSession(body.sessionId, req.user.id);
+    const session = await sessions.getSession(body.sessionId, req.user.id);
     if (!session) {
       return res
         .status(410)
@@ -223,7 +223,7 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
   // ---------------------------------------------------------------
   router.post('/apply', verifyToken, async (req, res) => {
     const body = req.body || {};
-    const session = sessions.getSession(body.sessionId, req.user.id);
+    const session = await sessions.getSession(body.sessionId, req.user.id);
     if (!session) {
       return res
         .status(410)
@@ -295,7 +295,7 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
   //    DXCC 反查），保证「直连判定通过 → 导入 → 详情页也通过」不会翻车。
   router.post('/import', verifyToken, async (req, res) => {
     const body = req.body || {};
-    const session = sessions.getSession(body.sessionId, req.user.id);
+    const session = await sessions.getSession(body.sessionId, req.user.id);
     if (!session) {
       return res
         .status(410)
@@ -343,9 +343,9 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
   // ---------------------------------------------------------------
   // 会话状态 / 清除
   // ---------------------------------------------------------------
-  router.get('/session', verifyToken, (req, res) => {
-    const own = sessions.getSessionForUser(req.user.id);
-    res.json({ ...sessions.describeSession(own), serverStats: sessions.sessionStats() });
+  router.get('/session', verifyToken, async (req, res) => {
+    const own = await sessions.getSessionForUser(req.user.id);
+    res.json({ ...sessions.describeSession(own), serverStats: await sessions.sessionStats() });
   });
 
   /**
@@ -353,15 +353,15 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
    * 前端用 `navigator.sendBeacon` 关闭页面时**无法携带 Authorization 头**，
    * 因此允许凭 sessionId 直接清除 —— sessionId 是随机不可猜的，充当一次性能力令牌。
    */
-  const clearSession = (req, res) => {
+  const clearSession = async (req, res) => {
     const sid = String(req.query.id || (req.body && req.body.sessionId) || '');
-    if (sid && sessions.getSessionByCapability(sid)) {
-      sessions.deleteSession(sid);
+    if (sid && (await sessions.getSessionByCapability(sid))) {
+      await sessions.deleteSession(sid);
       return res.json({ success: true, cleared: true, via: 'capability' });
     }
     // 否则要求登录，并清除该用户的所有会话
-    return verifyToken(req, res, () => {
-      const removed = sessions.deleteUserSessions(req.user.id);
+    return verifyToken(req, res, async () => {
+      const removed = await sessions.deleteUserSessions(req.user.id);
       res.json({ success: true, cleared: removed > 0, via: 'auth' });
     });
   };
