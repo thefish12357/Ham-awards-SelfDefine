@@ -1,11 +1,9 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Award,
   Radio,
   RadioTower,
   Upload,
-  CheckCircle2,
-  ShieldCheck,
   QrCode,
   Sparkles,
   ArrowRight,
@@ -13,15 +11,15 @@ import {
   LayoutDashboard,
   FileText,
   BadgeCheck,
-  Signal,
-  Globe,
-  Star,
   Activity,
   ChevronRight,
   Waves,
   Sun,
   Moon,
 } from 'lucide-react';
+import { AwardThumbnail } from '../components/AwardRenderer.jsx';
+import AwardDemoModal from '../components/AwardDemoModal.jsx';
+import { DEMO_AWARDS } from '../lib/demoAwards.js';
 
 /**
  * 网站首页（Landing）
@@ -66,21 +64,9 @@ const WORKFLOW = [
   { step: '03', icon: Award, title: '申请与颁发', desc: '在线提交申请，管理员审核通过后即可下载 PDF 奖状。' },
 ];
 
-const HIGHLIGHTS = [
-  { icon: ShieldCheck, label: '凭据零留存' },
-  { icon: Signal, label: '自动二分重试' },
-  { icon: Globe, label: '多波段支持' },
-  { icon: Star, label: '多等级奖状' },
-];
-
 const CAPABILITIES = ['LoTW 直连', 'ADIF 解析', '可视化设计器', '多等级差异', '二维码校验', 'GPL-3.0'];
 
-/** 首页「成品预览」用的示例奖状（仅演示界面形态，非真实用户数据） */
-const PREVIEW_AWARDS = [
-  { level: 'GOLD', name: 'DX 大师奖', callsign: 'BG1ABC', sn: '7D0B5DF2' },
-  { level: 'SILVER', name: '波段收集奖', callsign: 'VR2XYZ', sn: '6F63B9AE' },
-  { level: 'BRONZE', name: '网格探索奖', callsign: 'BD3ZZZ', sn: 'A1C93F07' },
-];
+// 示例奖状数据见 src/lib/demoAwards.js（落地页「在线演示」板块用，真实渲染 + 示例数据）
 
 function SectionHeading({ eyebrow, title, desc }) {
   return (
@@ -127,8 +113,9 @@ function useReveal() {
   return ref;
 }
 
-const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => {
+const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme, demoUrl = '', demoMode = false, demoUser = '', demoPass = '' }) => {
   const rootRef = useReveal();
+  const [selectedDemo, setSelectedDemo] = useState(null);
 
   return (
     <div
@@ -152,6 +139,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
       </div>
 
       <div className="relative">
+        {/* 演示环境横幅由 App 全局渲染（见 src/components/DemoBanner.jsx），此处不再重复 */}
         {/* ===== 顶栏 ===== */}
         <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/60 backdrop-blur-xl">
           <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
@@ -262,45 +250,66 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
             </div>
           </div>
 
-          {/* ===== 成品预览（玻璃窗口 mock） ===== */}
-          <div data-reveal className="mx-auto mt-20 max-w-5xl opacity-0">
-            <div className="group relative rounded-3xl border border-white/10 bg-white/[0.03] p-2">
-              <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-slate-900/70">
-                <div className="flex items-center gap-2 border-b border-white/10 px-4 py-3">
-                  <span className="h-3 w-3 rounded-full bg-red-400/70" />
-                  <span className="h-3 w-3 rounded-full bg-amber-400/70" />
-                  <span className="h-3 w-3 rounded-full bg-emerald-400/70" />
-                  <span className="ml-3 text-xs text-slate-500">ham-awards.local / 我的奖状</span>
-                </div>
-                <div className="grid gap-5 p-6 sm:grid-cols-3">
-                  {PREVIEW_AWARDS.map((a) => (
-                    <div
-                      key={a.sn}
-                      className="relative overflow-hidden rounded-xl border border-white/10 bg-white/[0.04] p-5 transition-transform duration-500 group-hover:-translate-y-1"
-                    >
-                      <div className="flex items-center justify-between">
-                        <Award size={22} className="text-amber-300" />
-                        <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 text-[10px] font-bold text-amber-200">
-                          {a.level}
-                        </span>
-                      </div>
-                      <div className="mt-5 text-sm font-bold text-white">{a.name}</div>
-                      <div className="mt-1.5 font-mono text-[10px] text-slate-500">SN {a.sn} · {a.callsign}</div>
-                      <div className="mt-4 flex items-center gap-2 text-[10px] text-slate-400">
-                        <CheckCircle2 size={12} className="text-emerald-400" /> 已签发 · 可校验
-                      </div>
-                      <span className="pointer-events-none absolute inset-y-0 -left-1/3 w-1/3 -translate-x-full -skew-x-12 bg-gradient-to-r from-transparent via-white/15 to-transparent transition-transform duration-700 group-hover:translate-x-[400%]" />
-                    </div>
-                  ))}
-                </div>
+          {/* ===== 在线演示（真实渲染 + 示例数据） ===== */}
+          <div data-reveal className="mx-auto mt-24 max-w-6xl opacity-0">
+            <div className="text-center">
+              <div className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.3em] text-cyan-300">
+                <span className="h-px w-8 bg-cyan-400/50" />
+                在线演示
+                <span className="h-px w-8 bg-cyan-400/50" />
               </div>
+              <h2 className="mt-4 text-3xl font-black tracking-tight text-white md:text-4xl">真实奖状，先看效果</h2>
+              <p className="mx-auto mt-4 max-w-2xl text-slate-400">
+                下面是按可视化布局<strong className="text-slate-200">真实渲染</strong>的示例奖状（数据为演示用途）。
+                点击任意一张查看规则与等级要求；登录后即可看到你自己的完整奖状大厅与真实进度。
+              </p>
             </div>
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-xs text-slate-400">
-              {HIGHLIGHTS.map((h) => (
-                <span key={h.label} className="inline-flex items-center gap-2">
-                  <h.icon size={14} className="text-cyan-300" /> {h.label}
-                </span>
+
+            <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+              {DEMO_AWARDS.map((a) => (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => setSelectedDemo(a)}
+                  className="group relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-left transition-all duration-500 hover:-translate-y-2 hover:border-cyan-400/40 hover:bg-white/[0.06] hover:shadow-2xl hover:shadow-cyan-500/10"
+                >
+                  <div className="relative aspect-[297/210] overflow-hidden rounded-xl border border-white/10 bg-white">
+                    <AwardThumbnail award={a} className="absolute inset-0" placeholderText="示例奖状" />
+                  </div>
+                  <div className="mt-4 flex items-center justify-between">
+                    <div className="text-sm font-bold text-white">{a.name}</div>
+                    <span className="rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2 py-0.5 text-[10px] font-bold text-cyan-200">
+                      {a.rules?.thresholds?.length || 1} 级
+                    </span>
+                  </div>
+                  <div className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-slate-400">{a.description}</div>
+                  <div className="mt-3 flex items-center gap-1 text-[11px] font-bold text-cyan-300 opacity-0 transition-opacity group-hover:opacity-100">
+                    查看规则与等级要求 <ArrowRight size={12} />
+                  </div>
+                </button>
               ))}
+            </div>
+
+            <div className="mt-10 flex flex-col items-center justify-center gap-4">
+              {demoUrl && (
+                <a
+                  href={demoUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group inline-flex items-center gap-2 rounded-xl border border-cyan-400/40 bg-cyan-400/10 px-7 py-3.5 font-bold text-cyan-200 transition-all hover:-translate-y-0.5 hover:bg-cyan-400/20"
+                >
+                  体验完整演示系统（可登录试玩）
+                  <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
+                </a>
+              )}
+              <button
+                onClick={onLogin}
+                className="group inline-flex items-center gap-2 rounded-xl bg-slate-900 px-7 py-3.5 font-bold text-white transition-all hover:-translate-y-0.5"
+              >
+                登录查看完整奖状大厅
+                <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
+              </button>
+              <p className="text-xs text-slate-500">示例数据仅用于演示；登录后展示的是你本人日志匹配出的真实进度。</p>
             </div>
           </div>
         </section>
@@ -422,6 +431,15 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme }) => 
             </div>
           </div>
         </footer>
+
+        {selectedDemo && (
+          <AwardDemoModal
+            award={selectedDemo}
+            onClose={() => setSelectedDemo(null)}
+            onLogin={onLogin}
+            onRegister={onRegister}
+          />
+        )}
       </div>
     </div>
   );

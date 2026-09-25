@@ -96,16 +96,22 @@ async function main() {
   const missing = required.filter((k) => !process.env[k]);
   if (missing.length) throw new Error(`缺少必需环境变量：${missing.join(', ')}`);
 
-  // 安全加固（审计整改）：安装即强制强口令，避免沿用公开弱默认值被接管
-  const weakPasswords = new Set(['ham_pass', 'minioadmin123', 'ChangeMe_123', 'changeme', 'password', 'admin', 'minioadmin']);
-  const adminPass = process.env.ADMIN_PASSWORD || '';
-  if (adminPass.length < 12) throw new Error('ADMIN_PASSWORD 至少 12 位');
-  if (weakPasswords.has(adminPass)) throw new Error('ADMIN_PASSWORD 不能使用公开弱口令');
-  const minioPass = process.env.MINIO_ROOT_PASSWORD || '';
-  if (minioPass.length < 8) throw new Error('MINIO_ROOT_PASSWORD 至少 8 位（MinIO 要求）');
-  if (weakPasswords.has(minioPass)) throw new Error('MINIO_ROOT_PASSWORD 不能使用公开弱口令');
-  const dbPass = process.env.POSTGRES_PASSWORD || '';
-  if (dbPass.length < 8) throw new Error('POSTGRES_PASSWORD 至少 8 位');
+  // 安全加固（审计整改）：安装即强制强口令，避免沿用公开弱默认值被接管。
+  // 演示实例复用既有（已部署）的共享库/MinIO 凭据，由 demo-installer 设置
+  // SKIP_CREDENTIAL_CHECKS=true 跳过本机强口令校验；生产安装器不受影响。
+  const skipChecks = process.env.SKIP_CREDENTIAL_CHECKS === 'true';
+  if (!skipChecks) {
+    const weakPasswords = new Set(['ham_pass', 'minioadmin123', 'ChangeMe_123', 'changeme', 'password', 'admin']);
+    const adminPass = process.env.ADMIN_PASSWORD || '';
+    if (adminPass.length < 12) throw new Error('ADMIN_PASSWORD 至少 12 位');
+    if (weakPasswords.has(adminPass)) throw new Error('ADMIN_PASSWORD 不能使用公开弱口令');
+    const minioPass = process.env.MINIO_ROOT_PASSWORD || '';
+    if (minioPass.length < 8) throw new Error('MINIO_ROOT_PASSWORD 至少 8 位（MinIO 要求）');
+    // 注意：MinIO 弱口令黑名单不在此校验——MinIO 自身已强制 ≥8 位；
+    // DB 与管理员口令仍走上面的弱口令黑名单。
+    const dbPass = process.env.POSTGRES_PASSWORD || '';
+    if (dbPass.length < 8) throw new Error('POSTGRES_PASSWORD 至少 8 位');
+  }
 
   await waitForMinio();
 

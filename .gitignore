@@ -16,6 +16,7 @@ uploads/
 
 # 日志
 *.log
+*.err
 npm-debug.log*
 pnpm-debug.log*
 

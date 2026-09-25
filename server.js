@@ -705,13 +705,19 @@ app.use('/api/auth/oauth', createOauthRouter({
 // --- 基础 & 认证 ---
 
 app.get('/api/system-status', (req, res) => {
+    const demoMode = process.env.DEMO_MODE === 'true';
     res.json({ 
         installed: appConfig.installed, 
         useHttps: appConfig.useHttps,
         adminPath: appConfig.adminPath || 'admin',
         minioConfigured: !!appConfig.minio,
         // 内测开关：登录/注册页据此决定是否显示邀请码输入框（公开信息，无敏感内容）
-        requireInvite: isInviteRequired(appConfig)
+        requireInvite: isInviteRequired(appConfig),
+        // 演示实例：公开演示系统的入口与公示凭据（落地页“体验演示系统”按钮 + 演示实例横幅）
+        demoMode,
+        demoUrl: demoMode ? '' : (process.env.DEMO_URL || ''),
+        demoUser: demoMode ? (process.env.DEMO_USER || '') : '',
+        demoPass: demoMode ? (process.env.DEMO_PASS || '') : '',
     });
 });
 

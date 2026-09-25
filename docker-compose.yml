@@ -1,6 +1,11 @@
 # 全栈 Docker：PostgreSQL + MinIO + 应用（含一次性初始化容器）
 # 用法：Copy-Item .env.example .env 后 docker compose up -d --build
 # 彻底清理：docker compose down -v --rmi local
+#
+# ★ 演示实例（类似 demo.wavelog.org）通过 profile 启用，不影响生产栈：
+#   docker compose --profile demo up -d --build
+#   会额外拉起 demodb / demo / demo-installer / demo-seed 四个服务，
+#   跑出一套完全独立的示例系统（独立库 ham_awards_demo + 独立桶 ham-awards-demo + 演示账号 DEMO）。
 name: ham-awards
 
 services:
@@ -66,6 +71,8 @@ services:
       # 上传/删除对象走容器网络里的服务名；浏览器读图走 localhost
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost}
       MINIO_PUBLIC_PORT: ${MINIO_HOST_PORT:-9000}
+      # 生产站落地页“体验演示系统”按钮指向的公网地址（演示实例 profile 才会用到）
+      DEMO_URL: ${DEMO_URL:-}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - appdata:/data
@@ -95,6 +102,9 @@ services:
       MINIO_PORT: "9000"
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # autoinstall.mjs 的强口令校验直接读 MINIO_ROOT_USER/PASSWORD，这里显式传入
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_BUCKET: ${MINIO_BUCKET:-ham-awards}
       ADMIN_CALLSIGN: ${ADMIN_CALLSIGN:-ADMIN}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
@@ -107,7 +117,120 @@ services:
     command: ["node", "/scripts/autoinstall.mjs"]
     restart: "no"
 
+  # ==================================================================
+  #  演示实例（profile: demo）—— 完全独立，不影响上面生产栈
+  #  启用：docker compose --profile demo up -d --build
+  # ==================================================================
+
+  # 演示实例独立数据库
+  demodb:
+    image: postgres:16-alpine
+    container_name: ham-awards-demodb
+    restart: unless-stopped
+    profiles: ["demo"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ham}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${DEMO_POSTGRES_DB:-ham_awards_demo}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - demodbdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${DEMO_DB_HOST_PORT:-55433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ham} -d ${DEMO_POSTGRES_DB:-ham_awards_demo}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # 演示实例应用（同一镜像，独立库 + 独立卷 + DEMO_MODE 横幅）
+  demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ham-awards-app:local
+    container_name: ham-awards-demo
+    restart: unless-stopped
+    profiles: ["demo"]
+    depends_on:
+      demodb:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    environment:
+      PORT: 9994
+      CONFIG_FILE: /data/config.json
+      TRUST_PROXY: "true"
+      INSTALL_TOKEN: ${INSTALL_TOKEN:-}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost}
+      MINIO_PUBLIC_PORT: ${MINIO_HOST_PORT:-9000}
+      # 演示实例标识：落地页显示“演示环境”横幅并公示演示账号
+      DEMO_MODE: "true"
+      DEMO_USER: ${DEMO_USER:-DEMO}
+      DEMO_PASS: ${DEMO_USER_PASSWORD:-demo123456}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - demoappdata:/data
+    ports:
+      - "127.0.0.1:${DEMO_APP_HOST_PORT:-9994}:9994"
+
+  # 演示实例一次性安装
+  demo-installer:
+    image: node:20-alpine
+    container_name: ham-awards-demo-installer
+    profiles: ["demo"]
+    depends_on:
+      demo:
+        condition: service_started
+    environment:
+      APP_URL: http://demo:9994
+      AUTO_INSTALL: "true"
+      DB_HOST: demodb
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-ham}
+      DB_PASS: ${POSTGRES_PASSWORD}
+      DB_NAME: ${DEMO_POSTGRES_DB:-ham_awards_demo}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      # autoinstall.mjs 的强口令校验直接读 MINIO_ROOT_USER/PASSWORD，这里显式传入
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${DEMO_BUCKET:-ham-awards-demo}
+      ADMIN_CALLSIGN: ${DEMO_ADMIN_CALLSIGN:-DEMOADMIN}
+      ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD}
+      INSTALL_TOKEN: ${INSTALL_TOKEN:-}
+      ADMIN_PATH: ${ADMIN_PATH:-admin}
+      # 演示实例复用既有共享库/MinIO 凭据（可能不符合强口令要求），跳过安装期强口令校验
+      SKIP_CREDENTIAL_CHECKS: "true"
+    volumes:
+      - ./docker/autoinstall.mjs:/scripts/autoinstall.mjs:ro
+    command: ["node", "/scripts/autoinstall.mjs"]
+    restart: "no"
+
+  # 演示实例种子（预置演示账号/奖状/日志/申领记录）
+  demo-seed:
+    image: node:20-alpine
+    container_name: ham-awards-demo-seed
+    profiles: ["demo"]
+    depends_on:
+      demo:
+        condition: service_started
+    environment:
+      DEMO_APP_URL: http://demo:9994
+      DEMO_ADMIN_CALLSIGN: ${DEMO_ADMIN_CALLSIGN:-DEMOADMIN}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD}
+      DEMO_USER: ${DEMO_USER:-DEMO}
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:-demo123456}
+    volumes:
+      - ./docker/seed-demo.mjs:/scripts/seed-demo.mjs:ro
+    command: ["node", "/scripts/seed-demo.mjs"]
+    restart: "no"
+
 volumes:
   pgdata:
   miniodata:
   appdata:
+  demodbdata:
+  demoappdata:

@@ -27,6 +27,8 @@ import VerifyView from './pages/VerifyView.jsx';
 import EvidenceAuditView from './pages/EvidenceAuditView.jsx';
 import AuditLogsView from './pages/AuditLogsView.jsx';
 import LandingView from './pages/LandingView.jsx';
+// 演示环境全局横幅：仅 demoMode 时在每一页顶部展示（见下方各视图 return 包裹）
+import DemoBanner from './components/DemoBanner.jsx';
 import AboutView from './pages/AboutView.jsx';
 import PrivacyView from './pages/PrivacyView.jsx';
 import TermsView from './pages/TermsView.jsx';
@@ -1079,7 +1081,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                     )}
                 </div>
                 
-                <div className="flex-1 p-8 flex flex-col overflow-y-auto">
+                <div className="flex-1 p-8 overflow-y-auto">
                     <div className="flex justify-between items-start mb-6">
                          <div className="space-y-1">
                             <h3 className="font-bold text-slate-800 text-lg">规则说明</h3>
@@ -1089,8 +1091,8 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                     </div>
                     
                     {showMatrix ? (
-                        <div className="flex-1 overflow-hidden flex flex-col">
-                            <div className="flex items-center gap-2 mb-4">
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-2 mb-4">
                                 <button onClick={()=>setShowMatrix(false)} className="text-sm text-slate-500 hover:text-black">← 返回详情</button>
                                 <h4 className="font-bold">日志匹配分析 (Log Matrix)</h4>
                             </div>
@@ -1105,8 +1107,8 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                     ))}
                                 </div>
                             )}
-                            <div className="flex-1 overflow-hidden relative">
-                                {checkResult?.matching_qsos ? (
+                            <div className="relative">
+                              {checkResult?.matching_qsos ? (
                                     <LogMatchMatrix qsos={checkResult.matching_qsos} award={award} checkResult={checkResult} onGoLogbook={handleGoLogbook} />
                                 ) : (
                                     <div className="text-center p-8 text-slate-400">加载中...</div>
@@ -1183,123 +1185,10 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                 </div>
                             )}
 
-                            {/* Real-time Check Result Area */}
-                            {showApplicantUI && (
-                                <div className="mt-4 pt-4 border-t">
-                                    <div className="flex justify-between items-center mb-3">
-                                        <h4 className="font-bold text-sm text-slate-500 uppercase flex items-center gap-2">
-                                            <Activity size={14}/> 您的进度
-                                            {checking && <span className="text-xs font-normal text-blue-600 animate-pulse ml-2">正在分析日志...</span>}
-                                        </h4>
-                                        <button onClick={handleLoadMatrix} className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-full font-bold hover:bg-blue-100 flex items-center gap-1">
-                                            <Grid size={12}/> 查看日志匹配详情
-                                        </button>
-                                    </div>
-                                    
-                                    {/* 分析失败时不能拿 `{error}` 当正常结果渲染（那样会显示 "undefined / undefined"） */}
-                                    {checkResult?.error ? (
-                                        <div className="flex items-start justify-between gap-3 rounded-xl border-2 border-red-200 bg-red-50 p-4 text-xs text-red-700">
-                                            <span className="flex items-start gap-2">
-                                                <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                                                <span>进度分析失败：{checkResult.error}</span>
-                                            </span>
-                                            <button
-                                                type="button"
-                                                onClick={() => checkEligibility()}
-                                                className="shrink-0 rounded-lg border border-red-300 bg-white px-2 py-1 font-bold"
-                                            >
-                                                重试
-                                            </button>
-                                        </div>
-                                    ) : checkResult ? (
-                                        <div className={`rounded-xl p-5 border-2 space-y-4 ${checkResult.eligible ? 'bg-green-50 border-green-200' : 'bg-slate-50 border-slate-200'}`}>
-                                            <div>
-                                                <div className="flex justify-between items-center mb-2">
-                                                    <span className="text-sm font-bold text-slate-500">当前累计</span>
-                                                    <span className="text-2xl font-black">{checkResult.current_score} <span className="text-sm text-slate-400 font-normal">/ {checkResult.target_score}</span></span>
-                                                </div>
-                                                {/* Progress Bar */}
-                                                <div className="w-full bg-slate-200 rounded-full h-3 mb-3 overflow-hidden">
-                                                    <div 
-                                                        className={`h-full transition-all duration-1000 ${checkResult.eligible ? 'bg-green-500' : 'bg-blue-500'}`} 
-                                                        style={{width: `${Math.min(100, (checkResult.current_score / checkResult.target_score) * 100)}%`}}
-                                                    ></div>
-                                                </div>
-                                                <div className="flex justify-between items-center">
-                                                    <div className="text-xs text-slate-500 font-bold">
-                                                        {checkResult.details?.msg}
-                                                    </div>
-                                                    {checkResult.eligible && <div className="px-2 py-1 bg-green-200 text-green-800 text-xs font-bold rounded flex items-center gap-1"><Check size={12}/> 已达成: {checkResult.achieved_level?.name}</div>}
-                                                </div>
-                                            </div>
-
-                                            {/* Detailed Target Breakdown */}
-                                            {checkResult.breakdown && (
-                                                <div className="bg-white rounded-lg p-3 border text-xs">
-                                                    <div className="font-bold mb-2 flex justify-between">
-                                                        <span>特定目标完成度 ({checkResult.breakdown.achieved.length}/{checkResult.breakdown.total_required})</span>
-                                                    </div>
-                                                    <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
-                                                        <div>
-                                                            <div className="text-green-600 font-bold mb-1">已完成</div>
-                                                            <div className="flex flex-wrap gap-1">
-                                                                {checkResult.breakdown.achieved.map(t => (
-                                                                    <span key={t.target} className="bg-green-100 text-green-700 px-1 rounded">{t.target}</span>
-                                                                ))}
-                                                            </div>
-                                                        </div>
-                                                        <div>
-                                                            <div className="text-red-400 font-bold mb-1">未完成</div>
-                                                            <div className="flex flex-wrap gap-1">
-                                                                {checkResult.breakdown.missing.map(t => (
-                                                                    <span key={t} className="bg-slate-100 text-slate-400 px-1 rounded">{t}</span>
-                                                                ))}
-                                                            </div>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {/* ★ 判定自检提示（2026-09-24）：把"进度为什么是 0"讲清楚。
-                                                最典型的是目标类型与清单格式不匹配（DXCC 类型填了呼号）——
-                                                引擎永远匹配不上，这里必须给出可执行的线索，而不是让用户对着 0 猜。 */}
-                                            {checkResult.warnings?.length > 0 && (
-                                                <div className="space-y-2">
-                                                    {checkResult.warnings.map((w, i) => (
-                                                        <div key={i} className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
-                                                            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                                                            <span>{w}</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-
-                                            {/* 判定口径：让用户能自己核对（多少条日志参与了判定） */}
-                                            {checkResult.stats && (
-                                                <div className="text-[11px] leading-relaxed text-slate-500">
-                                                    日志口径：共 <b>{checkResult.stats.total_qsos}</b> 条，
-                                                    通过基础筛选 <b>{checkResult.stats.basic_filtered}</b> 条，
-                                                    命中目标 <b>{checkResult.stats.target_matched}</b> 条。
-                                                </div>
-                                            )}
-
-                                            {/* Multi-level Claim Info */}
-                                            {checkResult.claimed_levels?.length > 0 && (
-                                                <div className="mt-2 text-xs text-slate-400 border-t pt-2">
-                                                    已领取: {checkResult.claimed_levels.join(', ')}
-                                                </div>
-                                            )}
-                                        </div>
-                                    ) : (
-                                        <div className="text-center py-6 text-slate-400 text-sm bg-slate-50 rounded-xl border border-dashed">
-                                            日志分析未就绪或出现错误
-                                        </div>
-                                    )}
-                                </div>
-                            )}
                         </div>
                     )}
 
+                    {!showMatrix && (<>
                     {/* 实物材料（M4）：收集要素 = QSL 卡片 / Eyeball 卡 / SWL 收听报告 */}
                     {showApplicantUI && (
                         <div className="mt-6 pt-4 border-t">
@@ -1443,42 +1332,120 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                         </div>
                     )}
 
-                    {/* ★ 进度摘要常驻在申领按钮正上方（2026-09-24 用户反馈"进度和明细没有显示"）：
-                        完整的「您的进度」块在页面上方（紧随「等级要求」），但右侧面板很长，
-                        用户滚到按钮时早已把它滚过去，加上「申领须知」旧文案写的是"下方进度与明细"，
-                        方向正好相反 —— 于是看起来就像"根本没有进度"。
-                        这一行保证「能不能领、差多少、去哪看明细」永远和申领按钮同屏。 */}
+                    {/* ★ 「您的进度」块（2026-09-25：用户反馈弹层里出现两个「查看进度与明细」，要求把进度放到最下面）
+                        原先位于「等级要求」下方，右侧面板很长、滚到申领按钮时早已滚过；现整体移到申领按钮正上方，
+                        并合并为唯一入口（原底部那行紧凑进度摘要 + 重复按钮已删除）。 */}
                     {showApplicantUI && (
-                        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-                            <div className="text-xs font-bold text-slate-600">
-                                {checkResult?.error ? (
-                                    <span className="text-red-600">进度分析失败：{checkResult.error}</span>
-                                ) : checkResult ? (
-                                    <>
-                                        当前进度{' '}
-                                        <span className={`text-base font-black ${checkResult.eligible ? 'text-green-600' : 'text-slate-800'}`}>
-                                            {checkResult.current_score}
-                                        </span>
-                                        <span className="text-slate-400"> / {checkResult.target_score}</span>
-                                        <span className={`ml-2 rounded px-1.5 py-0.5 text-[11px] ${checkResult.eligible ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-                                            {checkResult.eligible ? '已达标' : '未达标'}
-                                        </span>
-                                        {/* 一条日志都没有时，光看 "0 / 10" 会让人以为是功能坏了：这里直接说明原因 */}
-                                        {checkResult.stats?.total_qsos === 0 && (
-                                            <span className="ml-2 text-[11px] font-normal text-amber-600">尚未导入日志</span>
-                                        )}
-                                    </>
-                                ) : (
-                                    <span className="text-slate-400">{checking ? '正在分析日志…' : '进度暂不可用'}</span>
-                                )}
+                        <div className="mt-4 pt-4 border-t">
+                            <div className="flex justify-between items-center mb-3">
+                                <h4 className="font-bold text-sm text-slate-500 uppercase flex items-center gap-2">
+                                    <Activity size={14}/> 您的进度
+                                    {checking && <span className="text-xs font-normal text-blue-600 animate-pulse ml-2">正在分析日志...</span>}
+                                </h4>
+                                <button onClick={handleLoadMatrix} className="text-xs bg-blue-50 text-blue-600 px-3 py-1 rounded-full font-bold hover:bg-blue-100 flex items-center gap-1">
+                                    <Grid size={12}/> 查看进度与明细
+                                </button>
                             </div>
-                            <button
-                                type="button"
-                                onClick={handleLoadMatrix}
-                                className="shrink-0 rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-600 hover:bg-blue-100 flex items-center gap-1"
-                            >
-                                <Grid size={12} /> 查看进度与明细
-                            </button>
+                            
+                            {/* 分析失败时不能拿 `{error}` 当正常结果渲染（那样会显示 "undefined / undefined"） */}
+                            {checkResult?.error ? (
+                                <div className="flex items-start justify-between gap-3 rounded-xl border-2 border-red-200 bg-red-50 p-4 text-xs text-red-700">
+                                    <span className="flex items-start gap-2">
+                                        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                                        <span>进度分析失败：{checkResult.error}</span>
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => checkEligibility()}
+                                        className="shrink-0 rounded-lg border border-red-300 bg-white px-2 py-1 font-bold"
+                                    >
+                                        重试
+                                    </button>
+                                </div>
+                            ) : checkResult ? (
+                                <div className={`rounded-xl p-5 border-2 space-y-4 ${checkResult.eligible ? 'bg-green-50 border-green-200' : 'bg-slate-50 border-slate-200'}`}>
+                                    <div>
+                                        <div className="flex justify-between items-center mb-2">
+                                            <span className="text-sm font-bold text-slate-500">当前累计</span>
+                                            <span className="text-2xl font-black">{checkResult.current_score} <span className="text-sm text-slate-400 font-normal">/ {checkResult.target_score}</span></span>
+                                        </div>
+                                        {/* Progress Bar */}
+                                        <div className="w-full bg-slate-200 rounded-full h-3 mb-3 overflow-hidden">
+                                            <div 
+                                                className={`h-full transition-all duration-1000 ${checkResult.eligible ? 'bg-green-500' : 'bg-blue-500'}`} 
+                                                style={{width: `${Math.min(100, (checkResult.current_score / checkResult.target_score) * 100)}%`}}
+                                            ></div>
+                                        </div>
+                                        <div className="flex justify-between items-center">
+                                            <div className="text-xs text-slate-500 font-bold">
+                                                {checkResult.details?.msg}
+                                            </div>
+                                            {checkResult.eligible && <div className="px-2 py-1 bg-green-200 text-green-800 text-xs font-bold rounded flex items-center gap-1"><Check size={12}/> 已达成: {checkResult.achieved_level?.name}</div>}
+                                        </div>
+                                    </div>
+
+                                    {/* Detailed Target Breakdown */}
+                                    {checkResult.breakdown && (
+                                        <div className="bg-white rounded-lg p-3 border text-xs">
+                                            <div className="font-bold mb-2 flex justify-between">
+                                                <span>特定目标完成度 ({checkResult.breakdown.achieved.length}/{checkResult.breakdown.total_required})</span>
+                                            </div>
+                                            <div className="grid grid-cols-2 gap-2 max-h-40 overflow-y-auto">
+                                                <div>
+                                                    <div className="text-green-600 font-bold mb-1">已完成</div>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {checkResult.breakdown.achieved.map(t => (
+                                                            <span key={t.target} className="bg-green-100 text-green-700 px-1 rounded">{t.target}</span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-red-400 font-bold mb-1">未完成</div>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {checkResult.breakdown.missing.map(t => (
+                                                            <span key={t} className="bg-slate-100 text-slate-400 px-1 rounded">{t}</span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* ★ 判定自检提示（2026-09-24）：把"进度为什么是 0"讲清楚。
+                                        最典型的是目标类型与清单格式不匹配（DXCC 类型填了呼号）——
+                                        引擎永远匹配不上，这里必须给出可执行的线索，而不是让用户对着 0 猜。 */}
+                                    {checkResult.warnings?.length > 0 && (
+                                        <div className="space-y-2">
+                                            {checkResult.warnings.map((w, i) => (
+                                                <div key={i} className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">
+                                                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                                                    <span>{w}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+
+                                    {/* 判定口径：让用户能自己核对（多少条日志参与了判定） */}
+                                    {checkResult.stats && (
+                                        <div className="text-[11px] leading-relaxed text-slate-500">
+                                            日志口径：共 <b>{checkResult.stats.total_qsos}</b> 条，
+                                            通过基础筛选 <b>{checkResult.stats.basic_filtered}</b> 条，
+                                            命中目标 <b>{checkResult.stats.target_matched}</b> 条。
+                                        </div>
+                                    )}
+
+                                    {/* Multi-level Claim Info */}
+                                    {checkResult.claimed_levels?.length > 0 && (
+                                        <div className="mt-2 text-xs text-slate-400 border-t pt-2">
+                                            已领取: {checkResult.claimed_levels.join(', ')}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="text-center py-6 text-slate-400 text-sm bg-slate-50 rounded-xl border border-dashed">
+                                    日志分析未就绪或出现错误
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -1512,6 +1479,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                             )
                         )}
                     </div>
+                    </>)}
                 </div>
             </div>
         </div>
@@ -3184,6 +3152,11 @@ export default function App() {
   const [oauthPendingUsername, setOauthPendingUsername] = useState('');
   // 内测门禁：注册 / HamCQ 首次建号是否需要邀请码（来自公开接口 /api/system-status）
   const [requireInvite, setRequireInvite] = useState(false);
+  // 演示实例：落地页“体验演示系统”入口 + 演示实例横幅/公示凭据
+  const [demoUrl, setDemoUrl] = useState('');
+  const [demoMode, setDemoMode] = useState(false);
+  const [demoUser, setDemoUser] = useState('');
+  const [demoPass, setDemoPass] = useState('');
   
   // New States for Menu and Notifications
   const [expandedMenus, setExpandedMenus] = useState({});
@@ -3254,7 +3227,13 @@ export default function App() {
       .catch(() => {});
     fetch('/api/system-status')
       .then((r) => r.json())
-      .then((d) => setRequireInvite(!!d.requireInvite))
+      .then((d) => {
+        setRequireInvite(!!d.requireInvite);
+        setDemoUrl(d.demoUrl || '');
+        setDemoMode(!!d.demoMode);
+        setDemoUser(d.demoUser || '');
+        setDemoPass(d.demoPass || '');
+      })
       .catch(() => {});
   }, []);
 
@@ -3465,30 +3444,43 @@ export default function App() {
       }
   };
 
+  // 演示环境全局横幅：demoMode 为 true 时，下面每个视图的 return 都用
+  // <>{demoBar}{...}</> 包一层，保证「演示环境」提示出现在所有页面顶部。
+  const demoBar = demoMode ? (
+    <DemoBanner demoUser={demoUser} demoPass={demoPass} />
+  ) : null;
+
   // 公开校验页（奖状 PDF / 纸质件上的二维码指向这里）：必须免登录，
   // 所以在任何登录态判断之前拦截。
   const verifySerial = parseVerifyHash();
-  if (verifySerial) return <VerifyView serial={verifySerial} theme={theme} />;
+  if (verifySerial) return <>{demoBar}<VerifyView serial={verifySerial} theme={theme} /></>;
 
   // 公开静态页（关于 / 隐私政策）：同样免登录，返回时清掉 hash 回到原视图。
   const closePublicPage = () => {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
       setPublicPage(null);
   };
-  if (publicPage === 'about') return <AboutView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
-  if (publicPage === 'privacy') return <PrivacyView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
-  if (publicPage === 'terms') return <TermsView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
-  if (publicPage === 'protocol') return <ProtocolView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} />;
+  if (publicPage === 'about') return <>{demoBar}<AboutView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
+  if (publicPage === 'privacy') return <>{demoBar}<PrivacyView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
+  if (publicPage === 'terms') return <>{demoBar}<TermsView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
+  if (publicPage === 'protocol') return <>{demoBar}<ProtocolView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
 
-  if (view === 'install') return <InstallView onComplete={() => window.location.reload()} />;
+  if (view === 'install') return <>{demoBar}<InstallView onComplete={() => window.location.reload()} /></>;
 
   if (view === 'landing') return (
-    <LandingView
-      onLogin={() => { setAuthMode('login'); setView('auth'); }}
-      onRegister={() => { setAuthMode('register'); setView('auth'); }}
-      theme={theme}
-      onToggleTheme={toggleTheme}
-    />
+    <>
+      {demoBar}
+      <LandingView
+        onLogin={() => { setAuthMode('login'); setView('auth'); }}
+        onRegister={() => { setAuthMode('register'); setView('auth'); }}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        demoUrl={demoUrl}
+        demoMode={demoMode}
+        demoUser={demoUser}
+        demoPass={demoPass}
+      />
+    </>
   );
 
   if (view === 'auth') {
@@ -3515,7 +3507,9 @@ export default function App() {
       </div>
     ) : null;
     return (
-    <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative min-h-screen bg-slate-950 antialiased`}>
+    <div className="flex min-h-screen flex-col">
+      {demoBar}
+      <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative min-h-0 flex-1 bg-slate-950 antialiased`}>
       {/* 顶栏：跨两栏悬浮（返回首页 / 主题切换） */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between px-6 py-5">
         <button
@@ -3539,7 +3533,7 @@ export default function App() {
       {/* 分屏布局：左=表单，右=品牌展示（参考 Dribbble「Mix Certificate — Sign In & Landing Page UI」）
           注意 min-w-0：flex 子项默认 min-width:auto，会被内部内容撑开导致横向溢出，
           在 1024~1100px 这种刚过 lg 的宽度下尤其明显。 */}
-      <div className="flex min-h-screen">
+      <div className="flex min-h-0 flex-1">
         {/* ---------- 左栏：表单 ---------- */}
         <div className="flex w-full min-w-0 flex-col justify-center px-6 pb-14 pt-24 lg:w-[46%] lg:px-14 lg:pt-14">
           <div className="mx-auto w-full min-w-0 max-w-[380px] animate-scale-in">
@@ -3723,6 +3717,7 @@ export default function App() {
         </div>
       </div>
     </div>
+    </div>
     );
   }
 
@@ -3771,7 +3766,9 @@ export default function App() {
       ].filter(i => i.show);
 
       return (
-          <div className={`${theme === 'dark' ? 'app-dark bg-slate-950' : 'app-light'} relative flex h-screen overflow-hidden`}>
+          <div className="flex h-screen flex-col">
+              {demoBar}
+              <div className={`${theme === 'dark' ? 'app-dark bg-slate-950' : 'app-light'} relative flex min-h-0 flex-1 overflow-hidden`}>
               <div className="pointer-events-none absolute inset-0 overflow-hidden">
                   <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse 90% 55% at 50% -10%, rgba(255,255,255,0.05), transparent)' }} />
               </div>
@@ -3921,6 +3918,7 @@ export default function App() {
                       {subView === 'userCenter' && <UserCenterView user={user} refreshUser={refreshUser} onLogout={handleLogout} />}
                   </div>
               </main>
+          </div>
           </div>
       );
   }
