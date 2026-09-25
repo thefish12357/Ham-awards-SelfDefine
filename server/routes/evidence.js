@@ -116,8 +116,11 @@ export function createEvidenceRouter({ getDbPool, verifyToken, verifyAwardAdmin,
       const tzRaw = Number(req.body.match_tz_offset);
       const matchTzOffset = Number.isFinite(tzRaw) ? Math.max(-720, Math.min(840, Math.trunc(tzRaw))) : null;
 
-      const aw = await db().query('SELECT id, creator_id, name FROM awards WHERE id=$1', [awardId]);
+      const aw = await db().query('SELECT id, creator_id, name, status FROM awards WHERE id=$1', [awardId]);
       if (aw.rows.length === 0) return res.status(404).json({ error: 'AWARD_NOT_FOUND', message: '奖状不存在' });
+      if (aw.rows[0].status !== 'approved') {
+        return res.status(403).json({ error: 'AWARD_NOT_APPROVED', message: '只有已审核通过的奖状才能上传实物材料' });
+      }
 
       const ext = mime === 'image/png' ? 'png' : 'jpg';
       const key = `evidence/${req.user.id}/${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`;

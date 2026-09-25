@@ -543,6 +543,11 @@ const evaluateAward = async (userId, awardId, includeQsos = false) => {
     try {
         const awardRes = await client.query('SELECT * FROM awards WHERE id = $1', [awardId]);
         if (awardRes.rows.length === 0) throw new Error('Award not found');
+        if (awardRes.rows[0].status !== 'approved') {
+            const err = new Error('Award is not approved');
+            err.statusCode = 403;
+            throw err;
+        }
 
         // TODO(性能)：目前仍把该用户的全部 QSO 拉进应用内存再过滤，QSO 上万后会变慢。
         // 计划改为 SQL 侧过滤 + 分页，见 ROADMAP §7「奖状规则引擎升级」。
@@ -1552,17 +1557,30 @@ app.delete('/api/award-templates/:id', verifyToken, verifyAwardAdmin, async (req
 
 app.get('/api/awards/:id/check', verifyToken, async (req, res) => {
     try {
+        const award = await dbPool.query('SELECT id, status FROM awards WHERE id = $1', [req.params.id]);
+        if (award.rows.length === 0) return res.status(404).json({ error: 'AWARD_NOT_FOUND', message: '奖状不存在' });
+        if (award.rows[0].status !== 'approved') {
+            return res.status(403).json({ error: 'AWARD_NOT_APPROVED', message: '只有已审核通过的奖状才能查阅进度' });
+        }
+
         const includeQsos = req.query.include_qsos === 'true';
         const result = await evaluateAward(req.user.id, req.params.id, includeQsos);
         res.json(result);
     } catch (e) {
         console.error(e);
-        res.status(500).json({ error: e.message });
+        const status = e && e.statusCode ? e.statusCode : 500;
+        res.status(status).json({ error: e.message || 'Unknown error' });
     }
 });
 
 app.post('/api/awards/:id/apply', verifyToken, async (req, res) => {
     try {
+        const award = await dbPool.query('SELECT id, status, name FROM awards WHERE id = $1', [req.params.id]);
+        if (award.rows.length === 0) return res.status(404).json({ error: 'AWARD_NOT_FOUND', message: '奖状不存在' });
+        if (award.rows[0].status !== 'approved') {
+            return res.status(403).json({ error: 'AWARD_NOT_APPROVED', message: '只有已审核通过的奖状才能申请' });
+        }
+
         const { eligible, achieved_level, current_score } = await evaluateAward(req.user.id, req.params.id);
         if (!eligible) return res.status(400).json({ error: 'Conditions not met', message: '未满足申请条件' });
 
