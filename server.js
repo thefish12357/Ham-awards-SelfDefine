@@ -663,6 +663,7 @@ app.use('/api/lotw', createLotwRouter({
     getDbPool: () => dbPool,
     verifyToken,
     getConfig: () => appConfig,
+    lookupDxcc,
 }));
 
 // --- 实物材料（M4 新增）---

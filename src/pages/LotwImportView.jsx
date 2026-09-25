@@ -6,6 +6,7 @@ import {
   Loader2,
   Trash2,
   RefreshCw,
+  Download,
   Trophy,
   CheckCircle2,
   AlertCircle,
@@ -92,6 +93,10 @@ export default function LotwImportView() {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState(null);
   const [applying, setApplying] = useState(false);
+
+  // 「导入到我日志库」：用户主动把临时会话里的 QSO 写进 qsos 表（默认不落库，这里显式触发）
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   const [now, setNow] = useState(Date.now());
   const sessionIdRef = useRef(null);
@@ -272,6 +277,33 @@ export default function LotwImportView() {
       setError(err?.message || '申请失败');
     } finally {
       setApplying(false);
+    }
+  };
+
+  const handleImport = async () => {
+    if (!sessionIdRef.current) return;
+    const ok = await confirmDialog({
+      title: '导入到我日志库',
+      message: '是否把这份 LoTW 临时日志写入本站日志库？',
+      detail:
+        '写入后，「全部日志 / 日志上传」「奖状详情页的进度与明细」都会显示这些通联，也能直接在本站申领奖状。' +
+        '这会与 ADIF 上传一样在服务器上长期保存（默认 30 分钟的内存会话不自动落库，需你手动点这一下）。',
+      confirmText: '导入日志库',
+    });
+    if (!ok) return;
+    setImporting(true);
+    setImportResult(null);
+    setError(null);
+    try {
+      const data = await apiFetch('/lotw/import', {
+        method: 'POST',
+        body: JSON.stringify({ sessionId: sessionIdRef.current }),
+      });
+      setImportResult(data);
+    } catch (err) {
+      setError(err?.message || '导入失败');
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -513,6 +545,28 @@ export default function LotwImportView() {
             <Info size={14} className="mt-0.5 shrink-0" />
             这些记录只存在服务器内存中，到期自动清除；关闭或刷新本页面也会立即通知服务器清除。数据库里没有任何一条记录。
           </p>
+
+          {/* 「导入到我日志库」：默认不落库，由用户主动选择。落库后与 ADIF 上传等价，
+              详情页 / 日志库 / 进度与明细会与直连判定保持一致。 */}
+          <div className="flex flex-wrap items-center gap-3 pt-1">
+            <button
+              type="button"
+              onClick={handleImport}
+              disabled={importing || expired}
+              className="flex items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {importing ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+              {importing ? '导入中…' : '导入到我日志库'}
+            </button>
+            <span className="text-xs text-slate-400">让奖状详情页、日志库也能看到这些通联（与 ADIF 上传等价，会长期保存）</span>
+          </div>
+          {importResult && (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+              已处理 {importResult.count} 条，其中 <b>{importResult.imported}</b> 条新增到你的日志库
+              {importResult.imported < importResult.count ? '（其余已存在，自动跳过）' : ''}。
+              现在去奖状详情页就能看到进度与明细了。
+            </div>
+          )}
         </div>
       )}
 

@@ -80,7 +80,7 @@ const validateReportRange = (from, to) => {
   return null;
 };
 
-export function createLotwRouter({ getDbPool, verifyToken, getConfig }) {
+export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc }) {
   const router = express.Router();
 
   const lotwConfig = () => {
@@ -283,6 +283,60 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig }) {
     } catch (e) {
       console.error('LoTW apply failed:', e && e.message);
       res.status(500).json({ error: 'APPLY_FAILED', message: '申请失败，请稍后重试' });
+    }
+  });
+
+  // ---------------------------------------------------------------
+  // 把临时会话里的 QSO 显式写入用户日志库（可选，用户主动触发）
+  // ---------------------------------------------------------------
+  // ⚠️ 与「需求①硬要求」（QSO 不落库）的关系：默认仍**不**落库；这里只在用户
+  //    点了「导入到我日志库」后落库，让详情页 / 日志库 / 进度与明细能与 LoTW 直连
+  //    判定结果保持一致。落库逻辑与 ADIF 上传完全等价（同样的 UNIQUE 键 + 同样的
+  //    DXCC 反查），保证「直连判定通过 → 导入 → 详情页也通过」不会翻车。
+  router.post('/import', verifyToken, async (req, res) => {
+    const body = req.body || {};
+    const session = sessions.getSession(body.sessionId, req.user.id);
+    if (!session) {
+      return res
+        .status(410)
+        .json({ error: 'SESSION_GONE', message: '临时日志会话已过期或不存在，请重新连接 LoTW' });
+    }
+    try {
+      const dbPool = getDbPool();
+      const client = await dbPool.connect();
+      let imported = 0;
+      try {
+        await client.query('BEGIN');
+        for (const r of session.records) {
+          // ADIF 自带 DXCC/COUNTRY 时直接用；缺一字段时按 cty.dat 反查呼号补全（与 ADIF 上传一致）
+          let dxNum = r.dxcc || '';
+          let dxName = r.country || '';
+          if ((!dxNum || !dxName) && r.call) {
+            const dx = lookupDxcc(r.call);
+            if (dx) {
+              if (!dxNum) dxNum = dx.dxcc || '';
+              if (!dxName) dxName = dx.name || '';
+            }
+          }
+          const ins = await client.query(
+            `INSERT INTO qsos (user_id, callsign, band, mode, qso_date, dxcc, country, adif_raw)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (user_id, callsign, band, mode, qso_date) DO NOTHING`,
+            [req.user.id, r.call || '', r.band || '', r.mode || '', r.qso_date || '', dxNum, dxName, JSON.stringify(r)],
+          );
+          if (ins.rowCount) imported += 1;
+        }
+        await client.query('COMMIT');
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
+      res.json({ success: true, count: session.records.length, imported });
+    } catch (e) {
+      console.error('LoTW import failed:', e && e.message);
+      res.status(500).json({ error: 'IMPORT_FAILED', message: '导入日志库失败，请稍后重试' });
     }
   });
 
