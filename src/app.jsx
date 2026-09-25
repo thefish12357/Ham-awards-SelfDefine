@@ -372,8 +372,68 @@ const DashboardView = ({ user }) => {
     );
 };
 
+/**
+ * 「日志匹配分析」空状态（2026-09-25）
+ * ------------------------------------------------------------------
+ * 以前没有匹配记录时只渲染一句灰色小字「暂无匹配日志」：用户点「查看进度与明细」
+ * 进来看到几乎一片空白，反馈"点了没东西显示"。这里按 stats 分清两种原因并给出下一步：
+ *   ① 一条日志都没有 → 根本没得比 → 引导去「日志上传」导入 ADIF；
+ *   ② 有日志但没命中 → 规则/目标问题 → 提示对照上方黄色警告逐项排查。
+ * 特别提醒：LoTW 直连只是把报表读进临时内存会话，**不会**写进 qsos 表，
+ * 所以这里必须说"上传 ADIF"，否则用户会以为连过 LoTW 就够了。
+ */
+const EmptyMatchState = ({ checkResult, onGoLogbook }) => {
+    const stats = checkResult?.stats;
+    const total = stats?.total_qsos ?? 0;
+    const filtered = stats?.basic_filtered ?? 0;
+    // 只有拿到 stats 才敢判定"一条日志都没有"（老版本响应没有 stats，不能张口就说人没导日志）
+    const noLogs = !!stats && total === 0;
+    return (
+        <div className="flex h-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-200 text-slate-400">
+                <FileText size={22} />
+            </div>
+            {noLogs ? (
+                <>
+                    <h4 className="text-sm font-bold text-slate-700">你还没有导入日志，暂时没有可比对的数据</h4>
+                    <p className="max-w-md text-xs leading-relaxed text-slate-500">
+                        进度与明细是拿<b>你自己的日志</b>逐条比对奖状规则算出来的 —— 没有日志，就没有可匹配的记录。
+                        请先在「日志上传」导入 ADIF 文件，再回来看进度。
+                    </p>
+                    <p className="max-w-md text-[11px] leading-relaxed text-slate-400">
+                        注意：「LoTW 直连」只是临时读取报表，不会写入日志库，不能替代日志上传。
+                    </p>
+                    {onGoLogbook && (
+                        <button
+                            type="button"
+                            onClick={onGoLogbook}
+                            className="mt-1 flex items-center gap-1.5 rounded-full bg-blue-600 px-4 py-2 text-xs font-bold text-white hover:bg-blue-700"
+                        >
+                            <Upload size={13} /> 去日志上传
+                        </button>
+                    )}
+                </>
+            ) : (
+                <>
+                    <h4 className="text-sm font-bold text-slate-700">日志里没有符合条件的记录</h4>
+                    <p className="max-w-md text-xs leading-relaxed text-slate-500">
+                        {stats ? (
+                            <>
+                                你的日志库共 <b>{total}</b> 条，其中 <b>{filtered}</b> 条通过了本奖状的基础筛选，
+                                但没有一条命中判定目标 —— 请对照上方黄色提示，逐项检查规则条件与日志内容。
+                            </>
+                        ) : (
+                            <>没有一条日志记录命中本奖状的判定目标 —— 请对照上方提示，检查规则条件与日志内容。</>
+                        )}
+                    </p>
+                </>
+            )}
+        </div>
+    );
+};
+
 // Log Matrix Component (Updated for dynamic columns based on deduplication)
-const LogMatchMatrix = ({ qsos, award, checkResult }) => {
+const LogMatchMatrix = ({ qsos, award, checkResult, onGoLogbook }) => {
     // 2. 包含特定判定项收集的奖项，日志比对详情显示参考附件中图片所示
     const rules = award.rules || {};
     const hasSpecificTargets = rules.targets?.type && ['callsign', 'dxcc', 'grid', 'iota', 'state', 'district'].includes(rules.targets.type) && rules.targets.list;
@@ -392,8 +452,29 @@ const LogMatchMatrix = ({ qsos, award, checkResult }) => {
         // Sort by target name
         allItems.sort((a,b) => a.target.localeCompare(b.target));
 
+        // 一条日志都没有时，整张表全红会让人以为"功能坏了"：先说清原因，再列清单
+        const noLogs = checkResult?.stats?.total_qsos === 0;
+
         return (
             <div className="overflow-auto border rounded-xl shadow-sm max-h-[60vh] relative">
+                {noLogs && (
+                    <div className="sticky top-0 z-30 flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        <AlertTriangle size={14} />
+                        <span>
+                            你还没有导入日志，所以下面 <b>{allItems.length}</b> 项都判为未完成。
+                            请先在「日志上传」导入 ADIF（「LoTW 直连」只临时读取，不会写入日志库）。
+                        </span>
+                        {onGoLogbook && (
+                            <button
+                                type="button"
+                                onClick={onGoLogbook}
+                                className="ml-auto flex shrink-0 items-center gap-1 rounded-full bg-blue-600 px-3 py-1 text-xs font-bold text-white hover:bg-blue-700"
+                            >
+                                <Upload size={12} /> 去日志上传
+                            </button>
+                        )}
+                    </div>
+                )}
                 <table className="w-full text-sm border-collapse">
                     <thead className="sticky top-0 z-20 shadow-sm">
                         <tr className="bg-slate-100 text-slate-600 font-bold border-b-2 border-slate-200">
@@ -429,7 +510,7 @@ const LogMatchMatrix = ({ qsos, award, checkResult }) => {
 
     // View 2: Standard Band/Mode Matrix (Fallback for general awards)
     // 6. 用户的奖项日志匹配详情的波段模式表头按照波长顺序排列，从左到右从长到短
-    if (!qsos || qsos.length === 0) return <div className="p-4 text-center text-slate-400">暂无匹配日志</div>;
+    if (!qsos || qsos.length === 0) return <EmptyMatchState checkResult={checkResult} onGoLogbook={onGoLogbook} />;
 
     // Define Wavelength Sort Order
     const bandOrder = ['160M', '80M', '60M', '40M', '30M', '20M', '17M', '15M', '12M', '10M', '6M', '4M', '2M', '70CM', '23CM'];
@@ -849,6 +930,13 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
         checkEligibility(true); // reload with qsos
     };
 
+    // 「去日志上传」：先关掉详情弹层，再切到 logbook 页
+    // （写 hash 即可，App 的 hashchange 监听会把 subView 同步过去）
+    const handleGoLogbook = () => {
+        onClose();
+        writeRoute('logbook');
+    };
+
     const handleEvidenceUpload = async (e) => {
         const file = e.target.files && e.target.files[0];
         e.target.value = '';
@@ -1019,7 +1107,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                             )}
                             <div className="flex-1 overflow-hidden relative">
                                 {checkResult?.matching_qsos ? (
-                                    <LogMatchMatrix qsos={checkResult.matching_qsos} award={award} checkResult={checkResult} />
+                                    <LogMatchMatrix qsos={checkResult.matching_qsos} award={award} checkResult={checkResult} onGoLogbook={handleGoLogbook} />
                                 ) : (
                                     <div className="text-center p-8 text-slate-400">加载中...</div>
                                 )}
@@ -1375,6 +1463,10 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                         <span className={`ml-2 rounded px-1.5 py-0.5 text-[11px] ${checkResult.eligible ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
                                             {checkResult.eligible ? '已达标' : '未达标'}
                                         </span>
+                                        {/* 一条日志都没有时，光看 "0 / 10" 会让人以为是功能坏了：这里直接说明原因 */}
+                                        {checkResult.stats?.total_qsos === 0 && (
+                                            <span className="ml-2 text-[11px] font-normal text-amber-600">尚未导入日志</span>
+                                        )}
                                     </>
                                 ) : (
                                     <span className="text-slate-400">{checking ? '正在分析日志…' : '进度暂不可用'}</span>
