@@ -17,8 +17,28 @@
 import express from 'express';
 import crypto from 'crypto';
 import * as sessions from '../services/lotwSessions.js';
+import * as jobs from '../services/lotwJobs.js';
 import { fetchLotwReports, LotwError, validateLotwLogin } from '../services/lotwClient.js';
 import { evaluateAward } from '../services/awardEngine.js';
+
+/**
+ * 把拉取过程中的异常转成前端可消费的错误体。
+ * 与旧版 `/connect` 同步返回的错误形状保持一致，前端无需改判断逻辑。
+ */
+const toJobError = (e) => {
+  if (e instanceof LotwError) {
+    return {
+      error: e.code,
+      message: e.message,
+      rangeTooLarge: e.code === 'LOTW_RANGE_TOO_LARGE',
+      detail: e.detail,
+    };
+  }
+  if (e && e.code === 'LOTW_CAPACITY') {
+    return { error: e.code, message: e.message };
+  }
+  return { error: 'LOTW_ERROR', message: '读取 LoTW 日志失败，请稍后重试' };
+};
 
 /** 把 LoTW 精简记录包装成判定引擎认识的 QSO 行形状 */
 const toQsoRow = (raw) => ({
@@ -125,50 +145,74 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
     const ownCall = body.ownCall ? String(body.ownCall).trim() : undefined;
     const includeAll = !!body.includeAll;
 
-    try {
-      const result = await fetchLotwReports({
-        login,
-        password,
-        ownCall,
-        from,
-        to,
-        includeAll,
-        timeoutMs: cfg.timeoutMs,
-        maxBytes: cfg.batchMaxBytes,
-        maxDepth: cfg.maxSplitDepth,
-      });
+    // 建好「进度任务」并**立刻返回 jobId**：用户随即就能看到终端日志，
+    // 而不是盯着一个转圈按钮干等几分钟（大日志能跑几分钟）。
+    // 凭据仍然只走 POST 请求体，不会进入 URL / access log。
+    const job = jobs.createJob(req.user.id);
+    res.status(202).json({ success: true, jobId: job.jobId });
 
-      const session = await sessions.createSession(req.user.id, result);
-
-      // 注意：这里刻意不记录任何请求体内容，避免凭据进入日志
-      res.json({
-        success: true,
-        session: sessions.describeSession(session),
-        stats: {
-          recordCount: result.recordCount,
-          qslCount: result.qslCount,
-          qsoCount: result.qsoCount,
-          addedFromAll: result.addedFromAll,
-          bytes: result.bytes,
-          batches: result.batches.length,
-        },
-        range: result.range,
-      });
-    } catch (e) {
-      if (e instanceof LotwError) {
-        return res.status(e.httpStatus || 502).json({
-          error: e.code,
-          message: e.message,
-          rangeTooLarge: e.code === 'LOTW_RANGE_TOO_LARGE',
-          detail: e.detail,
+    // 后台继续执行（不 await，让上面的响应先回去）。
+    // 凭据只存在于这个闭包的局部变量里：不落盘、不落库、不进日志。
+    (async () => {
+      try {
+        const result = await fetchLotwReports({
+          login,
+          password,
+          ownCall,
+          from,
+          to,
+          includeAll,
+          timeoutMs: cfg.timeoutMs,
+          maxBytes: cfg.batchMaxBytes,
+          maxDepth: cfg.maxSplitDepth,
+          // 进度只含「过程描述」（条数/字节/区间），不含任何 QSO 内容与凭据
+          onProgress: (ev) => jobs.appendEvent(job, ev),
         });
+
+        jobs.appendEvent(job, { msg: '正在写入服务端临时会话（仅内存，到期自动清除）…' });
+        const session = await sessions.createSession(req.user.id, result);
+        jobs.appendEvent(job, {
+          msg: `临时会话已建立：可判定记录 ${result.recordCount} 条 · 有效期 ${Math.round((cfg.cacheTtlMinutes || 30))} 分钟`,
+          level: 'ok',
+        });
+
+        // 注意：这里刻意不记录任何请求体内容，避免凭据进入日志
+        jobs.finishJob(job, {
+          success: true,
+          session: sessions.describeSession(session),
+          stats: {
+            recordCount: result.recordCount,
+            qslCount: result.qslCount,
+            qsoCount: result.qsoCount,
+            addedFromAll: result.addedFromAll,
+            bytes: result.bytes,
+            batches: result.batches.length,
+          },
+          range: result.range,
+        });
+      } catch (e) {
+        const payload = toJobError(e);
+        if (!(e instanceof LotwError) && !(e && e.code === 'LOTW_CAPACITY')) {
+          console.error('LoTW connect failed:', e && (e.code || e.message));
+        }
+        // 先记日志再置失败态（任务进入 error 后不再收事件）
+        jobs.appendEvent(job, { msg: `读取失败：${payload.message}`, level: 'error' });
+        jobs.failJob(job, payload);
       }
-      if (e && e.code === 'LOTW_CAPACITY') {
-        return res.status(507).json({ error: e.code, message: e.message });
-      }
-      console.error('LoTW connect failed:', e && (e.code || e.message));
-      res.status(500).json({ error: 'LOTW_ERROR', message: '读取 LoTW 日志失败，请稍后重试' });
-    }
+    })();
+  });
+
+  // ---------------------------------------------------------------
+  // 连接进度（轮询）
+  // ---------------------------------------------------------------
+  // 前端在 POST /connect 拿到 jobId 后按 ~600ms 轮询本接口，把增量事件渲染成
+  // 终端日志。不带 jobId 时返回该用户最近的任务 —— 刷新页面后能把日志接回来。
+  router.get('/connect/progress', verifyToken, async (req, res) => {
+    const since = Number(req.query.since) || 0;
+    const jobId = req.query.jobId ? String(req.query.jobId) : '';
+    const job = jobId ? jobs.getJob(jobId, req.user.id) : jobs.getLatestJob(req.user.id);
+    if (!job) return res.json({ status: 'none' });
+    res.json(jobs.describeJob(job, since));
   });
 
   // ---------------------------------------------------------------

@@ -13,6 +13,9 @@ import {
   Clock,
   Info,
   CalendarRange,
+  Terminal,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { apiFetch } from '../lib/apiFetch.js';
 import { confirmDialog } from '../lib/confirm.jsx';
@@ -39,6 +42,25 @@ const fmtBytes = (n) => {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
+};
+
+const fmtNum = (n) => Number(n || 0).toLocaleString('en-US');
+
+/** 终端日志的时间戳：HH:MM:SS.mmm（本地时间） */
+const fmtClock = (ms) => {
+  const d = new Date(ms || Date.now());
+  const p = (v, w = 2) => String(v).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+};
+
+// 终端日志的级别 → 图标/颜色（与后端 lotwJobs 的 level 取值对应）
+const LOG_LEVEL_ICON = { info: '›', ok: '✔', warn: '▲', error: '✖', progress: '▸' };
+const LOG_LEVEL_CLASS = {
+  info: 'text-slate-300',
+  ok: 'text-emerald-400',
+  warn: 'text-amber-300',
+  error: 'text-red-400',
+  progress: 'text-sky-300',
 };
 
 const fmtRemaining = (ms) => {
@@ -101,11 +123,121 @@ export default function LotwImportView() {
   const [now, setNow] = useState(Date.now());
   const sessionIdRef = useRef(null);
 
+  // ---------------- 读取进度（终端日志） ----------------
+  // 后端把「拉取 → 解析 → 建会话」变成可观察的后台任务，这里轮询增量事件渲染成终端。
+  // 见 server/services/lotwJobs.js 与 server/routes/lotw.js 的 /connect/progress。
+  const [logs, setLogs] = useState([]);
+  const [logProgress, setLogProgress] = useState(null);
+  const [jobStage, setJobStage] = useState(null); // null | 'running' | 'done' | 'error'
+  const [logCollapsed, setLogCollapsed] = useState(false);
+  const jobIdRef = useRef(null);
+  const pollTimerRef = useRef(null);
+  const lastSeqRef = useRef(0);
+  const logBoxRef = useRef(null);
+  const restoredRef = useRef(false);
+
   // 剩余时间倒计时
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+
+  // ---------------- 读取进度轮询 ----------------
+  const stopPolling = () => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  };
+
+  /**
+   * 轮询任务进度：把增量事件接到终端日志，直到 done / error / none。
+   * 用 setTimeout 递归而不是 setInterval —— 保证上一次请求回来后才发下一次，
+   * 不会在服务端稍慢时堆积请求。
+   */
+  const pollJob = async (jobId) => {
+    try {
+      const data = await apiFetch(
+        `/lotw/connect/progress?jobId=${encodeURIComponent(jobId)}&since=${lastSeqRef.current}`,
+      );
+      if (data?.events?.length) {
+        lastSeqRef.current = data.events[data.events.length - 1].seq;
+        setLogs((prev) => [...prev, ...data.events]);
+      }
+      if (data?.progress) setLogProgress(data.progress);
+
+      if (data?.status === 'done') {
+        stopPolling();
+        setJobStage('done');
+        setConnecting(false);
+        const result = data.result || {};
+        sessionIdRef.current = result.session?.sessionId || null;
+        setSession(result.session || null);
+        setStats(result.stats || null);
+        // 密码用完即从界面状态里清掉，不留在内存里
+        setForm((prev) => ({ ...prev, password: '' }));
+        return;
+      }
+      if (data?.status === 'error') {
+        stopPolling();
+        setJobStage('error');
+        setConnecting(false);
+        const err = data.error || {};
+        setError(
+          err.rangeTooLarge
+            ? '这段时间的日志太大，请把「起始日期」调近一些再试（例如只取最近 3 年）'
+            : err.message || '读取 LoTW 日志失败',
+        );
+        return;
+      }
+      if (data?.status === 'none') {
+        stopPolling();
+        setJobStage('error');
+        setConnecting(false);
+        setError('读取任务已结束或已过期（服务可能重启过），请重新连接');
+        return;
+      }
+      pollTimerRef.current = setTimeout(() => pollJob(jobId), 600);
+    } catch (e) {
+      stopPolling();
+      setJobStage('error');
+      setConnecting(false);
+      setError(e?.message || '获取读取进度失败，请重试');
+    }
+  };
+
+  // 刷新页面后任务可能还在跑：把终端日志接回来（不带 jobId 时后端返回最近的任务）
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    let cancelled = false;
+    apiFetch('/lotw/connect/progress')
+      .then((data) => {
+        if (cancelled || !data || data.status !== 'running') return;
+        jobIdRef.current = data.jobId;
+        lastSeqRef.current = data.seq || 0;
+        setLogs(Array.isArray(data.events) ? data.events : []);
+        setLogProgress(data.progress || null);
+        setJobStage('running');
+        setConnecting(true);
+        pollJob(data.jobId);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      stopPolling();
+      // 允许 StrictMode 的「挂载→卸载→再挂载」流程重新接一次，否则开发环境下连不上
+      restoredRef.current = false;
+    };
+  }, []);
+
+  // 日志自动滚到底部（除非用户正在手动往上翻）
+  useEffect(() => {
+    const box = logBoxRef.current;
+    if (!box) return;
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+  }, [logs]);
 
   // 页面关闭/刷新时通知服务端立即清除临时会话。
   // 注意：这里刻意不在「组件卸载」时清除，否则用户去别的页面看一眼奖状，
@@ -179,9 +311,19 @@ export default function LotwImportView() {
       setError(rangeError);
       return;
     }
+    stopPolling();
     setConnecting(true);
     setResult(null);
+    setImportResult(null);
+    // 重置终端（每次连接都是一份新的日志）
+    setLogs([]);
+    setLogProgress(null);
+    setJobStage('running');
+    setLogCollapsed(false);
+    lastSeqRef.current = 0;
     try {
+      // 后端改为「先建任务并立刻返回 jobId」，进度由 /connect/progress 轮询取。
+      // 校验类错误（用户名/日期格式等）仍会在这里同步抛回。
       const data = await apiFetch('/lotw/connect', {
         method: 'POST',
         body: JSON.stringify({
@@ -193,18 +335,19 @@ export default function LotwImportView() {
           includeAll: form.includeAll,
         }),
       });
-      sessionIdRef.current = data.session?.sessionId || null;
-      setSession(data.session);
-      setStats(data.stats);
-      // 密码用完即从界面状态里清掉，不留在内存里
-      update({ password: '' });
+      jobIdRef.current = data?.jobId || null;
+      if (!jobIdRef.current) throw { message: '服务端没有返回读取任务编号，请重试' };
+      pollJob(jobIdRef.current);
     } catch (err) {
-      setError(err?.message || '读取 LoTW 日志失败');
-      if (err?.rangeTooLarge) {
-        setError('这段时间的日志太大，请把「起始日期」调近一些再试（例如只取最近 3 年）');
-      }
-    } finally {
       setConnecting(false);
+      setJobStage('error');
+      setError(err?.rangeTooLarge
+        ? '这段时间的日志太大，请把「起始日期」调近一些再试（例如只取最近 3 年）'
+        : err?.message || '读取 LoTW 日志失败');
+      setLogs((prev) => [
+        ...prev,
+        { seq: 0, at: Date.now(), level: 'error', msg: err?.message || '请求失败' },
+      ]);
     }
   };
 
@@ -222,6 +365,12 @@ export default function LotwImportView() {
     setSession(null);
     setStats(null);
     setResult(null);
+    // 顺手把读取任务与终端日志一并收掉，避免残留的进度面板误导用户
+    stopPolling();
+    jobIdRef.current = null;
+    setJobStage(null);
+    setLogs([]);
+    setLogProgress(null);
     try {
       await apiFetch(sid ? `/lotw/session?id=${encodeURIComponent(sid)}` : '/lotw/session', {
         method: 'DELETE',
@@ -507,9 +656,82 @@ export default function LotwImportView() {
           className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white rounded-xl font-bold flex items-center gap-2"
         >
           {connecting ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
-          {connecting ? '正在读取 LoTW（大日志可能较慢）…' : '连接并读取'}
+          {connecting ? '正在读取 LoTW（进度见下方终端）…' : '连接并读取'}
         </button>
       </form>
+
+      {/* 读取进度终端：把「下载 / 解析 / 建会话」的过程如实展示出来。
+          没有它时，大日志要跑几分钟，用户只能盯着转圈按钮，不知道是卡住了还是在正常解析。 */}
+      {jobStage && (
+        <div className="rounded-2xl overflow-hidden border border-slate-700 bg-[#0b1220] shadow-xl">
+          <div className="flex items-center justify-between gap-3 px-4 py-2.5 bg-slate-800/70 border-b border-slate-700">
+            <div className="flex items-center gap-2 text-slate-200 text-xs font-bold">
+              <span className="flex gap-1.5 mr-1">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-400/80" />
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400/80" />
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400/80" />
+              </span>
+              <Terminal size={14} /> LoTW 连接终端
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] font-mono text-slate-400">
+                {jobStage === 'running' ? '进行中…' : jobStage === 'done' ? '已完成' : '已失败'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setLogCollapsed((v) => !v)}
+                className="text-slate-400 hover:text-slate-200"
+                title={logCollapsed ? '展开日志' : '收起日志'}
+              >
+                {logCollapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+              </button>
+            </div>
+          </div>
+
+          {!logCollapsed && (
+            <>
+              <div
+                ref={logBoxRef}
+                className="max-h-64 overflow-y-auto px-4 py-3 font-mono text-[11.5px] leading-relaxed"
+              >
+                {logs.length === 0 && <div className="text-slate-500">等待 LoTW 响应…</div>}
+                {logs.map((l, i) => (
+                  <div key={`${l.seq}-${i}`} className="flex gap-2">
+                    <span className="text-slate-500 shrink-0">{fmtClock(l.at)}</span>
+                    <span className={`break-all ${LOG_LEVEL_CLASS[l.level] || LOG_LEVEL_CLASS.info}`}>
+                      {LOG_LEVEL_ICON[l.level] || LOG_LEVEL_ICON.info} {l.msg}
+                    </span>
+                  </div>
+                ))}
+                {jobStage === 'running' && (
+                  <div className="flex gap-2 text-slate-500">
+                    <span className="shrink-0">{fmtClock(now)}</span>
+                    <span className="animate-pulse">▌</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-3 px-4 py-2.5 border-t border-slate-700 bg-slate-900/60">
+                <div className="flex-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      logProgress?.pct == null ? 'w-1/3 animate-pulse bg-sky-400/70' : 'bg-emerald-400'
+                    }`}
+                    style={logProgress?.pct == null ? undefined : { width: `${logProgress.pct}%` }}
+                  />
+                </div>
+                <span className="text-[11px] font-mono text-slate-400 shrink-0">
+                  {logProgress
+                    ? logProgress.pct != null
+                      ? `${logProgress.pct}%`
+                      : `${fmtNum(logProgress.done)} 条 · ${fmtBytes(logProgress.bytes)}`
+                    : '准备中'}
+                </span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* 临时会话状态 */}
       {session && (
