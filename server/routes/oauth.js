@@ -221,6 +221,14 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         u.id,
       ]);
       await pendingBinds.del(pendingToken);
+      // 审计：OAuth「绑定已有账号」也是一次登录，必须留痕（此前漏记，导致用户登录查不到）
+      await audit(req, {
+        action: 'auth.login',
+        targetType: 'user',
+        targetId: u.id,
+        actor: { id: u.id, callsign: u.callsign, role: u.role },
+        detail: { channel: 'hamcq', bound: true },
+      });
       return res.json({ token: signToken(u), user: publicUser(u) });
     }
 
@@ -248,6 +256,14 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
     if (usedCode) {
       await audit(req, { action: 'invite.use', targetType: 'invite', targetId: usedCode, detail: { callsign: u.callsign, channel: 'hamcq' } });
     }
+    // 审计：OAuth 首次建号同时也是一次登录
+    await audit(req, {
+      action: 'auth.login',
+      targetType: 'user',
+      targetId: u.id,
+      actor: { id: u.id, callsign: u.callsign, role: u.role },
+      detail: { channel: 'hamcq', created: true },
+    });
     return res.json({ token: signToken(u), user: publicUser(u) });
   });
 
@@ -266,6 +282,14 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       const u = r.rows[0];
       if (!u) return res.status(401).json({ error: 'USER_NOT_FOUND', message: '账号不存在' });
       if (u.status === 'disabled') return res.status(401).json({ error: 'ACCOUNT_DISABLED', message: '账号已被禁用' });
+      // 审计：OAuth 已绑定账号的常规登录（此前漏记，导致用户登录查不到）
+      await audit(req, {
+        action: 'auth.login',
+        targetType: 'user',
+        targetId: u.id,
+        actor: { id: u.id, callsign: u.callsign, role: u.role },
+        detail: { channel: 'hamcq' },
+      });
       res.json({ token: signToken(u), user: publicUser(u) });
     } catch (e) {
       res.status(500).json({ error: 'SERVER_ERROR' });

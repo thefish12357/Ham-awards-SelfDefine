@@ -3181,6 +3181,9 @@ export default function App() {
   const [oauthProviders, setOauthProviders] = useState([]);
   const [oauthPendingToken, setOauthPendingToken] = useState(null);
   const [oauthPendingUsername, setOauthPendingUsername] = useState('');
+  // 一次性换码防重复消费：StrictMode(dev)/重挂载会让下面的 effect 跑两次，
+  // 第二次换码会 401，从而把已登录用户错误地踢回登录页（表现为"登录后仍是登录页，刷新才进去"）。
+  const oauthCodeRef = useRef(false);
   // 内测门禁：注册 / HamCQ 首次建号是否需要邀请码（来自公开接口 /api/system-status）
   const [requireInvite, setRequireInvite] = useState(false);
   // 演示实例：落地页“体验演示系统”入口 + 演示实例横幅/公示凭据
@@ -3202,7 +3205,11 @@ export default function App() {
     if (hash.startsWith('#/oauth/code')) {
       const q = new URLSearchParams(hash.split('?')[1] || '');
       const code = q.get('code');
+      // 已处理过这个 code（StrictMode/重挂载导致的第二次执行）→ 直接返回，
+      // 绝不再发一次换码请求，否则 401 会覆盖刚设置的登录态。
+      if (code && oauthCodeRef.current) return;
       if (code) {
+        oauthCodeRef.current = true;
         // 安全加固（审计整改）：URL 里只有一次性短码，POST 向后端换 JWT，
         // 避免长期 JWT 暴露在地址栏/历史/浏览器扩展可见范围。
         apiFetch('/auth/oauth/code', { method: 'POST', body: JSON.stringify({ code }) })
@@ -3218,7 +3225,17 @@ export default function App() {
               setView('auth');
             }
           })
-          .catch(() => setView('auth'));
+          .catch(() => {
+            // 兜底：若本地其实已有登录态（例如换码被重复消费 / 网络抖动），
+            // 不要把已经登录的用户踢回登录页。
+            const savedUser = localStorage.getItem('ham_user');
+            if (savedUser && localStorage.getItem('ham_token')) {
+              setUser(JSON.parse(savedUser));
+              setView('main');
+            } else {
+              setView('auth');
+            }
+          });
         return;
       }
     }
