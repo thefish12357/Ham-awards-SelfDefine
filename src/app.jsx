@@ -14,7 +14,7 @@ import {
 // ================= 公共模块 =================
 // 统一请求封装（原 apiFetch 定义就在这里）与 Hash 路由已抽到独立模块，
 // 行为与原先保持一致，新功能请直接从这里 import，不要再写一份。
-import { apiFetch } from './lib/apiFetch.js';
+import { apiFetch, configureDemo } from './lib/apiFetch.js';
 // 统一确认弹层（替代原生 confirm/prompt，防手滑删除/提交）
 import { confirmDialog, promptDialog, infoDialog } from './lib/confirm.jsx';
 // 按需加载失败自愈（部署后旧页面里的 chunk 已不存在 → 自动刷新一次）
@@ -3236,6 +3236,8 @@ export default function App() {
         setRequireInvite(!!d.requireInvite);
         setDemoUrl(d.demoUrl || '');
         setDemoMode(!!d.demoMode);
+        // 把 demo 状态交给统一请求层：demo 下写操作直接跳主站登录页
+        configureDemo(!!d.demoMode, d.demoUrl || '');
         setDemoUser(d.demoUser || '');
         setDemoPass(d.demoPass || '');
       })
@@ -3903,7 +3905,7 @@ export default function App() {
                       {subView === 'awards' && <AwardCenterView user={user} />} 
                       {subView === 'my_awards' && <MyAwardsView user={user} />}
                       {subView === 'logbook' && <LogbookView />}
-                      {subView === 'lotw_import' && <LotwImportView />}
+                      {subView === 'lotw_import' && <LotwImportView demoMode={demoMode} />}
                       {subView === 'all_logs' && <AllLogsView />}
                       {subView === 'users' && <UserManage />}
                       

@@ -67,6 +67,20 @@ app.use(express.static(distDir, {
     },
 }));
 
+// 演示环境只读（2026-09-26）：拦截所有写操作，避免演示实例被写入真实数据。
+// 前端 apiFetch 层会在 demo 下直接跳主站登录页；这里作为兜底（防 JS 拦截被绕过）。
+// 白名单：登录/注册、OAuth、安装、已读标记（均为读性质或演示自身所需）。
+if (process.env.DEMO_MODE === 'true') {
+  app.use((req, res, next) => {
+    const m = req.method.toUpperCase();
+    if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return next();
+    if (/^\/api\/auth\//.test(req.path)) return next();
+    if (/^\/api\/install/.test(req.path)) return next();
+    if (/^\/api\/notifications\/read/.test(req.path)) return next();
+    return res.status(403).json({ error: 'DEMO_READONLY', message: '演示环境为只读，不能修改数据' });
+  });
+}
+
 // 配置上传：日志 ADIF 与奖状底图分别限大小；底图额外限制为图片类型，避免磁盘耗尽
 const upload = multer({ dest: 'uploads/', limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
 const uploadBg = multer({

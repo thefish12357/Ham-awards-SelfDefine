@@ -28,6 +28,36 @@ export const saveSession = (token, user) => {
 };
 export const clearSession = () => localStorage.clear();
 
+// ------------------------------------------------------------------
+// 演示环境只读拦截（2026-09-26）
+// demoMode 下，任何写操作（POST/PUT/PATCH/DELETE，登录等白名单除外）
+// 一律不放行，并跳转到主站登录页，避免演示实例被写入真实数据。
+// 由 app.jsx 在拿到 /api/system-status 的 demoMode/demoUrl 后调用 configureDemo。
+// ------------------------------------------------------------------
+let _demoMode = false;
+let _demoRedirect = '';
+export function configureDemo(mode, mainUrl) {
+  _demoMode = !!mode;
+  _demoRedirect = mainUrl || '';
+}
+export function isDemoMode() {
+  return _demoMode;
+}
+export function getDemoRedirectUrl() {
+  if (_demoRedirect) return _demoRedirect;
+  // 兜底：演示站本身不回传主站地址，按当前域名去掉 demo. 前缀推导主站
+  try {
+    const host = window.location.host;
+    const mainHost = host.startsWith('demo.') ? host.slice('demo.'.length) : host;
+    return `${window.location.protocol}//${mainHost}`;
+  } catch {
+    return 'https://hamglory.top';
+  }
+}
+// 演示环境仍允许的操作：登录/注册、OAuth、安装、已读标记（均为读性质或演示自身所需）
+const DEMO_SAFE = [/^\/api\/auth\//, /^\/api\/install/, /^\/api\/notifications\/read/];
+const _isMutation = (m) => m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE';
+
 /** 组装请求头：JSON Content-Type + Authorization + 一次性 2FA 码 */
 const buildHeaders = (options = {}) => {
   const headers = { ...(options.headers || {}) };
@@ -67,6 +97,13 @@ const logoutIfAuthProblem = (res, data) => {
 };
 
 export const apiFetch = async (endpoint, options = {}) => {
+  const method = (options.method || 'GET').toUpperCase();
+  // 演示环境：写操作全部跳转到主站登录页（数据只读，绝不落到演示库）
+  if (_demoMode && _isMutation(method) && !DEMO_SAFE.some((re) => re.test(`/api${endpoint}`))) {
+    window.location.href = getDemoRedirectUrl();
+    return new Promise(() => {});
+  }
+
   const res = await fetch(`/api${endpoint}`, { ...options, headers: buildHeaders(options) });
 
   let data = null;

@@ -88,7 +88,7 @@ const yearsAgoStr = (n) => {
 const validateRangeInput = (from, to) =>
   validateDateRangeInput(from, to, { fromLabel: '起始日期', toLabel: '结束日期' });
 
-export default function LotwImportView() {
+export default function LotwImportView({ demoMode = false } = {}) {
   const [consent, setConsent] = useState(() => {
     try {
       return sessionStorage.getItem(CONSENT_KEY) === '1';
@@ -115,6 +115,8 @@ export default function LotwImportView() {
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState(null);
   const [applying, setApplying] = useState(false);
+  // 「参与判定的通联记录」明细默认折叠，避免一次铺开几十条；进度用上方进度条表达
+  const [showMatched, setShowMatched] = useState(false);
 
   // 「导入到我日志库」：用户主动把临时会话里的 QSO 写进 qsos 表（默认不落库，这里显式触发）
   const [importing, setImporting] = useState(false);
@@ -231,13 +233,13 @@ export default function LotwImportView() {
     };
   }, []);
 
-  // 日志自动滚到底部（除非用户正在手动往上翻）
+  // 日志自动滚到底部（除非用户正在手动往上翻查看历史）
   useEffect(() => {
     const box = logBoxRef.current;
     if (!box) return;
-    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
     if (nearBottom) box.scrollTop = box.scrollHeight;
-  }, [logs]);
+  }, [logs, jobStage]);
 
   // 页面关闭/刷新时通知服务端立即清除临时会话。
   // 注意：这里刻意不在「组件卸载」时清除，否则用户去别的页面看一眼奖状，
@@ -462,6 +464,12 @@ export default function LotwImportView() {
   const matched = useMemo(() => result?.matching_qsos || [], [result]);
   const missing = useMemo(() => result?.breakdown?.missing || [], [result]);
 
+  // 进度条：用「已满足条件 / 总条件」直观表达，不再把每条命中通联都铺开
+  const lotwTotal = result?.breakdown?.total_required ?? 0;
+  const lotwMiss = result?.breakdown?.missing?.length ?? 0;
+  const lotwMet = Math.max(0, lotwTotal - lotwMiss);
+  const lotwPct = lotwTotal > 0 ? Math.round((lotwMet / lotwTotal) * 100) : result?.eligible ? 100 : 0;
+
   // ---------------- 数据出境提示 ----------------
   if (!consent) {
     return (
@@ -650,6 +658,13 @@ export default function LotwImportView() {
           </p>
         </div>
 
+        {demoMode && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 flex items-start gap-2">
+            <ShieldAlert size={18} className="mt-0.5 shrink-0" />
+            <span>演示环境已禁用 LoTW 直连（不会向外网发送账号）。点击「连接并读取」将跳转到主站登录页，登录后即可体验完整功能。</span>
+          </div>
+        )}
+
         <button
           type="submit"
           disabled={connecting}
@@ -692,7 +707,7 @@ export default function LotwImportView() {
             <>
               <div
                 ref={logBoxRef}
-                className="max-h-64 overflow-y-auto px-4 py-3 font-mono text-[11.5px] leading-relaxed"
+                className="h-80 overflow-y-auto overscroll-contain px-4 py-3 font-mono text-[11.5px] leading-relaxed"
               >
                 {logs.length === 0 && <div className="text-slate-500">等待 LoTW 响应…</div>}
                 {logs.map((l, i) => (
@@ -875,6 +890,23 @@ export default function LotwImportView() {
                 )}
               </div>
 
+              {/* 进度条：已满足条件 / 总条件 */}
+              <div className="rounded-xl border border-slate-200 bg-white p-4">
+                <div className="flex items-center justify-between text-xs mb-1.5">
+                  <span className="font-bold text-slate-600">奖状进度</span>
+                  <span className="font-mono text-slate-500">{lotwPct}%</span>
+                </div>
+                <div className="h-2.5 rounded-full bg-slate-200 overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${result.eligible ? 'bg-emerald-500' : 'bg-blue-500'}`}
+                    style={{ width: `${lotwPct}%` }}
+                  />
+                </div>
+                <div className="text-xs text-slate-500 mt-1.5">
+                  已满足 {lotwMet} / 共 {lotwTotal} 项{result?.current_score != null ? ` · 当前得分 ${result.current_score}` : ''}
+                </div>
+              </div>
+
               {missing.length > 0 && (
                 <div>
                   <div className="text-sm font-bold text-slate-700 mb-2">
@@ -892,35 +924,42 @@ export default function LotwImportView() {
 
               {matched.length > 0 && (
                 <div>
-                  <div className="text-sm font-bold text-slate-700 mb-2">
-                    参与判定的通联记录（{matched.length} 条，最多显示 50 条）
-                  </div>
-                  <div className="overflow-x-auto border rounded-xl">
-                    <table className="w-full text-sm">
-                      <thead className="bg-slate-50 text-slate-500">
-                        <tr>
-                          <th className="text-left px-3 py-2 font-bold">对方呼号</th>
-                          <th className="text-left px-3 py-2 font-bold">日期</th>
-                          <th className="text-left px-3 py-2 font-bold">波段</th>
-                          <th className="text-left px-3 py-2 font-bold">模式</th>
-                          <th className="text-left px-3 py-2 font-bold">DXCC</th>
-                          <th className="text-left px-3 py-2 font-bold">网格</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {matched.slice(0, 50).map((q, i) => (
-                          <tr key={`${q.call}-${q.date}-${i}`} className="border-t">
-                            <td className="px-3 py-2 font-mono font-bold">{q.call}</td>
-                            <td className="px-3 py-2 font-mono">{q.date}</td>
-                            <td className="px-3 py-2">{q.band}</td>
-                            <td className="px-3 py-2">{q.mode}</td>
-                            <td className="px-3 py-2">{q.dxcc || '-'}</td>
-                            <td className="px-3 py-2 font-mono">{q.grid || '-'}</td>
+                  <button
+                    type="button"
+                    onClick={() => setShowMatched((v) => !v)}
+                    className="text-sm font-bold text-slate-700 mb-2 flex items-center gap-1 hover:text-blue-600"
+                  >
+                    {showMatched ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                    参与判定的通联记录（{matched.length} 条{matched.length > 50 ? '，仅显示前 50' : ''}）
+                  </button>
+                  {showMatched && (
+                    <div className="overflow-x-auto border rounded-xl">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-50 text-slate-500">
+                          <tr>
+                            <th className="text-left px-3 py-2 font-bold">对方呼号</th>
+                            <th className="text-left px-3 py-2 font-bold">日期</th>
+                            <th className="text-left px-3 py-2 font-bold">波段</th>
+                            <th className="text-left px-3 py-2 font-bold">模式</th>
+                            <th className="text-left px-3 py-2 font-bold">DXCC</th>
+                            <th className="text-left px-3 py-2 font-bold">网格</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody>
+                          {matched.slice(0, 50).map((q, i) => (
+                            <tr key={`${q.call}-${q.date}-${i}`} className="border-t">
+                              <td className="px-3 py-2 font-mono font-bold">{q.call}</td>
+                              <td className="px-3 py-2 font-mono">{q.date}</td>
+                              <td className="px-3 py-2">{q.band}</td>
+                              <td className="px-3 py-2">{q.mode}</td>
+                              <td className="px-3 py-2">{q.dxcc || '-'}</td>
+                              <td className="px-3 py-2 font-mono">{q.grid || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

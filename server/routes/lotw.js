@@ -122,6 +122,10 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
     if (!cfg.enabled) {
       return res.status(503).json({ error: 'LOTW_DISABLED', message: 'LoTW 直连功能当前已关闭' });
     }
+    // 演示环境（DEMO_MODE=true）禁止真正的 LoTW 出站连接：演示账号不应把真实凭证发往 ARRL。
+    if (process.env.DEMO_MODE === 'true') {
+      return res.status(503).json({ error: 'LOTW_DISABLED', message: '演示环境已禁用 LoTW 直连（不会向外网发送账号）' });
+    }
 
     const body = req.body || {};
     const login = String(body.login || '').trim();
