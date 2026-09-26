@@ -2754,6 +2754,7 @@ const AllLogsView = () => {
     const [detailQso, setDetailQso] = useState(null);
     const [qsoAwards, setQsoAwards] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [search, setSearch] = useState('');
 
     const load = () => {
         setLoading(true);
@@ -2779,11 +2780,34 @@ const AllLogsView = () => {
         } catch(e) { console.error(e); }
     };
 
+    // 前端搜索：按呼号 / 波段 / 模式 / DXCC / 日期 / 州省过滤（数据量不大，客户端过滤即可，与用户管理页一致）
+    const keyword = search.trim().toLowerCase();
+    const filteredLogs = keyword
+        ? logs.filter((l) =>
+            (l.callsign || '').toLowerCase().includes(keyword) ||
+            (l.band || '').toLowerCase().includes(keyword) ||
+            (l.mode || '').toLowerCase().includes(keyword) ||
+            (l.qso_date || '').toLowerCase().includes(keyword) ||
+            (l.country || '').toLowerCase().includes(keyword) ||
+            String(l.dxcc || '').toLowerCase().includes(keyword) ||
+            (l.state || l.adif_raw?.state || '').toLowerCase().includes(keyword)
+          )
+        : logs;
+
     return (
         <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
                 <h3 className="font-bold text-lg flex items-center gap-2"><List className="text-blue-600"/> 全部日志</h3>
-                <div className="flex items-center gap-3">
+                <div className="flex flex-wrap items-center gap-3">
+                    <div className="relative">
+                        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            placeholder="搜索呼号 / 波段 / 模式 / DXCC / 日期"
+                            className="pl-9 pr-3 py-1.5 rounded-lg border text-sm w-64 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                        />
+                    </div>
                     {/* 实物卡片审核通过后会自动补一条日志（前提是材料填了通联日期），这里给个刷新入口 */}
                     <span className="text-xs text-slate-400">实物卡片审核通过后会自动补建日志（需材料填写通联日期）</span>
                     <button
@@ -2812,8 +2836,10 @@ const AllLogsView = () => {
                                 <tr><td colSpan="6" className="p-8 text-center text-slate-400">加载中...</td></tr>
                             ) : logs.length === 0 ? (
                                 <tr><td colSpan="6" className="p-8 text-center text-slate-400">暂无日志</td></tr>
+                            ) : filteredLogs.length === 0 ? (
+                                <tr><td colSpan="6" className="p-8 text-center text-slate-400">没有匹配「{search}」的日志</td></tr>
                             ) : (
-                                logs.map(log => (
+                                filteredLogs.map(log => (
                                     <tr key={log.id} className="hover:bg-slate-50">
                                         <td className="p-4">
                                             {/* 3. 每条日志前增设一列按钮，点击后可以查看详细通联信息及参与申领的奖项 */}
