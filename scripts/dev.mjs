@@ -8,6 +8,7 @@
  *   - 只想改前端、后端用别的终端跑时，仍可用 npm run dev
  */
 import { spawn, execSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -15,6 +16,38 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const isWin = process.platform === 'win32';
 const children = [];
 let shuttingDown = false;
+
+/**
+ * 本地开发时读取根目录 `.env`（不引入 dotenv 依赖）。
+ *
+ * 为什么需要：容器里 `DEMO_URL` / `OAUTH_*` 这些变量是由 docker compose 从 `.env`
+ * 插值注入的（见 docker-compose.yml 的 `${DEMO_URL:-}`、`${OAUTH_CLIENT_ID:-}`），
+ * 而 `node server.js` **自己不读 `.env`** —— 于是本地开发时这些值全部丢失，典型症状是
+ * 落地页「体验演示系统」按钮不显示（`demoUrl` 为空）、HamCQ 登录配置与容器不一致。
+ *
+ * 规则与 dotenv / compose 一致：**已存在的同名环境变量优先**，不覆盖传入的值。
+ */
+function loadEnvFile(file) {
+  if (!fs.existsSync(file)) return false;
+  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    const key = m[1];
+    let val = m[2].trim();
+    // 去掉成对引号（与 dotenv 行为一致）
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
+      val = val.slice(1, -1);
+    }
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
+  return true;
+}
+
+const envLoaded = loadEnvFile(path.join(root, '.env'));
+console.log(envLoaded ? '已加载 .env（同名环境变量以外部为准）' : '未找到 .env，跳过');
 
 function killTree(child, label) {
   if (!child || child.exitCode !== null) return;

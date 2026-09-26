@@ -1022,8 +1022,13 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
     const hasComplexRules = !!rules.v2;
 
     return (
-        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4">
-            <div className="bg-white w-full max-w-6xl rounded-2xl overflow-hidden shadow-2xl flex flex-col md:flex-row h-[90vh]">
+        /* 点遮罩空白处即关闭：无需再滚到顶部找右上角的 ×。弹层本体 stopPropagation，
+           避免点到里面的按钮/输入框时被误判成"点了空白"。 */
+        <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4" onClick={onClose}>
+            <div
+                className="bg-white w-full max-w-6xl rounded-2xl overflow-hidden shadow-2xl flex flex-col md:flex-row h-[90vh]"
+                onClick={(e) => e.stopPropagation()}
+            >
                 <div className="w-full md:w-5/12 bg-slate-100 h-48 md:h-auto min-h-[200px] flex flex-col gap-3 p-4 overflow-y-auto">
                     {hasLayout && (
                         <div className="flex gap-1 bg-white p-1 rounded-lg border self-start shrink-0">

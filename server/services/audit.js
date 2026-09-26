@@ -21,7 +21,7 @@
 import express from 'express';
 
 /**
- * 取调用方真实 IP。
+ * 取调用方真实 IP —— **统一归一成 IPv4 形态**。
  *
  * 取值优先级（越靠前越可信，都是"反代写进来的"头）：
  *   1. `CF-Connecting-IP` —— Cloudflare（含 Cloudflare Tunnel）写入的**单个**真实客户端 IP，最干净；
@@ -29,25 +29,36 @@ import express from 'express';
  *   3. `X-Forwarded-For`  —— 通用反代链，取**第一段**（最左 = 最初的客户端）；
  *   4. `req.ip` / socket  —— 没有反代时（直连）才是真实地址。
  *
- * ⚠️ 两个必须处理的格式问题：
- *   - **IPv4-mapped IPv6**：Node 双栈监听时，本机 IPv4 会写成 `::ffff:127.0.0.1`，剥掉前缀才好看；
- *   - **回环地址**：本机访问会拿到 `::1`（IPv6）或 `127.0.0.1`，那是**正常现象**，不是采集错误 ——
- *     部署到公网/隧道后才会变成访客的真实公网 IP。
+ * ⚠️ 为什么要归一：Node 双栈监听会把 IPv4 连接写成 IPv6 形态，本机访问一会儿是 `127.0.0.1`
+ *    （走 IPv4）、一会儿是 `::1`（走 IPv6，浏览器常见），审计日志里同一个来源出现两种写法，
+ *    追溯时无法直接比对。故统一收敛：
+ *   - **IPv4-mapped IPv6** `::ffff:127.0.0.1` → 剥掉 `::ffff:` 前缀 → `127.0.0.1`；
+ *   - **IPv6 回环** `::1` / `0:0:0:0:0:0:0:1` → `127.0.0.1`（本机访问，等价于 IPv4 回环）；
+ *   - **无法映射成 IPv4 的真实 IPv6**（如公网 `240e:...`）**原样保留** —— 不臆造 IPv4。
  */
+const normalizeIp = (raw) => {
+  const ip = String(raw || '').trim().replace(/^\[|\]$/g, '');
+  if (!ip) return null;
+  // ::ffff:1.2.3.4（含大小写变体）→ 1.2.3.4
+  const mapped = ip.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+  if (mapped) return mapped[1];
+  // ::1 / 0:0:0:0:0:0:0:1（IPv6 回环）→ 127.0.0.1
+  if (ip === '::1' || ip === '0:0:0:0:0:0:0:1') return '127.0.0.1';
+  return ip.slice(0, 64);
+};
+
 const clientIp = (req) => {
   if (!req) return null;
   const h = req.headers || {};
   const first = (v) => String(v || '').split(',')[0].trim();
-  const raw =
+  return normalizeIp(
     first(h['cf-connecting-ip']) ||
     first(h['x-real-ip']) ||
     first(h['x-forwarded-for']) ||
     req.ip ||
     req.socket?.remoteAddress ||
-    '';
-  if (!raw) return null;
-  const ip = raw.replace(/^::ffff:/i, '').replace(/^\[|\]$/g, '');
-  return ip.slice(0, 64);
+    ''
+  );
 };
 
 /**
