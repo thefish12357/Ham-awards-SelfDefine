@@ -14,7 +14,7 @@ import {
 // ================= 公共模块 =================
 // 统一请求封装（原 apiFetch 定义就在这里）与 Hash 路由已抽到独立模块，
 // 行为与原先保持一致，新功能请直接从这里 import，不要再写一份。
-import { apiFetch, configureDemo } from './lib/apiFetch.js';
+import { apiFetch, configureDemo, demoGuard } from './lib/apiFetch.js';
 // 统一确认弹层（替代原生 confirm/prompt，防手滑删除/提交）
 import { confirmDialog, promptDialog, infoDialog } from './lib/confirm.jsx';
 // 按需加载失败自愈（部署后旧页面里的 chunk 已不存在 → 自动刷新一次）
@@ -619,6 +619,8 @@ const MyAwardsView = ({ user }) => {
 
     // 用奖状的可视化布局导出 300 DPI 的 PDF（M3）
     const handleExportPdf = async (ua) => {
+        // 演示环境：PDF 导出是受限动作（纯前端生成，不走 apiFetch 的写拦截）→ 跳主站登录页
+        if (demoGuard()) return;
         // 已下架记录：award 与 layout 都已随奖状删除，导出必然是缺图的空证书
         if (ua?.detached) return;
         setExportingId(ua.id);
@@ -859,6 +861,8 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
     };
 
     const handlePreviewPdf = async () => {
+        // 演示环境：导出效果 PDF 是受限动作 → 跳主站登录页
+        if (demoGuard()) return;
         setExportingPdf(true);
         try {
             // 同上：部署新版本后旧页面里的 chunk 已不存在 → 自动刷新一次而不是报英文错
@@ -1158,11 +1162,14 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                             {/* Logic & Targets */}
                             {hasComplexRules && (
                                 <div className="grid grid-cols-2 gap-4">
-                                    <div>
+                                    {/* min-w-0：grid 子项默认 min-width:auto，会被「目标: …W1AW,K1A,JA1ABC,…」
+                                        这类超长不可断的呼号清单撑宽，把右侧「等级要求」挤出边框（用户截图反馈）；
+                                        break-words 让清单在列内换行，不再溢出。 */}
+                                    <div className="min-w-0">
                                         <h4 className="font-bold text-sm text-slate-500 mb-2 uppercase flex items-center gap-2"><Calculator size={14}/> 计分模式</h4>
                                         <div className="bg-slate-50 p-3 rounded-lg border text-sm">
                                             <div className="font-bold text-slate-700 mb-1">{rules.logic === 'collection' ? '📦 收集型 (计数)' : '🔢 计分型 (累计)'}</div>
-                                            <div className="text-xs text-slate-500">
+                                            <div className="text-xs text-slate-500 break-words">
                                                 目标: {rules.targets?.type && rules.targets.type !== 'any'
                                                     ? (TARGET_SPECS[rules.targets.type]?.label || rules.targets.type)
                                                     : '任意 QSO'}
@@ -1170,7 +1177,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                                             </div>
                                         </div>
                                     </div>
-                                    <div>
+                                    <div className="min-w-0">
                                         <h4 className="font-bold text-sm text-slate-500 mb-2 uppercase flex items-center gap-2"><Trophy size={14}/> 等级要求</h4>
                                         <div className="bg-slate-50 p-3 rounded-lg border text-sm space-y-1">
                                             {(rules.thresholds || [{value:0, name:'Basic'}]).map((t,i) => (
@@ -3251,6 +3258,19 @@ export default function App() {
       }
     }
 
+    // 演示站受限操作会跳到主站 #/auth：直接落在登录页（若已有登录态则进主界面）
+    if (hash === '#/auth' || hash.startsWith('#/auth?')) {
+      const savedUser = localStorage.getItem('ham_user');
+      if (savedUser) {
+        setUser(JSON.parse(savedUser));
+        setView('main');
+      } else {
+        setAuthMode('login');
+        setView('auth');
+      }
+      return;
+    }
+
     apiFetch('/system-status').then(status => {
         if (!status.installed) {
             setView('install');
@@ -3294,6 +3314,12 @@ export default function App() {
           setPublicPage(readPublicPage());
           const route = readRoute();
           if (route) setSubView(route);
+          // #/auth：手改地址栏 / 演示受限操作跳进来时显示登录页（已登录则忽略）
+          const h = (window.location.hash || '').split('?')[0];
+          if (h === '#/auth' && !localStorage.getItem('ham_user')) {
+              setAuthMode('login');
+              setView('auth');
+          }
       };
       window.addEventListener('hashchange', onHashChange);
       return () => window.removeEventListener('hashchange', onHashChange);

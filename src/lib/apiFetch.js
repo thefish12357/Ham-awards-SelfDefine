@@ -44,15 +44,33 @@ export function isDemoMode() {
   return _demoMode;
 }
 export function getDemoRedirectUrl() {
-  if (_demoRedirect) return _demoRedirect;
-  // 兜底：演示站本身不回传主站地址，按当前域名去掉 demo. 前缀推导主站
+  // 受限动作统一跳到**主站登录页**（#/auth 由 app.jsx 渲染为登录视图）。
+  // _demoRedirect 一般为空（演示站自身不回传主站地址），此时按域名去掉 demo. 前缀推导。
+  const base = _demoRedirect || (() => {
+    try {
+      const host = window.location.host;
+      const mainHost = host.startsWith('demo.') ? host.slice('demo.'.length) : host;
+      return `${window.location.protocol}//${mainHost}`;
+    } catch {
+      return 'https://hamglory.top';
+    }
+  })();
   try {
-    const host = window.location.host;
-    const mainHost = host.startsWith('demo.') ? host.slice('demo.'.length) : host;
-    return `${window.location.protocol}//${mainHost}`;
+    return new URL('/#/auth', base).href; // -> https://<主站>/#/auth
   } catch {
-    return 'https://hamglory.top';
+    return base;
   }
+}
+
+/**
+ * 演示环境的「受限动作」守卫。
+ * 写操作已在 apiFetch 内统一拦截；但 PDF 导出等纯前端动作不经过 apiFetch，
+ * 需要在这些动作入口显式调用。命中则跳主站登录页并返回 true（调用方应直接 return）。
+ */
+export function demoGuard() {
+  if (!_demoMode) return false;
+  window.location.href = getDemoRedirectUrl();
+  return true;
 }
 // 演示环境仍允许的操作：登录/注册、OAuth、安装、已读标记（均为读性质或演示自身所需）
 const DEMO_SAFE = [/^\/api\/auth\//, /^\/api\/install/, /^\/api\/notifications\/read/];

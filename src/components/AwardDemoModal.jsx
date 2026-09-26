@@ -51,7 +51,7 @@ export default function AwardDemoModal({ award, onClose, onLogin, onRegister }) 
         onClick={(e) => e.stopPropagation()}
       >
         {/* 左：设计预览（真实渲染，示例数据） */}
-        <div className="w-full md:w-5/12 bg-slate-100 h-48 md:h-auto min-h-[200px] flex flex-col gap-3 p-4">
+        <div className="w-full md:w-5/12 bg-slate-100 h-48 md:h-auto min-h-[200px] flex flex-col gap-3 p-4 overflow-y-auto">
           <div className="relative w-full aspect-[297/210] rounded-xl overflow-hidden border border-slate-300 shadow-lg bg-white shrink-0">
             <ResponsiveAwardRenderer layout={normalizeLayout(award.layout, award.bg_url)} data={data} />
             <div className="absolute bottom-0 left-0 right-0 bg-black/55 backdrop-blur-sm p-3 text-white">
