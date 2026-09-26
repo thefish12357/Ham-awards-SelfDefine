@@ -11,6 +11,16 @@
       原先的 <script src="https://cdn.tailwindcss.com"></script> 已移除，
       这样离线部署不再依赖外网，CustomTheme 扩展也才可用。
     -->
+    <!-- 百度统计（hamglory.top）：异步加载，不阻塞页面渲染；站点 ID 见 hm.js 的 query -->
+    <script>
+      var _hmt = _hmt || [];
+      (function () {
+        var hm = document.createElement("script");
+        hm.src = "https://hm.baidu.com/hm.js?a2eb5a996e76e6f5d68a175fa8f074e4";
+        var s = document.getElementsByTagName("script")[0];
+        s.parentNode.insertBefore(hm, s);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
