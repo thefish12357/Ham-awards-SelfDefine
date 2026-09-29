@@ -1095,8 +1095,23 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                          <div className="space-y-1">
                             <h3 className="font-bold text-slate-800 text-lg">规则说明</h3>
                             <div className="text-xs font-mono text-slate-400">ID: {award.tracking_id || award.id}</div>
-                         </div>
-                        <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full"><X/></button>
+                            {/* 发布者与已申领次数（来自大厅接口；其它入口未提供这两个字段时不显示） */}
+                            {(award.creator_callsign || award.issued_count != null) && (
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1 text-xs text-slate-500">
+                                    {award.creator_callsign && (
+                                        <span className="inline-flex items-center gap-1" title="奖状发布者">
+                                            <Users size={12} /> 发布者：<b className="text-slate-700">{award.creator_callsign}</b>
+                                        </span>
+                                    )}
+                                    {award.issued_count != null && (
+                                        <span className="inline-flex items-center gap-1" title="该奖状已成功申领次数">
+                                            <Trophy size={12} /> 已成功申领 <b className="text-slate-700">{award.issued_count}</b> 次
+                                        </span>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                       <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full"><X/></button>
                     </div>
                     
                     {showMatrix ? (
@@ -1502,9 +1517,17 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
 const AwardCenterView = ({ user }) => {
     const [awards, setAwards] = useState([]);
     const [selectedAward, setSelectedAward] = useState(null);
+    // 排列方式：all = 全部奖状平铺；creator = 按发布者分组（可折叠）
+    const [groupMode, setGroupMode] = useState('all');
+    // 排序：new = 最新发布；issued = 申领最多；name = 名称
+    const [sortBy, setSortBy] = useState('new');
+    // 分组模式下被「收起」的发布者（默认全部展开）
+    const [collapsed, setCollapsed] = useState({});
 
     useEffect(() => {
-        apiFetch('/awards/all_approved').then(setAwards).catch(console.error);
+        apiFetch('/awards/all_approved')
+            .then((list) => setAwards(Array.isArray(list) ? list : []))
+            .catch(console.error);
     }, []);
 
     const handleApply = (award) => {
@@ -1512,34 +1535,141 @@ const AwardCenterView = ({ user }) => {
         setSelectedAward(null);
     };
 
+    // 排序（不动原数组；created_at 缺失时回落到 id）
+    const sorted = [...awards].sort((a, b) => {
+        if (sortBy === 'issued') return (b.issued_count || 0) - (a.issued_count || 0) || b.id - a.id;
+        if (sortBy === 'name') return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
+        const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return tb - ta || b.id - a.id;
+    });
+
+    // 按发布者分组（保持排序后的相对顺序）
+    const groups = [];
+    const groupIndex = new Map();
+    for (const aw of sorted) {
+        const key = aw.creator_callsign || '__unknown__';
+        if (!groupIndex.has(key)) {
+            groupIndex.set(key, groups.length);
+            groups.push({ key, name: aw.creator_callsign || '未知发布者', awards: [] });
+        }
+        groups[groupIndex.get(key)].awards.push(aw);
+    }
+
+    // 单张奖状卡片（平铺与分组共用同一份，避免两处样式漂移）
+    const renderCard = (aw) => (
+        <div
+            key={aw.id}
+            onClick={() => setSelectedAward(aw)}
+            className="bg-white rounded-2xl shadow-sm border overflow-hidden hover:shadow-md transition-shadow group cursor-pointer"
+        >
+            <div className="h-48 relative overflow-hidden bg-slate-100">
+                {/* 缩略图按布局渲染（底图可空，只渲染 bg_url 会是一片空白） */}
+                <AwardThumbnail award={aw} className="absolute inset-0" placeholderText="（未设置底图）" />
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="text-white font-bold border-2 border-white px-4 py-2 rounded-full">查看详情与进度</span>
+                </div>
+            </div>
+            <div className="p-6">
+                <h4 className="font-bold text-lg mb-2 group-hover:text-blue-600 transition-colors">{aw.name}</h4>
+                <p className="text-slate-500 text-sm line-clamp-2">{aw.description}</p>
+                <div className="mt-4 pt-4 border-t space-y-2 text-xs text-slate-400">
+                    <div className="flex items-center justify-between gap-2">
+                        <span className="inline-flex items-center gap-1 min-w-0" title="奖状发布者">
+                            <Users size={12} className="shrink-0" />
+                            <span className="truncate">发布者：{aw.creator_callsign || '未知'}</span>
+                        </span>
+                        <span className="inline-flex items-center gap-1 shrink-0" title="该奖状已成功申领次数">
+                            <Trophy size={12} /> 已申领 {aw.issued_count || 0} 次
+                        </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono">ID: {aw.tracking_id || aw.id}</span>
+                        <span className="text-green-600 font-bold bg-green-50 px-2 py-1 rounded">详情</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+
+    const segBtn = (active) =>
+        `rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${active ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`;
+
     return (
         <div className="space-y-6">
-            <h3 className="text-xl font-bold flex items-center gap-2"><Award className="text-orange-500"/> 奖状大厅 (Award Center)</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {awards.map(aw => (
-                    <div 
-                        key={aw.id} 
-                        onClick={() => setSelectedAward(aw)}
-                        className={`bg-white rounded-2xl shadow-sm border overflow-hidden hover:shadow-md transition-shadow group cursor-pointer`}
-                    >
-                        <div className="h-48 relative overflow-hidden bg-slate-100">
-                            {/* 缩略图按布局渲染（底图可空，只渲染 bg_url 会是一片空白） */}
-                            <AwardThumbnail award={aw} className="absolute inset-0" placeholderText="（未设置底图）" />
-                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                                <span className="text-white font-bold border-2 border-white px-4 py-2 rounded-full">查看详情与进度</span>
-                            </div>
-                        </div>
-                        <div className="p-6">
-                            <h4 className="font-bold text-lg mb-2 group-hover:text-blue-600 transition-colors">{aw.name}</h4>
-                            <p className="text-slate-500 text-sm line-clamp-2">{aw.description}</p>
-                            <div className="mt-4 pt-4 border-t flex justify-between items-center text-xs text-slate-400">
-                                <span>ID: {aw.tracking_id}</span>
-                                <span className="text-green-600 font-bold bg-green-50 px-2 py-1 rounded">详情</span>
-                            </div>
-                        </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-xl font-bold flex items-center gap-2"><Award className="text-orange-500"/> 奖状大厅 (Award Center)</h3>
+                <div className="flex flex-wrap items-center gap-3">
+                    {/* 排列方式：全部奖状 / 按发布者分组 */}
+                    <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1" title="排列方式">
+                        <button type="button" onClick={() => setGroupMode('all')} className={segBtn(groupMode === 'all')}>
+                            <span className="inline-flex items-center gap-1"><List size={14} /> 全部奖状</span>
+                        </button>
+                        <button type="button" onClick={() => setGroupMode('creator')} className={segBtn(groupMode === 'creator')}>
+                            <span className="inline-flex items-center gap-1"><Layers size={14} /> 按发布者</span>
+                        </button>
                     </div>
-                ))}
+                    {/* 排序：最新发布 / 申领最多 / 名称 */}
+                    <div className="inline-flex items-center rounded-xl border border-slate-200 bg-white p-1" title="排序方式">
+                        <button type="button" onClick={() => setSortBy('new')} className={segBtn(sortBy === 'new')}>
+                            <span className="inline-flex items-center gap-1"><Clock size={14} /> 最新发布</span>
+                        </button>
+                        <button type="button" onClick={() => setSortBy('issued')} className={segBtn(sortBy === 'issued')}>
+                            <span className="inline-flex items-center gap-1"><Trophy size={14} /> 申领最多</span>
+                        </button>
+                        <button type="button" onClick={() => setSortBy('name')} className={segBtn(sortBy === 'name')}>
+                            <span className="inline-flex items-center gap-1"><Award size={14} /> 名称</span>
+                        </button>
+                    </div>
+                </div>
             </div>
+
+            {awards.length === 0 ? (
+                <div className="text-center p-16 bg-white rounded-2xl border border-dashed">
+                    <Trophy size={48} className="mx-auto text-slate-300 mb-4" />
+                    <h3 className="text-lg font-bold text-slate-600">暂无可申领的奖状</h3>
+                    <p className="text-slate-400 text-sm mt-2">等管理员发布奖状后，这里就会展示。</p>
+                </div>
+            ) : groupMode === 'all' ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {sorted.map((aw) => renderCard(aw))}
+                </div>
+            ) : (
+                <div className="space-y-4">
+                    {groups.map((g) => {
+                        const open = !collapsed[g.key];
+                        return (
+                            <div key={g.key} className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
+                                <button
+                                    type="button"
+                                    onClick={() => setCollapsed((prev) => ({ ...prev, [g.key]: !prev[g.key] }))}
+                                    className="w-full flex items-center justify-between gap-3 px-5 py-4 text-left hover:bg-slate-50 transition-colors"
+                                >
+                                    <span className="flex items-center gap-2 min-w-0">
+                                        {open ? <ChevronDown size={18} className="shrink-0 text-slate-400" /> : <ChevronRight size={18} className="shrink-0 text-slate-400" />}
+                                        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-slate-900 text-white text-xs font-bold">
+                                            {(g.name || '?').slice(0, 2).toUpperCase()}
+                                        </span>
+                                        <span className="min-w-0">
+                                            <span className="block font-bold text-slate-800 truncate">{g.name}</span>
+                                            <span className="block text-xs text-slate-400">{g.awards.length} 个奖状</span>
+                                        </span>
+                                    </span>
+                                    <span className="shrink-0 text-xs text-slate-400">{open ? '收起' : '展开'}</span>
+                                </button>
+                                {open && (
+                                    <div className="border-t border-slate-100 p-5">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                            {g.awards.map((aw) => renderCard(aw))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+
             {selectedAward && <AwardDetailModal award={selectedAward} onClose={() => setSelectedAward(null)} onApply={handleApply} userRole={user.role} canApply />}
         </div>
     );
@@ -2434,6 +2564,8 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
     const [secret, setSecret] = useState('');
     const [code, setCode] = useState('');
     const [passForm, setPassForm] = useState({ oldPassword: '', newPassword: '', confirmPassword: '' });
+    // 自助绑定 / 修改邮箱：弹层里的输入值（打开时用当前邮箱预填）
+    const [emailInput, setEmailInput] = useState('');
     const [confirmActionPass, setConfirmActionPass] = useState('');
     const [qsoCount, setQsoCount] = useState(null);
     const [roleReq, setRoleReq] = useState(null);
@@ -2508,6 +2640,16 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
         } catch(err) { alert(err.message); }
     };
 
+    // 保存邮箱：留空 = 解绑；同一邮箱只能绑一个账号（撞车后端返回 409，这里提示原因）
+    const changeEmail = async () => {
+        try {
+            const res = await apiFetch('/user/email', { method: 'POST', body: JSON.stringify({ email: emailInput }) });
+            alert(res?.email ? '邮箱已更新' : '已解绑邮箱');
+            setModal(null);
+            refreshUser();
+        } catch(err) { alert(err.message); }
+    };
+
     const handleDangerousAction = async (action) => {
         const isDeleteAccount = action === 'delete_account';
         const ok = await confirmDialog({
@@ -2552,6 +2694,12 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                     <div>
                         <div className="text-2xl font-bold">{user.callsign}</div>
                         <div className="text-slate-500 text-sm">角色: {user.role}</div>
+                        <div className="mt-1 text-slate-500 text-sm">
+                            邮箱: {user.email || <span className="text-slate-400">未绑定</span>}
+                            {user.email && user.email_source === 'hamcq' && (
+                                <span className="ml-2 rounded bg-cyan-50 px-1.5 py-0.5 text-[10px] font-bold text-cyan-700">来自 HamCQ</span>
+                            )}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2570,6 +2718,21 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                             <button onClick={start2FASetup} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold">开启</button>
                         )}
                     </div>
+                    <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                        <div className="flex items-center gap-3 min-w-0">
+                            <Globe className="text-slate-400 shrink-0" />
+                            <div className="min-w-0">
+                                <div className="font-bold">绑定邮箱</div>
+                                <div className="truncate text-xs text-slate-400" title={user.email || ''}>
+                                    {user.email || '未绑定'}
+                                    {user.email && user.email_source === 'hamcq' && (
+                                        <span className="ml-1 rounded bg-cyan-50 px-1.5 py-0.5 text-[10px] font-bold text-cyan-700">来自 HamCQ</span>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                        <button onClick={() => { setEmailInput(user.email || ''); setModal('email'); }} className="shrink-0 bg-white border px-4 py-2 rounded-lg text-sm font-bold">{user.email ? '修改' : '绑定'}</button>
+                    </div>
                 </div>
             </div>
             {user.role === 'user' && (
@@ -2577,7 +2740,7 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                     <h4 className="font-bold text-lg mb-2 flex items-center gap-2"><Trophy className="text-purple-600"/> 角色权限</h4>
                     <p className="text-xs text-slate-400 mb-4">当前为「普通用户」。申请成为「奖状管理员」后可创建与管理奖状，需系统管理员审核。</p>
                     {!roleReq || roleReq.status === 'rejected' ? (
-                        <button onClick={() => setShowRoleReqForm(true)} className="bg-purple-600 text-white px-5 py-2.5 rounded-lg text-sm font-bold hover:bg-purple-700">
+                        <button onClick={() => { setRoleReqForm((f) => ({ ...f, contact: f.contact || user.email || '' })); setShowRoleReqForm(true); }} className="bg-purple-600 text-white px-5 py-2.5 rounded-lg text-sm font-bold hover:bg-purple-700">
                             申请成为奖状管理员
                         </button>
                     ) : roleReq.status === 'pending' ? (
@@ -2643,7 +2806,7 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                 <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
                     <div className="bg-white rounded-2xl w-full max-w-md p-6 space-y-4 relative z-[101]">
                         <div className="flex justify-between items-center border-b pb-4">
-                            <h3 className="font-bold text-lg">{modal === 'password' ? '修改密码' : modal === '2fa_setup' ? '配置 2FA' : '安全确认'}</h3>
+                            <h3 className="font-bold text-lg">{modal === 'password' ? '修改密码' : modal === 'email' ? '绑定 / 修改邮箱' : modal === '2fa_setup' ? '配置 2FA' : '安全确认'}</h3>
                             <button onClick={()=>{setModal(null); setQr('');}}><X size={20}/></button>
                         </div>
                         {modal === 'password' && (
@@ -2652,6 +2815,25 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                                 <PasswordInput placeholder="新密码" autoComplete="new-password" className="w-full border p-3 rounded-lg" onChange={e=>setPassForm({...passForm, newPassword: e.target.value})} />
                                 <PasswordInput placeholder="确认新密码" autoComplete="new-password" className="w-full border p-3 rounded-lg" onChange={e=>setPassForm({...passForm, confirmPassword: e.target.value})} />
                                 <button onClick={changePassword} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold">确认修改</button>
+                            </div>
+                        )}
+                        {modal === 'email' && (
+                            <div className="space-y-4">
+                                <label className="block">
+                                    <span className="text-xs font-bold text-slate-500 uppercase">邮箱地址</span>
+                                    <input
+                                        type="email"
+                                        value={emailInput}
+                                        onChange={(e) => setEmailInput(e.target.value)}
+                                        placeholder="例如: bh1abc@example.com"
+                                        className="w-full mt-1 border p-3 rounded-lg"
+                                    />
+                                </label>
+                                <p className="text-xs leading-relaxed text-slate-500">
+                                    用于站点联系与身份核对，<b>同一邮箱只能绑定一个账号</b>。<b>留空提交即解绑</b>。
+                                    用 HamCQ 登录时，如果本站还没有邮箱、且该邮箱没被别人占用，会自动带上 HamCQ 的邮箱（已绑定不会被覆盖）。
+                                </p>
+                                <button onClick={changeEmail} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold">保存</button>
                             </div>
                         )}
                         {modal === '2fa_setup' && (
@@ -3059,6 +3241,7 @@ const UserManage = () => {
                                 <tr className="bg-slate-50 text-xs text-slate-500">
                                     <th className="px-4 py-3 text-left font-bold">ID</th>
                                     <th className="px-4 py-3 text-left font-bold">呼号</th>
+                                    <th className="px-4 py-3 text-left font-bold">邮箱</th>
                                     <th className="px-4 py-3 text-left font-bold whitespace-nowrap">注册时间</th>
                                     <th className="px-4 py-3 text-left font-bold">用户组</th>
                                     <th className="px-4 py-3 text-left font-bold whitespace-nowrap">两步验证</th>
@@ -3068,7 +3251,7 @@ const UserManage = () => {
                             <tbody>
                                 {filteredUsers.length === 0 && (
                                     <tr>
-                                        <td colSpan={6} className="px-4 py-10 text-center text-slate-400">没有匹配「{search}」的用户</td>
+                                        <td colSpan={7} className="px-4 py-10 text-center text-slate-400">没有匹配「{search}」的用户</td>
                                     </tr>
                                 )}
                                 {filteredUsers.map((u) => {
@@ -3078,6 +3261,16 @@ const UserManage = () => {
                                         <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50">
                                             <td className="px-4 py-3 font-mono text-xs text-slate-500">{u.id}</td>
                                             <td className="px-4 py-3 font-mono font-bold text-blue-600">{u.callsign}</td>
+                                            <td className="px-4 py-3 text-xs text-slate-500">
+                                                {u.email ? (
+                                                    <span className="inline-flex items-center gap-1">
+                                                        <span className="max-w-[180px] truncate" title={u.email}>{u.email}</span>
+                                                        {u.email_source === 'hamcq' && (
+                                                            <span className="shrink-0 rounded bg-cyan-50 px-1.5 py-0.5 text-[10px] font-bold text-cyan-700">HamCQ</span>
+                                                        )}
+                                                    </span>
+                                                ) : '—'}
+                                            </td>
                                             <td className="px-4 py-3 whitespace-nowrap text-xs text-slate-500">
                                                 {u.created_at ? new Date(u.created_at).toLocaleString('zh-CN', { hour12: false }) : '—'}
                                             </td>
@@ -3722,6 +3915,11 @@ export default function App() {
                     <div className="space-y-1">
                         <label className={labelCls}>确认密码</label>
                         <PasswordInput variant="dark" name="confirmPassword" required autoComplete="new-password" className={field} />
+                    </div>
+                    <div className="space-y-1">
+                        <label className={labelCls}>邮箱（可选）</label>
+                        <input name="email" type="email" autoComplete="email" className={field} placeholder="例如: bh1abc@example.com" />
+                        <span className="text-[10px] text-slate-500">用于站点联系与身份核对；用 HamCQ 登录时会自动带上 HamCQ 的邮箱。本站暂不支持自助找回密码。</span>
                     </div>
                     {requireInvite && (
                         <div className="space-y-1">

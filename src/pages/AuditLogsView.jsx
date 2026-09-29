@@ -22,6 +22,7 @@ const ACTION_LABELS = {
   'auth.login_failed': '登录失败',
   'auth.register': '注册账号',
   'user.password_change': '修改密码',
+  'user.email_update': '修改邮箱',
   'user.2fa_enable': '启用两步验证',
   'user.2fa_disable': '关闭两步验证',
   'user.logs_clear': '清空通联日志',
@@ -74,6 +75,13 @@ const DETAIL_LABELS = {
   mode: '方式',
   award: '奖状',
   award_name: '拟创建奖状',
+  experience: '经验/背景',
+  contact: '联系方式',
+  email: '邮箱',
+  email_source: '邮箱来源',
+  channel: '渠道',
+  bound: '绑定已有账号',
+  created: '新建账号',
   award_id: '奖状 ID',
   user_id: '用户 ID',
   creator_id: '创建者 ID',
@@ -105,9 +113,17 @@ const renderDetail = (detail) => {
         if (typeof v === 'boolean') shown = v ? '是' : '否';
         else if (k === 'op' && OP_LABELS[v]) shown = OP_LABELS[v];
         else if (typeof v === 'object') shown = JSON.stringify(v);
+        // 长文本（如角色申请的「理由」可达 2000 字）截断显示、完整内容放 title，
+        // 否则单条记录就能把表格撑爆（审计里 now 会记申请全文）
+        const fullText = typeof shown === 'string' ? shown : '';
+        const clamped = fullText.length > 120 ? `${fullText.slice(0, 120)}…` : shown;
         return (
-          <span key={k} className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-600">
-            <span className="text-slate-400">{DETAIL_LABELS[k] || k}</span> {String(shown)}
+          <span
+            key={k}
+            title={fullText.length > 60 ? fullText : undefined}
+            className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-600"
+          >
+            <span className="text-slate-400">{DETAIL_LABELS[k] || k}</span> {String(clamped)}
           </span>
         );
       })}

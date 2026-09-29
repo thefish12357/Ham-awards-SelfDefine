@@ -1,3 +1,8 @@
+// ⚠️ 必须位于所有其它 import 之前：ESM 按 import 声明顺序求值，这一行最先执行，
+// 让 server.js 自身读取项目根 `.env`（无 dotenv 依赖）。
+// 作用：让「裸跑 node server.js」与「npm run dev:all / start-local.ps1 / 容器」行为一致，
+// 不再出现 DEMO_URL / OAUTH_* / TRUST_PROXY 丢失（落地页「体验演示系统」按钮消失即此问题）。
+import { envLoaded as envFileLoaded, envFilePath } from './server/services/loadEnv.js';
 import express from 'express';
 import http from 'http';
 import pg from 'pg';
@@ -31,6 +36,8 @@ import { createNotificationsRouter, notifyUsers } from './server/services/notifi
 import { createAuditRouter, logAudit } from './server/services/audit.js';
 // 内测邀请码（门禁只加在"新账号产生"这一步，见 server/services/invites.js）
 import { INVITE_TABLE_SQL, consumeInviteCode, genInviteCode, inviteError, isInviteRequired } from './server/services/invites.js';
+// 邮箱规范化/校验（注册与 OAuth 绑定共用同一套规则）
+import { normalizeEmail, isEmailTaken } from './server/services/email.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -387,6 +394,11 @@ async function upgradeSchema() {
     if (!userColNames.includes('oauth_provider')) await client.query("ALTER TABLE users ADD COLUMN oauth_provider VARCHAR(32)");
     if (!userColNames.includes('oauth_sub')) await client.query("ALTER TABLE users ADD COLUMN oauth_sub VARCHAR(128)");
     if (!userColNames.includes('oauth_raw')) await client.query("ALTER TABLE users ADD COLUMN oauth_raw JSONB");
+    // 邮箱绑定（2026-09-29）：注册时用户可填；用 HamCQ 登录时自动带上 HamCQ 的邮箱。
+    //   email_source 记录来源（register=用户自己填的 / hamcq=授权带过来的），便于展示与排查。
+    //   故意**不加唯一约束**：HamCQ 返回的邮箱可能为空或与他人重合，加 UNIQUE 会让 OAuth 建号直接失败。
+    if (!userColNames.includes('email')) await client.query("ALTER TABLE users ADD COLUMN email VARCHAR(254)");
+    if (!userColNames.includes('email_source')) await client.query("ALTER TABLE users ADD COLUMN email_source VARCHAR(16)");
     // token_version：改密/改角色/禁用时自增，使旧 JWT 立即失效（审计整改：JWT 角色即时失效）
     if (!userColNames.includes('token_version')) await client.query("ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0");
     // status：账号状态（active/disabled）。禁用账号后其旧令牌立即失效（审计整改）。
@@ -916,17 +928,28 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 
         const token = jwt.sign({ id: user.id, role: user.role, callsign: user.callsign, tv: user.token_version ?? 0 }, appConfig.jwtSecret, { expiresIn: '24h' });
         await logAudit(dbPool, req, { action: 'auth.login', targetType: 'user', targetId: user.id, actor: { id: user.id, callsign: user.callsign, role: user.role } });
-        res.json({ token, user: { id: user.id, callsign: user.callsign, role: user.role, has2fa: !!user.totp_secret } });
+        res.json({ token, user: { id: user.id, callsign: user.callsign, role: user.role, has2fa: !!user.totp_secret, email: user.email || null } });
     } catch (e) { console.error(e); res.status(500).json({ error: 'SERVER_ERROR' }); }
 });
 
 app.post('/api/auth/register', loginLimiter, async (req, res) => {
     const { callsign, password, invite_code: inviteCode } = req.body;
     const callsignUp = String(callsign || '').toUpperCase();
+    // 邮箱（可选）：注册时绑定，便于站点联系与身份核对。
+    //   只校验格式、**不做唯一性校验** —— 避免通过「该邮箱是否已注册」枚举用户，
+    //   也避免与 HamCQ 带过来的邮箱撞车（详见 server/services/email.js 的说明）。
+    const email = normalizeEmail(req.body.email);
+    if (email === '') return res.status(400).json({ error: 'INVALID_EMAIL', message: '邮箱格式不正确' });
     try {
         // 先查重再消费邀请码：否则撞呼号时会把码白白用掉一次
         const dup = await dbPool.query('SELECT id FROM users WHERE callsign = $1', [callsignUp]);
         if (dup.rows.length > 0) return res.status(400).json({ error: 'EXISTS', message: '呼号已被注册' });
+
+        // 同一邮箱只能绑定一个账号（与「用户中心改邮箱」同一规则，大小写不敏感）。
+        // ★ 必须放在**消费邀请码之前**：否则邮箱撞车也会白白用掉一张邀请码。
+        if (email && await isEmailTaken(dbPool, email)) {
+            return res.status(409).json({ error: 'EMAIL_TAKEN', message: '该邮箱已被其他账号绑定，请换一个' });
+        }
 
         // 内测门禁（默认关闭）：只在开启时校验，存量用户登录完全不受影响
         let usedCode = null;
@@ -941,14 +964,15 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
 
         const hash = await bcrypt.hash(password, 10);
         const ins = await dbPool.query(
-            `INSERT INTO users (callsign, password_hash, role, invite_code) VALUES ($1, $2, 'user', $3) RETURNING id`,
-            [callsignUp, hash, usedCode],
+            `INSERT INTO users (callsign, password_hash, role, invite_code, email, email_source)
+             VALUES ($1, $2, 'user', $3, $4, $5) RETURNING id`,
+            [callsignUp, hash, usedCode, email || null, email ? 'register' : null],
         );
         await logAudit(dbPool, req, {
             action: 'auth.register',
             targetType: 'user',
             targetId: ins.rows[0]?.id,
-            detail: { callsign: callsignUp.slice(0, 32), role: 'user', invite_code: usedCode || undefined },
+            detail: { callsign: callsignUp.slice(0, 32), role: 'user', invite_code: usedCode || undefined, email: email || undefined },
         });
         if (usedCode) {
             await logAudit(dbPool, req, {
@@ -1047,9 +1071,43 @@ app.get('/api/stats/dashboard', verifyToken, async (req, res) => {
 // --- 用户中心 ---
 
 app.get('/api/user/profile', verifyToken, async (req, res) => {
-    const r = await dbPool.query('SELECT id, callsign, role, totp_secret, created_at FROM users WHERE id=$1', [req.user.id]);
+    const r = await dbPool.query('SELECT id, callsign, role, totp_secret, created_at, email, email_source FROM users WHERE id=$1', [req.user.id]);
     const u = r.rows[0];
     res.json({ ...u, has2fa: !!u.totp_secret, totp_secret: undefined });
+});
+
+/**
+ * 用户自助绑定 / 修改 / 解绑邮箱（2026-09-29）
+ * ------------------------------------------------------------------
+ * 规则：
+ *   - 同一邮箱只能绑定**一个**账号（大小写不敏感）；
+ *   - 提交空值 = 解绑（清空 email 与来源）；
+ *   - 邮箱不参与登录、也不用于找回密码，因此**不要求密码 / 2FA**，改完也无需重新登录。
+ * 放开这个入口是为了让老用户（注册时没填、或 HamCQ 没返回邮箱）能自己补上。
+ */
+app.post('/api/user/email', verifyToken, async (req, res) => {
+    try {
+        const email = normalizeEmail((req.body || {}).email);
+        if (email === '') return res.status(400).json({ error: 'INVALID_EMAIL', message: '邮箱格式不正确' });
+
+        if (email) {
+            const taken = await isEmailTaken(dbPool, email, req.user.id);
+            if (taken) return res.status(409).json({ error: 'EMAIL_TAKEN', message: '该邮箱已被其他账号绑定，请换一个' });
+        }
+
+        await dbPool.query('UPDATE users SET email=$1, email_source=$2 WHERE id=$3', [
+            email || null,
+            email ? 'manual' : null,
+            req.user.id,
+        ]);
+        await logAudit(dbPool, req, {
+            action: 'user.email_update',
+            targetType: 'user',
+            targetId: req.user.id,
+            detail: { email: email || undefined, cleared: email ? undefined : true },
+        });
+        res.json({ success: true, email: email || null, email_source: email ? 'manual' : null });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/user/2fa/setup', verifyToken, async (req, res) => {
@@ -1194,9 +1252,28 @@ app.get('/api/awards/my', verifyToken, verifyAwardAdmin, async (req, res) => {
 //     · 最高级管理员   → `/api/admin/awards/pending|approved`
 //   改成显式列名（而非 `*`）就是为了避免以后加敏感列时又被顺手带出去。
 app.get('/api/awards/all_approved', verifyToken, async (req, res) => {
+    // 大厅列表（2026-09-29 扩展）：
+    //  · 仍用**显式列名**（不 SELECT *）——不能把 audit_log / reject_reason 带出去（权限说明见上）；
+    //  · creator_callsign：展示「发布者」，供前端按发布者分组；
+    //  · issued_count：该奖状已成功申领次数，供前端展示与「按申领量排序」。
+    //    user_awards 是颁发台账，award_id 为 ON DELETE SET NULL（奖状删除后置空），
+    //    故只统计 award_id 非空的记录；已删奖状的历史记录不计入任何在架奖状。
+    //  · JOIN 后所有易混淆列一律带表前缀（a. / u.），否则 awards 与 users 的 id/created_at 会 ambiguous 报 500。
     const r = await dbPool.query(
-        `SELECT id, name, description, bg_url, rules, layout, status, creator_id, tracking_id, created_at
-           FROM awards WHERE status = 'approved' ORDER BY id DESC`,
+        `SELECT a.id, a.name, a.description, a.bg_url, a.rules, a.layout, a.status,
+                a.creator_id, a.tracking_id, a.created_at,
+                u.callsign AS creator_callsign,
+                COALESCE(ua.issued_count, 0)::int AS issued_count
+           FROM awards a
+           LEFT JOIN users u ON u.id = a.creator_id
+           LEFT JOIN (
+                SELECT award_id, COUNT(*) AS issued_count
+                  FROM user_awards
+                 WHERE award_id IS NOT NULL
+                 GROUP BY award_id
+           ) ua ON ua.award_id = a.id
+          WHERE a.status = 'approved'
+          ORDER BY a.id DESC`,
     );
     res.json(r.rows);
 });
@@ -1959,7 +2036,7 @@ app.get('/api/verify/:serial/qr', async (req, res) => {
 // --- 系统管理 ---
 
 app.get('/api/admin/users', verifyToken, verifyAdmin, async (req, res) => {
-    const r = await dbPool.query('SELECT id, callsign, role, created_at, totp_secret IS NOT NULL as has_2fa FROM users ORDER BY id');
+    const r = await dbPool.query('SELECT id, callsign, role, created_at, email, email_source, totp_secret IS NOT NULL as has_2fa FROM users ORDER BY id');
     res.json(r.rows);
 });
 
@@ -2069,11 +2146,19 @@ app.post('/api/user/role-request', verifyToken, async (req, res) => {
             title: '有新的角色升级申请',
             body: `用户 ${req.user.callsign} 申请成为奖状管理员（拟创建奖状「${awardName}」），请到「用户管理」审核。`,
         });
+        // 审计要能还原「申请了什么」：把申请表全文一并留痕（不含任何密码/凭据）。
+        // 此前只记了 award_name，管理员在审计日志里看不到理由/经验/联系方式，
+        // 等于「有记录但无法复核」，故补齐。
         await logAudit(dbPool, req, {
             action: 'role.request',
             targetType: 'role_request',
             targetId: ins.rows[0].id,
-            detail: { award_name: awardName },
+            detail: {
+                award_name: awardName,
+                reason,
+                experience: experience || undefined,
+                contact: contact || undefined,
+            },
         });
         res.json({ success: true, id: ins.rows[0].id });
     } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2118,11 +2203,21 @@ app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async 
         );
         await client.query('COMMIT');
 
+        // 申请人呼号 / 原角色：审计里要能一眼看出「给谁批的（驳的）」，只留 user_id 还得另查
+        const applicant = await dbPool.query('SELECT callsign, role FROM users WHERE id=$1', [old.rows[0].user_id]);
         await logAudit(dbPool, req, {
             action: 'role.review',
             targetType: 'role_request',
             targetId: id,
-            detail: { user_id: old.rows[0].user_id, op: approved ? 'approve' : 'reject', role_to: approved ? 'award_admin' : undefined, reason: reason || '' },
+            detail: {
+                user_id: old.rows[0].user_id,
+                applicant: applicant.rows[0]?.callsign || undefined,
+                role_from: applicant.rows[0]?.role || undefined,
+                award_name: old.rows[0].award_name || undefined,
+                op: approved ? 'approve' : 'reject',
+                role_to: approved ? 'award_admin' : undefined,
+                reason: reason || '',
+            },
         });
 
         await notifyUsers(dbPool, [old.rows[0].user_id], {
@@ -2260,6 +2355,7 @@ app.get('/api/admin/cty/stats', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // 启动
+console.log(envFileLoaded ? `[env] 已加载 ${envFilePath}` : '[env] 未找到 .env，仅使用现有环境变量');
 loadConfig();
 const PORT = Number(process.env.PORT) || 9993;
 http.createServer(app).listen(PORT, () => console.log(`Server running on port ${PORT}`));

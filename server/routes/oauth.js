@@ -28,6 +28,8 @@ import jwt from 'jsonwebtoken';
 // 内测门禁：OAuth 首次建号也要邀请码，否则会绕过注册关（绑定已有账号不需要）
 import { consumeInviteCode, inviteError, isInviteRequired } from '../services/invites.js';
 import { createTtlStore } from '../services/sessionStore.js';
+// 邮箱规范化/校验：与注册接口共用同一套规则
+import { normalizeEmail, isEmailTaken } from '../services/email.js';
 
 const STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -46,6 +48,8 @@ const oauthConfig = (getConfig) => {
     scope: c.scope || 'user.read',
     callsignField: c.callsignField || 'username',
     userSubField: c.userSubField || 'id',
+    // 邮箱字段名（HamCQ 实测返回 `email`；换提供方可用 config 的 oauth.emailField 覆盖）
+    emailField: c.emailField || 'email',
     redirectUri: c.redirectUri || '',
     tokenRequestFormat: c.tokenRequestFormat || 'form',
   };
@@ -65,6 +69,7 @@ const publicUser = (u) => ({
   callsign: u.callsign,
   role: u.role,
   has2fa: !!u.totp_secret,
+  email: u.email || null,
 });
 
 export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
@@ -153,11 +158,23 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       const callsign = String(profile[cfg.callsignField] || '').trim().toUpperCase();
       const sub = String(profile[cfg.userSubField] ?? profile.id ?? '').trim();
       if (!callsign || !sub) throw new Error('未能从授权服务器获取呼号 / 用户 ID');
+      // HamCQ 的邮箱（可能为空，取决于 scope / 是否已验证）。
+      // 非法格式一律当作「没有」——绝不因为一个邮箱把整条登录链路打断。
+      const providerEmail = normalizeEmail(profile[cfg.emailField]);
+      const email = providerEmail === '' ? null : providerEmail;
 
       // 3) 已绑定过 → 直接登录
       const bound = await db().query('SELECT * FROM users WHERE oauth_provider=$1 AND oauth_sub=$2', [cfg.provider, sub]);
       if (bound.rows.length > 0) {
         const u = bound.rows[0];
+        // 邮箱回填：绝大多数老账号是在「邮箱绑定」上线之前注册/绑定的，
+        // 而「已绑定」路径以前直接登录、不会补邮箱 —— 于是这些人永远填不上。
+        // 因此每次 HamCQ 登录都检查一次：本站还没有邮箱、且这次 HamCQ 返回了邮箱 → 补上。
+        // （绝不覆盖用户已有值）
+        // 还要确保该邮箱没被**别的**账号占用（同一邮箱只允许绑一个账号）
+        if (!u.email && email && !(await isEmailTaken(db(), email, u.id))) {
+          await db().query("UPDATE users SET email=$1, email_source='hamcq' WHERE id=$2", [email, u.id]);
+        }
         // 安全加固（审计整改）：不直接把长期 JWT 放进 URL（会进浏览器历史/扩展/截图）。
         // 改为签发一次性短时效换码，前端再 POST /code 换取 JWT。
         const oauthCode = crypto.randomBytes(16).toString('hex');
@@ -175,6 +192,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         provider: cfg.provider,
         sub,
         username: callsign, // HamCQ 用户名，仅作输入框预填
+        email, // HamCQ 邮箱（可能为 null），补全信息时写入 users.email
         profile,
       }, STATE_TTL_MS);
       return res.redirect(
@@ -220,6 +238,13 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         JSON.stringify(pending.profile),
         u.id,
       ]);
+      // 邮箱回填：仅当本站账号**还没有邮箱**、HamCQ 返回了邮箱、且该邮箱**未被其它账号占用**时补上
+      // —— 既不覆盖用户自己填的，也不去抢别人已绑的邮箱
+      const emailTaken = pending.email ? await isEmailTaken(db(), pending.email, u.id) : false;
+      const emailBackfilled = !u.email && !!pending.email && !emailTaken;
+      if (emailBackfilled) {
+        await db().query("UPDATE users SET email=$1, email_source='hamcq' WHERE id=$2", [pending.email, u.id]);
+      }
       await pendingBinds.del(pendingToken);
       // 审计：OAuth「绑定已有账号」也是一次登录，必须留痕（此前漏记，导致用户登录查不到）
       await audit(req, {
@@ -227,7 +252,13 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         targetType: 'user',
         targetId: u.id,
         actor: { id: u.id, callsign: u.callsign, role: u.role },
-        detail: { channel: 'hamcq', bound: true },
+        detail: {
+          channel: 'hamcq',
+          bound: true,
+          email: emailBackfilled ? pending.email : undefined,
+          // 邮箱撞车时明确留痕，便于管理员解释"为什么这次没绑上"
+          email_conflict: emailTaken || undefined,
+        },
       });
       return res.json({ token: signToken(u), user: publicUser(u) });
     }
@@ -245,14 +276,18 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
     }
 
     const hash = password ? await bcrypt.hash(password, 10) : null;
+    // 首次建号：把 HamCQ 的邮箱一并绑定（email_source='hamcq'）；
+    // 若该邮箱已被**别的**账号占用则留空（不做跨账号重复绑定），并在审计里标注冲突。
+    const newEmailTaken = pending.email ? await isEmailTaken(db(), pending.email) : false;
+    const bindEmail = pending.email && !newEmailTaken ? pending.email : null;
     const created = await db().query(
-      `INSERT INTO users (callsign, password_hash, role, oauth_provider, oauth_sub, oauth_raw, invite_code)
-       VALUES ($1, $2, 'user', $3, $4, $5, $6) RETURNING *`,
-      [cs, hash, pending.provider, pending.sub, JSON.stringify(pending.profile), usedCode],
+      `INSERT INTO users (callsign, password_hash, role, oauth_provider, oauth_sub, oauth_raw, invite_code, email, email_source)
+       VALUES ($1, $2, 'user', $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [cs, hash, pending.provider, pending.sub, JSON.stringify(pending.profile), usedCode, bindEmail, bindEmail ? 'hamcq' : null],
     );
     await pendingBinds.del(pendingToken);
     const u = created.rows[0];
-    await audit(req, { action: 'auth.register', targetType: 'user', targetId: u.id, detail: { callsign: u.callsign, channel: 'hamcq', invite_code: usedCode || undefined } });
+    await audit(req, { action: 'auth.register', targetType: 'user', targetId: u.id, detail: { callsign: u.callsign, channel: 'hamcq', invite_code: usedCode || undefined, email: bindEmail || undefined, email_conflict: newEmailTaken || undefined } });
     if (usedCode) {
       await audit(req, { action: 'invite.use', targetType: 'invite', targetId: usedCode, detail: { callsign: u.callsign, channel: 'hamcq' } });
     }
