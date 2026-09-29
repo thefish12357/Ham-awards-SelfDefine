@@ -447,6 +447,10 @@ async function upgradeSchema() {
     if (!cols.includes('tracking_id')) await client.query("ALTER TABLE awards ADD COLUMN tracking_id VARCHAR(50)");
     if (!cols.includes('audit_log')) await client.query("ALTER TABLE awards ADD COLUMN audit_log JSONB DEFAULT '[]'");
     if (!cols.includes('reject_reason')) await client.query("ALTER TABLE awards ADD COLUMN reject_reason TEXT");
+    // 颁发机构 / 主办方（2026-09-30）：此前绑定字段 `issuer` 实际取的是 `tracking_id`（奖状编号），
+    // 标签与数据语义不符 —— 用户反馈「没搞懂颁发机构对应的是哪一个字段」。这里补一个真字段；
+    // 取值处统一 `issuer || tracking_id` 回落，历史奖状不会变空白。
+    if (!cols.includes('issuer')) await client.query("ALTER TABLE awards ADD COLUMN issuer VARCHAR(120)");
 
     await client.query(`
         CREATE TABLE IF NOT EXISTS user_awards (
@@ -1261,7 +1265,7 @@ app.get('/api/awards/all_approved', verifyToken, async (req, res) => {
     //  · JOIN 后所有易混淆列一律带表前缀（a. / u.），否则 awards 与 users 的 id/created_at 会 ambiguous 报 500。
     const r = await dbPool.query(
         `SELECT a.id, a.name, a.description, a.bg_url, a.rules, a.layout, a.status,
-                a.creator_id, a.tracking_id, a.created_at,
+                a.creator_id, a.tracking_id, a.created_at, a.issuer,
                 u.callsign AS creator_callsign,
                 COALESCE(ua.issued_count, 0)::int AS issued_count
            FROM awards a
@@ -1431,7 +1435,8 @@ app.post('/api/admin/awards/audit', verifyToken, verifyAdmin, async (req, res) =
 
 // 创建/更新奖状 (奖状管理员)
 app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
-    const { id, name, description, rules, layout, bg_url, status } = req.body;
+    const { id, name, description, rules, layout, bg_url, status, issuer } = req.body;
+    const issuerVal = issuer != null ? String(issuer).trim().slice(0, 120) || null : null;
 
     // 安全加固（审计整改）：状态流转白名单。
     //  - approved 只能由系统管理员审核接口（/api/admin/awards/audit）设置，普通奖状管理员绝不能直接发布；
@@ -1486,14 +1491,14 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
             let logs = old.rows[0].audit_log || [];
             logs.push(logEntry);
 
-            let updateSql = `UPDATE awards SET name=$1, description=$2, rules=$3, layout=$4, bg_url=$5, status=$6, audit_log=$7`;
-            let params = [name, description, JSON.stringify(rules), JSON.stringify(layout), bg_url, status, JSON.stringify(logs)];
+            let updateSql = `UPDATE awards SET name=$1, description=$2, rules=$3, layout=$4, bg_url=$5, status=$6, audit_log=$7, issuer=$8`;
+            let params = [name, description, JSON.stringify(rules), JSON.stringify(layout), bg_url, status, JSON.stringify(logs), issuerVal];
 
             if (status === 'pending') {
                 updateSql += `, reject_reason=NULL`; // 清空原因
             }
 
-            updateSql += role === 'admin' ? ` WHERE id=$8` : ` WHERE id=$8 AND creator_id=$9`;
+            updateSql += role === 'admin' ? ` WHERE id=$9` : ` WHERE id=$9 AND creator_id=$10`;
             params.push(id);
             if (role !== 'admin') params.push(req.user.id);
 
@@ -1523,9 +1528,9 @@ app.post('/api/awards', verifyToken, verifyAwardAdmin, async (req, res) => {
         } else {
             // 新建：creator 永远是本人
             const inserted = await client.query(
-                `INSERT INTO awards (name, description, rules, layout, bg_url, status, creator_id, tracking_id, audit_log)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-                [name, description, JSON.stringify(rules), JSON.stringify(layout), bg_url, status, req.user.id, trackingId, JSON.stringify([logEntry])]
+                `INSERT INTO awards (name, description, rules, layout, bg_url, status, creator_id, tracking_id, audit_log, issuer)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+                [name, description, JSON.stringify(rules), JSON.stringify(layout), bg_url, status, req.user.id, trackingId, JSON.stringify([logEntry]), issuerVal]
             );
             await logAudit(dbPool, req, {
                 action: 'award.save',
@@ -1809,7 +1814,7 @@ app.get('/api/user/my-awards', verifyToken, async (req, res) => {
         SELECT ua.*,
                COALESCE(a.name, ua.award_name) AS name,
                COALESCE(a.tracking_id, ua.award_tracking_id) AS tracking_id,
-               a.bg_url, a.description, a.rules, a.layout,
+               a.bg_url, a.description, a.rules, a.layout, a.issuer,
                (a.id IS NULL) AS detached
         FROM user_awards ua
         LEFT JOIN awards a ON ua.award_id = a.id
@@ -1973,6 +1978,8 @@ app.get('/api/verify/:serial', async (req, res) => {
                    COALESCE(a.name, ua.award_name) AS award_name,
                    a.description,
                    COALESCE(a.tracking_id, ua.award_tracking_id) AS tracking_id,
+                   -- 颁发机构优先用真字段，没有再回落奖状编号（历史数据不会变空）
+                   a.issuer,
                    (a.id IS NULL) AS detached,
                    u.callsign AS holder_callsign
             FROM user_awards ua
@@ -2005,7 +2012,7 @@ app.get('/api/verify/:serial', async (req, res) => {
             score: row.score_snapshot,
             issueDate: row.issued_at,
             holder: maskCallsign(row.holder_callsign),
-            issuer: row.tracking_id,
+            issuer: row.issuer || row.tracking_id,
             description: row.description,
         });
     } catch (e) {

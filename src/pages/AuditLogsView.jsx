@@ -101,11 +101,34 @@ const DETAIL_LABELS = {
 
 const OP_LABELS = { approve: '通过', reject: '驳回', create: '新建', update: '更新', recall: '撤回' };
 
-/** 把 detail JSONB 渲染成"中文键: 值"的小标签；显式隐藏空值 */
-const renderDetail = (detail) => {
+const PREVIEW_CHARS = 60;
+
+/**
+ * 把 detail JSONB 渲染成「中文键: 值」小标签；显式隐藏空值。
+ *
+ * 长文本（角色申请的「理由」可达 2000 字）默认只显示前 `PREVIEW_CHARS` 个字，
+ * 并给一个「展开全文（共 N 字）」按钮**就地展开**。为什么这么改：
+ *   · 原先用 `title` 悬停提示 —— 用户反馈"申请理由太长显示不出来"：提示不可发现、
+ *     不能换行阅读、也没法选中复制；
+ *   · 也没有改用弹层：`confirm.jsx` 的 `infoDialog` 是固定窄宽度且**没有滚动条**，
+ *     2000 字会直接撑出屏幕。
+ * 展开后该标签占满整行并保留原文换行（whitespace-pre-wrap），点「收起」恢复单行，
+ * 表格不会被永久撑高。状态放在组件内部，每行互不影响。
+ */
+function AuditDetail({ detail }) {
+  const [expanded, setExpanded] = useState(() => new Set());
   if (!detail || typeof detail !== 'object') return <span className="text-slate-400">—</span>;
   const entries = Object.entries(detail).filter(([, v]) => v !== null && v !== undefined && v !== '');
   if (entries.length === 0) return <span className="text-slate-400">—</span>;
+
+  const toggle = (key) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+
   return (
     <div className="flex flex-wrap gap-1">
       {entries.map(([k, v]) => {
@@ -113,23 +136,34 @@ const renderDetail = (detail) => {
         if (typeof v === 'boolean') shown = v ? '是' : '否';
         else if (k === 'op' && OP_LABELS[v]) shown = OP_LABELS[v];
         else if (typeof v === 'object') shown = JSON.stringify(v);
-        // 长文本（如角色申请的「理由」可达 2000 字）截断显示、完整内容放 title，
-        // 否则单条记录就能把表格撑爆（审计里 now 会记申请全文）
+
         const fullText = typeof shown === 'string' ? shown : '';
-        const clamped = fullText.length > 120 ? `${fullText.slice(0, 120)}…` : shown;
+        const truncated = fullText.length > PREVIEW_CHARS;
+        const open = expanded.has(k);
+        const text = open || !truncated ? shown : `${fullText.slice(0, PREVIEW_CHARS)}…`;
+
         return (
           <span
             key={k}
-            title={fullText.length > 60 ? fullText : undefined}
-            className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-600"
+            className={`rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] leading-relaxed text-slate-600 ${open ? 'w-full' : ''}`}
           >
-            <span className="text-slate-400">{DETAIL_LABELS[k] || k}</span> {String(clamped)}
+            <span className="text-slate-400">{DETAIL_LABELS[k] || k}</span>{' '}
+            <span className={open ? 'whitespace-pre-wrap break-words' : ''}>{String(text)}</span>
+            {truncated && (
+              <button
+                type="button"
+                onClick={() => toggle(k)}
+                className="ml-1.5 font-bold text-blue-600 underline decoration-dotted underline-offset-2 hover:text-blue-700"
+              >
+                {open ? '收起' : `展开全文（共 ${fullText.length} 字）`}
+              </button>
+            )}
           </span>
         );
       })}
     </div>
   );
-};
+}
 
 const actionStyle = (action) => {
   const hit = ACTION_STYLES.find((s) => action.startsWith(s.prefix));
@@ -309,7 +343,7 @@ export default function AuditLogsView() {
                         '—'
                       )}
                     </td>
-                    <td className="px-4 py-3">{renderDetail(row.detail)}</td>
+                    <td className="px-4 py-3"><AuditDetail detail={row.detail} /></td>
                   </tr>
                 ))}
             </tbody>

@@ -15,6 +15,7 @@ import {
   ChevronsUp,
   ChevronsDown,
   AlertCircle,
+  AlertTriangle,
   Layers,
   LayoutTemplate,
   FolderOpen,
@@ -88,7 +89,7 @@ const cursorFor = (dir) =>
  *   - 底图      → POST /api/awards/upload-bg     （≤ BG_MAX_MB）
  *   - 图片元素  → POST /api/awards/upload-asset  （≤ ASSET_MAX_MB，仅图片元素用）
  */
-export default function VisualDesigner({ layout, onChange, awardName, levels = [] }) {
+export default function VisualDesigner({ layout, onChange, awardName, levels = [], description = '', issuer = '' }) {
   const [selectedId, setSelectedId] = useState(null);
   // 多等级差异：'' = 编辑「所有等级共用」的基础设计；否则只改该等级的 levelOverrides
   const [editLevel, setEditLevel] = useState('');
@@ -144,15 +145,50 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
     serial: '1234567890123456',
     issueDate: '2026-09-21',
     score: '42',
-    issuer: 'HAM AWARDS',
+    // ★ 简介 / 颁发机构用**真实值**（2026-09-30）：以前写死 '奖状描述' / 'HAM AWARDS'，
+    //   作者填了长简介却永远看不到真实排版，发布后才发现文字被文本框裁掉。
+    //   呼号 / 序列号 / 日期这些天生是"别人的数据"，仍保持示例值。
+    issuer: issuer || 'HAM AWARDS',
     verifyUrl: 'https://example.com/verify/1234567890123456',
-    description: '奖状描述',
+    description: description || '奖状描述',
   };
 
   // 画布上用于预览的等级：选了等级就用它；没选时用一个真实等级名做样张，
   // 同时给渲染器传 ignoreLevelOverrides 关掉覆盖，展示「所有等级共用」的基础设计。
   const previewLevel = editLevel || levels[0] || sampleData.level;
   const renderData = { ...sampleData, level: previewLevel };
+
+  /**
+   * 文字溢出检测（2026-09-30）
+   * ------------------------------------------------------------------
+   * 文本框尺寸固定 + 渲染器 overflow:hidden，长文本换行后会被**静默裁掉**，
+   * 而画布上看不出异常 —— 以前只能等发布后才发现（用户反馈）。
+   * 这里直接量真实 DOM：元素容器 `[data-elid]` 的内层文字节点若
+   * scrollHeight/scrollWidth 超过 clientHeight/clientWidth，即判定溢出。
+   * 量之前等两帧：@font-face 字体异步加载完之前量到的尺寸不准。
+   */
+  const [overflowIds, setOverflowIds] = useState(() => new Set());
+  useEffect(() => {
+    const host = wrapRef.current;
+    if (!host) return undefined;
+    let raf = 0;
+    const measure = () => {
+      const next = new Set();
+      host.querySelectorAll('[data-elid]').forEach((n) => {
+        const inner = n.firstElementChild;
+        if (!inner) return;
+        if (inner.scrollHeight > inner.clientHeight + 1 || inner.scrollWidth > inner.clientWidth + 1) {
+          next.add(n.getAttribute('data-elid'));
+        }
+      });
+      // 集合内容相同时返回旧引用，避免无意义重渲染（否则会形成循环）
+      setOverflowIds((prev) =>
+        prev.size === next.size && [...next].every((id) => prev.has(id)) ? prev : next,
+      );
+    };
+    raf = requestAnimationFrame(() => requestAnimationFrame(measure));
+    return () => cancelAnimationFrame(raf);
+  }, [layout, canvasPx, editLevel, awardName, description, issuer]);
 
   const commitSnapshot = (els) => {
     setPast((p) => [...p, els]);
@@ -715,6 +751,15 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
             )}
           </div>
         )}
+        {overflowIds.size > 0 && (
+          <div className="mx-4 mt-3 flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>
+              有 <b>{overflowIds.size}</b> 个文本框的内容超出范围，发布后超出部分<b>会被裁掉</b>。
+              请点选该元素，把框放大或在右侧把「字号」调小（字号可小于框高，就能显示多行）。
+            </span>
+          </div>
+        )}
         <div
           ref={wrapRef}
           className="flex-1 bg-slate-800 p-4 overflow-auto flex items-start justify-center"
@@ -789,6 +834,12 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
 
             {selected.type === 'text' && (
               <>
+                {overflowIds.has(selected.id) && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-2 text-xs leading-relaxed text-red-700">
+                    ⚠️ <b>文字超出文本框</b>：发布后超出部分会被裁掉。请把「高 / 宽」放大，
+                    或把下面的<b>字号</b>调小（字号可以小于框高，这样就能在一个框里显示多行）。
+                  </div>
+                )}
                 <label className="block">
                   <span className="text-xs text-slate-500">内容</span>
                   <select className="w-full mt-1 p-2 border rounded-lg" value={selected.binding || 'custom'} onChange={(e) => updateSelected({ binding: e.target.value })}>
@@ -805,8 +856,19 @@ export default function VisualDesigner({ layout, onChange, awardName, levels = [
                 )}
                 <div className="grid grid-cols-2 gap-2">
                   <label className="block">
-                    <span className="text-xs text-slate-500">字号（=元素高 mm）</span>
-                    <input type="number" className="w-full mt-1 p-2 border rounded-lg" value={Math.round(selected.h)} onChange={(e) => updateSelected({ h: Math.max(1, Number(e.target.value) || 0) })} />
+                    <span className="text-xs text-slate-500">字号 mm（留空 = 跟随框高）</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      className="w-full mt-1 p-2 border rounded-lg"
+                      value={selected.fontSize != null ? selected.fontSize : ''}
+                      placeholder={`跟随框高 ${Math.round(selected.h)}`}
+                      onChange={(e) => updateSelected({ fontSize: e.target.value === '' ? null : Math.max(1, Number(e.target.value) || 1) })}
+                    />
+                    <span className="mt-1 block text-[10px] text-slate-400">
+                      调小字号即可在一个框里显示多行（长简介适用）；留空则保持旧规则「字号 = 框高」。
+                    </span>
                   </label>
                   <label className="block">
                     <span className="text-xs text-slate-500">字重</span>

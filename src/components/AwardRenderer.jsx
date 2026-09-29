@@ -104,8 +104,13 @@ export default function AwardRenderer({
                 color: el.color || '#111827',
                 fontFamily: fontFamilyOf(el.font),
                 fontWeight: el.weight || 400,
-                fontSize: px(el.h),
-                lineHeight: 1.05,
+                // 字号（2026-09-30）：显式给了 `fontSize`(mm) 就按它，否则沿用旧规则
+                // 「字号 = 元素高度」。旧规则导致文本框**做不出「小字多行」**，
+                // 长简介一换行就被 overflow:hidden 裁掉（用户反馈：发布后发现内容被截断）。
+                // 不填 fontSize 的历史奖状渲染结果完全不变。
+                fontSize: px(el.fontSize != null ? el.fontSize : el.h),
+                // 多行文本给略松的行高；单行保持 1.05，避免改动既有排版
+                lineHeight: el.lineHeight ?? (el.fontSize != null ? 1.25 : 1.05),
                 whiteSpace: 'pre-wrap',
                 overflow: 'hidden',
               }}
@@ -261,7 +266,7 @@ export function AwardThumbnail({ award, className = '', placeholderText = '未�
     awardName: award?.name || '',
     description: award?.description || '',
     level: award?.rules?.thresholds?.[0]?.name || '',
-    issuer: award?.tracking_id || '',
+    issuer: award?.issuer || award?.tracking_id || '',
   };
 
   // ⚠️ 这里**不要**再写 `relative`：调用方通常传 `absolute inset-0` 铺满固定高度的缩略图框，

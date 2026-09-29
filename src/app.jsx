@@ -605,7 +605,7 @@ const buildAwardRenderData = (ua, callsign) => ({
     serial: ua.serial_number || '',
     issueDate: ua.issued_at ? new Date(ua.issued_at).toLocaleDateString('zh-CN') : '',
     score: ua.score_snapshot ?? '',
-    issuer: ua.tracking_id || '',
+    issuer: ua.issuer || ua.tracking_id || '',
     verifyUrl: `${window.location.origin}/#/verify/${ua.serial_number || ''}`,
     description: ua.description || '',
 });
@@ -726,7 +726,7 @@ const MyAwardsView = ({ user }) => {
                                             <div className="absolute inset-0 bg-slate-800"></div>
                                         )}
                                         <div className="absolute inset-0 bg-black/10"></div>
-                                        <div className="absolute inset-0 p-8 flex flex-col justify-between text-white drop-shadow-md">
+                                        <div className="on-dark absolute inset-0 p-8 flex flex-col justify-between text-white drop-shadow-md">
                                             <div className="flex justify-between items-start">
                                                 <div className="bg-black/40 backdrop-blur px-3 py-1 rounded text-xs font-mono tracking-widest border border-white/20">
                                                     NO. {ua.serial_number}
@@ -855,7 +855,7 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
         serial: '1234567890123456',
         issueDate: new Date().toLocaleDateString('zh-CN'),
         score: '42',
-        issuer: award.tracking_id || '',
+        issuer: award.issuer || award.tracking_id || '',
         verifyUrl: `${window.location.origin}/#/verify/1234567890123456`,
         description: award.description || '',
     };
@@ -1062,7 +1062,8 @@ const AwardDetailModal = ({ award, onClose, onApply, userRole, mode, canApply })
                             /* 底图可空：明确告知，别给一片空白让人以为加载失败 */
                             <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">未设置底图</div>
                         )}
-                        <div className="absolute bottom-0 left-0 right-0 bg-black/55 backdrop-blur-sm p-3 text-white">
+                        {/* on-dark：压在深色蒙层上的文字恒白（亮色主题下 .text-white 会被翻成深色） */}
+                        <div className="on-dark absolute bottom-0 left-0 right-0 bg-black/55 backdrop-blur-sm p-3 text-white">
                             <div className="text-xs font-bold opacity-70 uppercase tracking-wider mb-0.5">奖状详情</div>
                             <h2 className="text-lg font-black leading-tight">{award.name}</h2>
                         </div>
@@ -1566,7 +1567,8 @@ const AwardCenterView = ({ user }) => {
             <div className="h-48 relative overflow-hidden bg-slate-100">
                 {/* 缩略图按布局渲染（底图可空，只渲染 bg_url 会是一片空白） */}
                 <AwardThumbnail award={aw} className="absolute inset-0" placeholderText="（未设置底图）" />
-                <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                {/* on-dark：hover 浮层压在深色半透明底上，文字必须恒白 */}
+                <div className="on-dark absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                     <span className="text-white font-bold border-2 border-white px-4 py-2 rounded-full">查看详情与进度</span>
                 </div>
             </div>
@@ -2146,7 +2148,7 @@ const AwardDesigner = ({ initData, onClose }) => {
         return { ...defaultRules, ...initData.rules };
     });
 
-    const [meta, setMeta] = useState({ name: initData?.name || '', description: initData?.description || '' });
+    const [meta, setMeta] = useState({ name: initData?.name || '', description: initData?.description || '', issuer: initData?.issuer || '' });
 
     const saveAward = async (status) => {
         try {
@@ -2206,6 +2208,7 @@ const AwardDesigner = ({ initData, onClose }) => {
                     id: initData?.id,
                     name: meta.name,
                     description: meta.description,
+                    issuer: meta.issuer,
                     bg_url: finalBgUrl || null,
                     rules,
                     layout: { ...layout, canvas: { ...layout.canvas, bgUrl: finalBgUrl } },
@@ -2270,7 +2273,18 @@ const AwardDesigner = ({ initData, onClose }) => {
                                 </div>
                                 <div>
                                     <label className="block text-sm font-bold text-slate-700 mb-1">描述说明</label>
-                                    <textarea className="w-full p-3 border rounded-xl h-32" value={meta.description} onChange={e=>setMeta({...meta, description:e.target.value})} placeholder="奖状的简介、颁发机构等..."/>
+                                    <textarea className="w-full p-3 border rounded-xl h-32" value={meta.description} onChange={e=>setMeta({...meta, description:e.target.value})} placeholder="奖状的简介、规则说明、背景等..."/>
+                                    <p className="mt-1 text-xs text-slate-400">
+                                        这段会作为「描述」字段供视觉设计绑定。文字较长时请把文字框放大、或在属性面板里<b>调小字号</b>；
+                                        超出文本框的部分在发布后会被裁掉（设计器会给出溢出提示）。
+                                    </p>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold text-slate-700 mb-1">颁发机构 / 主办方</label>
+                                    <input className="w-full p-3 border rounded-xl" value={meta.issuer} onChange={e=>setMeta({...meta, issuer:e.target.value})} placeholder="例如: 中国空中公园奖状管理组"/>
+                                    <p className="mt-1 text-xs text-slate-400">
+                                        视觉设计里绑定「颁发机构」的元素会显示这里的内容；留空则回落到奖状编号。
+                                    </p>
                                 </div>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
@@ -2522,6 +2536,8 @@ const AwardDesigner = ({ initData, onClose }) => {
                         <VisualDesigner
                             layout={layout}
                             awardName={meta.name}
+                            description={meta.description}
+                            issuer={meta.issuer}
                             levels={(rules.thresholds || []).map(t => t.name).filter(Boolean)}
                             onChange={(next) => {
                                 setLayout(next);

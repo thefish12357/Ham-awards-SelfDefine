@@ -383,3 +383,23 @@ html.theme-light body { background-color: var(--lt-bg); color: var(--lt-text); }
 .app-light .auth-brand .text-cyan-400 { color: #67e8f9 !important; }
 .app-light .auth-brand [class*="border-white/"] { border-color: rgba(255, 255, 255, 0.10) !important; }
 .app-light .auth-brand [class*="bg-white/"] { background-color: rgba(255, 255, 255, 0.05) !important; }
+
+/* ---------- 压在「深色半透明蒙层 / 图片」上的文字：恒定白色，不随主题翻转 ----------
+   典型场景：奖状效果图底部说明条（bg-black/55 text-white）、「我的奖状」卡片浮层、
+   奖状大厅卡片的 hover 浮层（bg-black/40 + 白字）。
+   亮色主题会把 .text-white 翻成深色（见上方 `.app-light .text-white` 映射），
+   配深色半透明底就成了「灰底黑字」—— 用户反馈白天模式奖状效果图看不清。
+   这类文字下面是深色蒙层，两套主题都必须用白字，所以显式钉住白色。
+
+   实现要点：`.app-light .on-dark .text-white` 特异度 (0,3,0) 高于
+   `.app-light .text-white` 的 (0,2,0)，因此不依赖书写顺序也能取胜。
+   与 `.auth-brand` 同一思路 —— 但那是**固定深色面板**，这里是**压在图片上的蒙层**。
+   用法：给蒙层容器加 `.on-dark`，其内所有文字恒白。 */
+.on-dark,
+.on-dark * { color: #fff !important; }
+.app-light .on-dark,
+.app-light .on-dark *,
+.app-light .on-dark .text-white,
+.app-light .on-dark .text-slate-50,
+.app-light .on-dark .text-slate-100,
+.app-light .on-dark .text-slate-200 { color: #fff !important; }

@@ -34,7 +34,7 @@ export default function AwardDemoModal({ award, onClose, onLogin, onRegister }) 
     serial: '',
     issueDate: '2026-09-25',
     score: '—',
-    issuer: award.tracking_id || '',
+    issuer: award.issuer || award.tracking_id || '',
     verifyUrl: `${window.location.origin}/#/verify/demo`,
     description: award.description || '',
   };
@@ -54,7 +54,8 @@ export default function AwardDemoModal({ award, onClose, onLogin, onRegister }) 
         <div className="w-full md:w-5/12 bg-slate-100 h-48 md:h-auto min-h-[200px] flex flex-col gap-3 p-4 overflow-y-auto">
           <div className="relative w-full aspect-[297/210] rounded-xl overflow-hidden border border-slate-300 shadow-lg bg-white shrink-0">
             <ResponsiveAwardRenderer layout={normalizeLayout(award.layout, award.bg_url)} data={data} />
-            <div className="absolute bottom-0 left-0 right-0 bg-black/55 backdrop-blur-sm p-3 text-white">
+            {/* on-dark：压在深色蒙层上的文字恒白（亮色主题下 .text-white 会被翻转成深色） */}
+            <div className="on-dark absolute bottom-0 left-0 right-0 bg-black/55 backdrop-blur-sm p-3 text-white">
               <div className="text-xs font-bold opacity-70 uppercase tracking-wider mb-0.5">示例奖状</div>
               <h2 className="text-lg font-black leading-tight">{award.name}</h2>
             </div>
