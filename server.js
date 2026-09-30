@@ -2004,6 +2004,87 @@ app.delete('/api/award-templates/:id', verifyToken, verifyAwardAdmin, async (req
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// --- 奖状规则自检（草稿阶段，2026-09-30）---
+
+/**
+ * 虚拟日志 → 引擎能吃的行结构。
+ * 引擎取值时优先读 `adif_raw`、再回落顶层字段（见 awardEngine），所以**两边都要填**，
+ * 否则会出现"顶层有值、引擎却从 adif_raw 读到空"的错位。
+ * ⚠️ 这些行全程只存在于内存，**不写库**；条数与字符长度都设了上限，防超大 payload。
+ */
+const VIRTUAL_QSO_MAX = 500;
+const normalizeVirtualQsos = (list) => {
+    if (!Array.isArray(list)) return [];
+    const str = (v, max = 64) => String(v ?? '').trim().slice(0, max);
+    return list
+        .slice(0, VIRTUAL_QSO_MAX)
+        .map((q, i) => {
+            const call = str(q?.call, 20).toUpperCase();
+            const band = str(q?.band, 16).toUpperCase();
+            const mode = str(q?.mode, 16).toUpperCase();
+            // 日期统一成 ADIF 的 YYYYMMDD（引擎会自己转成 YYYY-MM-DD 再比较）
+            const date = str(q?.date, 10).replace(/-/g, '');
+            const dxcc = str(q?.dxcc, 8);
+            const grid = str(q?.grid, 8).toUpperCase();
+            const iota = str(q?.iota, 12).toUpperCase();
+            const state = str(q?.state, 8).toUpperCase();
+            const qsl = q?.qsl === true || q?.qsl === 'Y' || q?.qsl === 'true';
+            const timeOn = str(q?.time, 8) || String(1000 + i);
+            const adif_raw = {
+                call, band, mode,
+                qso_date: date,
+                time_on: timeOn,
+                dxcc,
+                gridsquare: grid,
+                iota,
+                state,
+                // 「已确认」勾上就等于 QSL 已收（qslRequired 只认这两个字段之一为 Y）
+                qsl_rcvd: qsl ? 'Y' : '',
+                lotw_qsl_rcvd: '',
+            };
+            return { id: null, callsign: call, band, mode, qso_date: date, dxcc, adif_raw };
+        })
+        .filter((q) => q.callsign && q.qso_date); // 没呼号/没日期的行无法参与判定，直接丢
+};
+
+/**
+ * 让奖状管理员在**提交审核之前**用样本日志跑一遍判定，确认规则真的能判定达标。
+ * ------------------------------------------------------------------
+ * 起因：曾出现「波段=2M」+「波段=70CM」这类恒不成立、用户永远只看到 0 进度的规则被提交上线
+ * （表现为"我有 70cm 记录，奖状却说我没有"，且零报错）。
+ *
+ * · `source='user'`    → 取**当前登录者自己的** QSO（真实数据，与 /api/user/qsos 同一份来源）
+ * · `source='virtual'` → 用请求体里的**虚拟日志**（只在内存参与判定，**绝不入库**，用完即弃）
+ *
+ * ⚠️ 这里刻意**不走** `evaluateAward(userId, awardId)`：那个封装要求奖状必须 approved，
+ *    而自检发生在草稿阶段（可能还没有 id、且一定未过审），所以直接调引擎核心。
+ */
+app.post('/api/awards/preview-check', verifyToken, verifyAwardAdmin, async (req, res) => {
+    try {
+        const { rules, source, virtualQsos } = req.body || {};
+        if (!rules || typeof rules !== 'object' || Array.isArray(rules)) {
+            return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少有效的规则' });
+        }
+
+        let qsos;
+        if (source === 'virtual') {
+            qsos = normalizeVirtualQsos(virtualQsos);
+            if (qsos.length === 0) {
+                return res.status(400).json({ error: 'NO_VIRTUAL_QSOS', message: '请先添加至少一条虚拟日志（需填呼号与日期）' });
+            }
+        } else {
+            const r = await dbPool.query('SELECT * FROM qsos WHERE user_id=$1', [req.user.id]);
+            qsos = r.rows;
+        }
+
+        const result = evaluateAwardCore({ rules, qsos, claimedLevels: [], includeQsos: true });
+        res.json({ source, qso_count: qsos.length, ...result });
+    } catch (e) {
+        console.error('[award-preview] 规则自检失败:', e && e.message);
+        res.status(400).json({ error: 'PREVIEW_FAILED', message: (e && e.message) || '规则自检失败' });
+    }
+});
+
 // --- 奖状申请 & 检查 API (New) ---
 
 app.get('/api/awards/:id/check', verifyToken, async (req, res) => {

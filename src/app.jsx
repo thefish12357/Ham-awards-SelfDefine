@@ -2436,6 +2436,43 @@ const AwardDesigner = ({ initData, onClose }) => {
 
     const [meta, setMeta] = useState({ name: initData?.name || '', description: initData?.description || '', issuer: initData?.issuer || '' });
 
+    // ---- 规则自检（2026-09-30）：提交审核前必须先跑一遍，用样本日志证明这套规则真的能判定达标 ----
+    //   · 用户自己的日志 → 服务端真实调取该用户的 QSO（source='user'）
+    //   · 虚拟日志 → 只在本次请求里参与判定，**服务端不入库**，本地也只存在组件 state（用完即删）
+    const [checkSource, setCheckSource] = useState('user'); // 'user' | 'virtual'
+    const [virtualQsos, setVirtualQsos] = useState([]);
+    const [selfCheck, setSelfCheck] = useState(null);
+    const [checking, setChecking] = useState(false);
+
+    // 规则一改动，之前的自检结果就作废 —— 防止「先跑通、再偷偷改规则」绕过门禁
+    const rulesFingerprint = JSON.stringify(rules);
+    const selfCheckFresh = !!selfCheck && selfCheck.rulesFingerprint === rulesFingerprint;
+    const selfCheckPassed = selfCheckFresh && selfCheck.eligible === true;
+
+    const runSelfCheck = async () => {
+        if (checkSource === 'virtual' && virtualQsos.length === 0) {
+            alert('请先添加至少一条虚拟日志（需填呼号与日期），再开始自检。');
+            return;
+        }
+        setChecking(true);
+        try {
+            const res = await apiFetch('/awards/preview-check', {
+                method: 'POST',
+                body: JSON.stringify({
+                    rules,
+                    source: checkSource,
+                    virtualQsos: checkSource === 'virtual' ? virtualQsos : undefined,
+                }),
+            });
+            setSelfCheck({ ...res, rulesFingerprint });
+        } catch (err) {
+            setSelfCheck(null);
+            alert(err?.message || err?.error || '规则自检失败');
+        } finally {
+            setChecking(false);
+        }
+    };
+
     const saveAward = async (status) => {
         try {
             if (!meta.name) throw new Error("请输入奖状名称");
@@ -2452,6 +2489,18 @@ const AwardDesigner = ({ initData, onClose }) => {
             //   用户会看到"进度一直是 0、明细全红"却毫无线索。这里在保存前拦下（后端也会 400）。
             const targetError = validateRulesTargets(rules);
             if (targetError) throw new Error(`${targetError}。`);
+
+            // ★ 提交审核前**必须**完成规则自检且达标（2026-09-30）：
+            //   目的是拦住"恒不成立 / 用户永远只看到 0 进度"的规则流入审核
+            //   （曾出现「波段=2M 且 波段=70CM」这类规则，用户有 70cm 记录却被判 0）。
+            //   保存草稿不受限制，方便先存着慢慢配。
+            if (status === 'pending' && !selfCheckPassed) {
+                throw new Error(
+                    selfCheck
+                        ? '自检结果已失效或未达标：规则在自检之后被改过，或样本还没达成任一等级。请到「规则配置 → 5. 规则自检」重新自检，至少达成一个等级再提交。'
+                        : '提交审核前必须先做规则自检：请到「规则配置 → 5. 规则自检」，用你自己的日志或临时虚拟日志跑一遍，确认至少达成一个等级。'
+                );
+            }
 
             // ★ 底图**不再必填**（2026-09-24 用户要求）：没有底图时就是「白底 + 元素排版」，
             //   默认模板本身已含双线边框与全部字段，完全可用，不该拦着不让存草稿。
@@ -2615,9 +2664,15 @@ const AwardDesigner = ({ initData, onClose }) => {
                         <div className="flex-1 flex h-full">
                             <div className="w-64 bg-slate-50 border-r p-4 space-y-2">
                                 <div className="text-xs font-bold text-slate-400 uppercase mb-2">配置模块</div>
-                                {['filters', 'logic', 'scoring', 'threshold'].map(m => (
+                                {[
+                                    ['filters', '1. 筛选条件'],
+                                    ['logic', '2. 逻辑与目标'],
+                                    ['scoring', '3. 计分规则'],
+                                    ['threshold', '4. 达标阈值'],
+                                    ['selftest', '5. 规则自检'],
+                                ].map(([m, label]) => (
                                     <button key={m} onClick={()=>document.getElementById(`mod-${m}`).scrollIntoView({behavior:'smooth'})} className="block w-full text-left px-4 py-2 rounded hover:bg-white text-sm font-medium text-slate-600">
-                                        {m==='filters'?'1. 筛选条件':m==='logic'?'2. 逻辑与目标':m==='scoring'?'3. 计分规则':'4. 达标阈值'}
+                                        {label}
                                     </button>
                                 ))}
                             </div>
@@ -2813,6 +2868,88 @@ const AwardDesigner = ({ initData, onClose }) => {
                                         </button>
                                     </div>
                                 </section>
+
+                                {/* Self Check（规则自检）：提交审核前必须跑通，证明规则真的能判定达标 */}
+                                <section id="mod-selftest" className="space-y-4">
+                                    <h4 className="font-bold text-lg flex items-center gap-2"><CheckCircle className="text-teal-500"/> 5. 规则自检</h4>
+                                    <div className="bg-slate-50 p-4 rounded-xl border space-y-3">
+                                        <p className="text-xs text-slate-500 leading-relaxed">
+                                            用样本日志跑一遍判定，确认这套规则<b>真的能判定达标</b>再提交审核 ——
+                                            可以拦住「波段=2M 且 波段=70CM」这类恒不成立、用户只能看到 0 进度的规则。
+                                        </p>
+
+                                        <div className="flex flex-wrap items-center gap-5">
+                                            <label className="flex items-center gap-1.5 text-sm font-bold cursor-pointer select-none">
+                                                <input type="radio" name="cksrc" checked={checkSource === 'user'} onChange={()=>setCheckSource('user')} className="accent-blue-600" />
+                                                用我自己的日志（真实调取）
+                                            </label>
+                                            <label className="flex items-center gap-1.5 text-sm font-bold cursor-pointer select-none">
+                                                <input type="radio" name="cksrc" checked={checkSource === 'virtual'} onChange={()=>setCheckSource('virtual')} className="accent-blue-600" />
+                                                虚拟日志（用完即删，不入库）
+                                            </label>
+                                        </div>
+
+                                        {checkSource === 'virtual' && (
+                                            <div className="space-y-2">
+                                                <div className="grid grid-cols-[1.2fr_1fr_0.8fr_0.7fr_0.6fr_0.8fr_auto] gap-1 text-[10px] font-bold text-slate-400 uppercase">
+                                                    <span>呼号</span><span>日期</span><span>波段</span><span>模式</span><span>DXCC</span><span>网格</span><span>QSL</span>
+                                                </div>
+                                                {virtualQsos.map((v, i) => (
+                                                    <div key={i} className="grid grid-cols-[1.2fr_1fr_0.8fr_0.7fr_0.6fr_0.8fr_auto] gap-1 items-center">
+                                                        <input className="p-1 border rounded text-xs font-mono" placeholder="BH7CNC" value={v.call} onChange={e=>{const n=[...virtualQsos];n[i].call=e.target.value;setVirtualQsos(n)}} />
+                                                        <input className="p-1 border rounded text-xs font-mono" placeholder="20230306" value={v.date} onChange={e=>{const n=[...virtualQsos];n[i].date=e.target.value;setVirtualQsos(n)}} />
+                                                        <input className="p-1 border rounded text-xs font-mono" placeholder="70CM" value={v.band} onChange={e=>{const n=[...virtualQsos];n[i].band=e.target.value;setVirtualQsos(n)}} />
+                                                        <input className="p-1 border rounded text-xs font-mono" placeholder="FM" value={v.mode} onChange={e=>{const n=[...virtualQsos];n[i].mode=e.target.value;setVirtualQsos(n)}} />
+                                                        <input className="p-1 border rounded text-xs font-mono" placeholder="318" value={v.dxcc} onChange={e=>{const n=[...virtualQsos];n[i].dxcc=e.target.value;setVirtualQsos(n)}} />
+                                                        <input className="p-1 border rounded text-xs font-mono" placeholder="OM89" value={v.grid} onChange={e=>{const n=[...virtualQsos];n[i].grid=e.target.value;setVirtualQsos(n)}} />
+                                                        <div className="flex items-center gap-1">
+                                                            <input type="checkbox" title="QSL 已确认" checked={!!v.qsl} onChange={e=>{const n=[...virtualQsos];n[i].qsl=e.target.checked;setVirtualQsos(n)}} className="w-3.5 h-3.5 accent-blue-600" />
+                                                            <button onClick={()=>setVirtualQsos(virtualQsos.filter((_,k)=>k!==i))} className="text-red-500"><Trash2 size={13}/></button>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                                <div className="flex gap-4 pt-1">
+                                                    <button onClick={()=>setVirtualQsos([...virtualQsos, { call:'', date:'', band:'', mode:'', dxcc:'', grid:'', qsl:false }])} className="text-sm font-bold text-blue-600 flex items-center gap-1">
+                                                        <Plus size={13}/> 添加一行
+                                                    </button>
+                                                    {virtualQsos.length > 0 && (
+                                                        <button onClick={()=>{setVirtualQsos([]); setSelfCheck((s)=> (s && s.source==='virtual' ? null : s));}} className="text-sm font-bold text-slate-500">清空全部</button>
+                                                    )}
+                                                </div>
+                                                <p className="text-[11px] text-slate-400 leading-relaxed">
+                                                    虚拟日志只用于本次自检：<b>不会写入数据库</b>、也不会随奖状保存；点「清空全部」或关闭编辑器即删除。
+                                                    「QSL」列勾上等同于该条已确认（规则勾了「需要 QSL 确认」时才会统计）。
+                                                </p>
+                                            </div>
+                                        )}
+
+                                        <button onClick={runSelfCheck} disabled={checking} className="px-4 py-2 bg-teal-600 text-white rounded-lg text-sm font-bold disabled:opacity-50">
+                                            {checking ? '自检中…' : '开始自检'}
+                                        </button>
+
+                                        {selfCheck && (
+                                            <div className={`rounded-lg border p-3 text-xs space-y-1.5 ${selfCheckPassed ? 'border-green-200 bg-green-50 text-green-800' : selfCheckFresh ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-slate-200 bg-white text-slate-500'}`}>
+                                                <div className="font-bold text-sm">
+                                                    {selfCheckPassed ? '✅ 自检通过' : selfCheckFresh ? '⚠️ 自检未达标' : '⏳ 规则已改动，请重新自检'}
+                                                    ：{selfCheck.current_score} / {selfCheck.target_score}
+                                                    {selfCheck.achieved_level ? ` · 已达成「${selfCheck.achieved_level.name}」` : ''}
+                                                </div>
+                                                <div>
+                                                    样本 {selfCheck.qso_count} 条 → 通过基础筛选 {selfCheck.stats?.basic_filtered ?? 0} 条 → 命中目标 {selfCheck.stats?.target_matched ?? 0} 条
+                                                </div>
+                                                {(selfCheck.warnings || []).map((w, i) => (
+                                                    <div key={i} className="flex items-start gap-1.5">
+                                                        <AlertTriangle size={12} className="mt-0.5 shrink-0" />
+                                                        <span>{w}</span>
+                                                    </div>
+                                                ))}
+                                                {!selfCheckFresh && (
+                                                    <div className="text-slate-400">规则在自检之后被修改过，结果已作废 —— 提交审核前请重新自检。</div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                </section>
                             </div>
                         </div>
                     )}
@@ -2848,10 +2985,21 @@ const AwardDesigner = ({ initData, onClose }) => {
                         {step === 3 && (
                             <div>提示: 拖动元素调整位置，右侧面板编辑属性；保存时会把当前布局一并写入奖状。</div>
                         )}
+                        {!selfCheckPassed && (
+                            <div className="flex items-start gap-1.5 text-slate-500">
+                                <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                                <span>提交审核前需先在「规则配置 → 5. 规则自检」跑通（至少达成一个等级）；保存草稿不受限制。</span>
+                            </div>
+                        )}
                     </div>
-                    <div className="flex gap-4">
+                    <div className="flex gap-4 shrink-0">
                         <button onClick={()=>saveAward('draft')} className="px-6 py-2 border rounded-lg font-bold text-slate-600">保存草稿</button>
-                        <button onClick={()=>saveAward('pending')} className="px-6 py-2 bg-blue-600 text-white rounded-lg font-bold">提交审核</button>
+                        <button
+                            onClick={()=>saveAward('pending')}
+                            disabled={!selfCheckPassed}
+                            title={selfCheckPassed ? '提交后进入审核，审核期间不能再编辑' : '需先在「规则配置 → 5. 规则自检」跑通（至少达成一个等级）'}
+                            className={`px-6 py-2 rounded-lg font-bold ${selfCheckPassed ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                        >提交审核</button>
                     </div>
                 </div>
             </div>
