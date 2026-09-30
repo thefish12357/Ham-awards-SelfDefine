@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   Globe,
   FileText,
+  Mail,
   Sun,
   Moon,
 } from 'lucide-react';
@@ -123,14 +124,30 @@ export default function AboutView({ onBack, theme = 'dark', onToggleTheme }) {
               </p>
             </div>
           </section>
+          {/* 联系方式集中放在独立的「联系我们」页（隐私政策的数据权利请求也要用），
+              这里只留一个入口 + 站长邮箱，避免介绍性内容与受理信息混在一起。 */}
+          <section className="mt-12">
+            <h2 className="flex items-center gap-2 text-lg font-bold text-white">
+              <Mail size={18} className="text-cyan-300" /> 联系我们
+            </h2>
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-sm leading-relaxed text-slate-400 backdrop-blur">
+              <p>
+                问题反馈、账号与数据请求（注销 / 导出）、举报与申诉，详见
+                <a href="#/contact" className="mx-1 text-cyan-300 underline decoration-dotted underline-offset-2">「联系我们」</a>
+                页面，也可直接写信至站长邮箱
+                <span className="mx-1 font-mono text-slate-200">bh7csa@163.com</span>。
+              </p>
+            </div>
+          </section>
         </main>
 
         <footer className="border-t border-white/10 px-6 py-10">
           <div className="mx-auto max-w-4xl text-center text-xs text-slate-500">
-            <div className="flex items-center justify-center gap-5">
+            <div className="flex flex-wrap items-center justify-center gap-5">
               <a href="#/privacy" className="transition-colors hover:text-cyan-300">隐私政策</a>
               <a href="#/terms" className="transition-colors hover:text-cyan-300">用户协议</a>
               <a href="#/protocol" className="transition-colors hover:text-cyan-300">内容规范</a>
+              <a href="#/contact" className="transition-colors hover:text-cyan-300">联系我们</a>
             </div>
             <p className="mt-2">© 2026 HAM AWARDS · 业余无线电奖状管理</p>
           </div>

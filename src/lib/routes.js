@@ -101,6 +101,9 @@ export const PUBLIC_PAGES = {
   '#/privacy': 'privacy',
   '#/terms': 'terms',
   '#/protocol': 'protocol',
+  // 联系我们（2026-09-30）：站长邮箱 + 受理范围（数据权利 / 举报申诉 / 技术支持）。
+  // 单独一页，而不是塞进「关于」—— 隐私政策行使数据权利需要有可公示的独立入口（对标 HamCQ）。
+  '#/contact': 'contact',
 };
 
 export const readPublicPage = () => {

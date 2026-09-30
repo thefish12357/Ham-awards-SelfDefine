@@ -76,7 +76,10 @@
 │       ├── EmailAuthView.jsx       # ★ 邮件公开页：邮箱验证 / 重置密码（#/verify-email、#/reset-password，**免登录**）
 │       ├── EvidenceAuditView.jsx   #   实物材料审核页
 │       ├── AuditLogsView.jsx       #   全站审计日志（仅 admin；长文本就地展开）
-│       └── LandingView.jsx         #   未登录落地页
+│       ├── LandingView.jsx         #   未登录落地页
+│       ├── ContactView.jsx         # ★ 联系我们（#/contact，公开）：站长邮箱 + 受理范围（数据权利/举报申诉/技术）
+│       ├── AboutView.jsx / PrivacyView.jsx / TermsView.jsx / ProtocolView.jsx  # ★ 其它公开静态页
+│       └── 公开页统一登记在 `src/lib/routes.js` 的 `PUBLIC_PAGES`
 ├── server/             # ★ 新增：后端新增模块（server.js 仍是唯一入口）
 │   ├── services/         # ★ 业务服务层（server.js 只做装配）
 │   │   ├── adif.js           # ADIF 解析（整串 + 流式），替代 server.js 内联实现
@@ -147,6 +150,9 @@
 
 - 🔴 **改完前端必须 `npm run build`**，否则线上还是旧产物（`server.js` 每次请求读磁盘，build 完**立即生效、无需重启**）。
   `start-local.ps1` 已把 build 纳入启动流程，并在自检里校验「公网返回的是 dist 而非 dev」。
+- ★ **Vite 开发预览（5173）现在是可选的、默认不启动**：`start-local.ps1` 加了 `-WithDev` 开关才启动它，
+  不加参数时**不会**拉起、也不会杀你手动开的 dev（2026-09-30 用户确认关闭，理由是"线上不用它、常驻白占资源"）。
+  需要热更新时：`start-local.ps1 -WithDev`，或直接 `npm run dev`。
 - 🔴 **`web` / `demo` 隧道的 ingress 是「云端托管配置」**（Cloudflare 仪表盘 / API 下发）：
   计划任务里的 `--url` **会被忽略**！改指向只能改云端配置 —— 仪表盘 `Zero Trust → Networks → Tunnels → <tunnel> → Public Hostnames`，
   或用 `~/.cloudflared/cert.pem` 里的 **ARGO TUNNEL TOKEN** 调 API：

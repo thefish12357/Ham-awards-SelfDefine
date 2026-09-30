@@ -153,6 +153,7 @@ export default function ProtocolView({ onBack, theme = 'dark', onToggleTheme }) 
               <a href="#/about" className="transition-colors hover:text-cyan-300">关于</a>
               <a href="#/privacy" className="transition-colors hover:text-cyan-300">隐私政策</a>
               <a href="#/terms" className="transition-colors hover:text-cyan-300">用户协议</a>
+              <a href="#/contact" className="transition-colors hover:text-cyan-300">联系我们</a>
             </div>
             <p className="mt-2">© 2026 HAM AWARDS · 业余无线电奖状管理</p>
           </div>

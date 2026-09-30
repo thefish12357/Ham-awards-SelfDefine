@@ -1,5 +1,8 @@
 import React from 'react';
-import { Award, ShieldCheck, Database, KeyRound, Share2, Lock, UserCheck, RefreshCw, Sun, Moon } from 'lucide-react';
+import { Award, ShieldCheck, Database, KeyRound, Share2, Lock, UserCheck, RefreshCw, Mail, Sun, Moon } from 'lucide-react';
+
+/** 对外联系邮箱（个人站长邮箱；改这里同时要改 pages/ContactView.jsx 与 AboutView.jsx） */
+export const CONTACT_EMAIL = 'bh7csa@163.com';
 
 /**
  * 隐私政策页（公开）
@@ -58,7 +61,7 @@ const SECTIONS = [
     title: '六、你的权利',
     items: [
       '你可以随时在「用户中心」修改密码、查看与管理自己的数据。',
-      '如需删除账号或导出个人数据，请联系站点管理员。',
+      '如需访问、更正、删除或导出个人数据，以及注销账号，可通过第八条的联系方式提出，我们会在核实身份后处理。',
     ],
   },
   {
@@ -66,7 +69,17 @@ const SECTIONS = [
     title: '七、政策更新',
     items: [
       '本政策可能随功能调整而更新，更新后将在本页体现。',
-      '最近更新日期：2026 年 9 月。',
+      '最近更新日期：2026 年 9 月 30 日。',
+    ],
+  },
+  {
+    icon: Mail,
+    title: '八、如何联系我们',
+    items: [
+      `账号与数据相关请求（访问、更正、删除、注销、导出）请发送邮件至站长邮箱 ${CONTACT_EMAIL}。`,
+      '内容举报、处理结果申诉、使用故障与功能建议，也可通过该邮箱联系；一般 1–3 个工作日内回复。',
+      '受理范围与响应说明另见「联系我们」页面（页脚可进入）。',
+      '系统邮件由 no-reply@hamglory.top 自动发出，该地址只发不收，直接回复不会有人看到，请改用上面的邮箱。',
     ],
   },
 ];
@@ -135,16 +148,21 @@ export default function PrivacyView({ onBack, theme = 'dark', onToggleTheme }) {
           </div>
 
           <div className="mt-12 rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-sm leading-relaxed text-slate-400 backdrop-blur">
-            如对本政策有任何疑问，请通过站点管理员联系。
+            如对本政策有任何疑问，或需行使上述权利，请写信至站长邮箱
+            <span className="mx-1 font-mono text-slate-200">{CONTACT_EMAIL}</span>
+            ，或见
+            <a href="#/contact" className="mx-1 text-cyan-300 underline decoration-dotted underline-offset-2">联系我们</a>
+            页面。
           </div>
         </main>
 
         <footer className="border-t border-white/10 px-6 py-10">
           <div className="mx-auto max-w-3xl text-center text-xs text-slate-500">
-            <div className="flex items-center justify-center gap-5">
+            <div className="flex flex-wrap items-center justify-center gap-5">
               <a href="#/about" className="transition-colors hover:text-cyan-300">关于</a>
               <a href="#/terms" className="transition-colors hover:text-cyan-300">用户协议</a>
               <a href="#/protocol" className="transition-colors hover:text-cyan-300">内容规范</a>
+              <a href="#/contact" className="transition-colors hover:text-cyan-300">联系我们</a>
             </div>
             <p className="mt-2">© 2026 HAM AWARDS · 业余无线电奖状管理</p>
           </div>

@@ -37,6 +37,7 @@ import AboutView from './pages/AboutView.jsx';
 import PrivacyView from './pages/PrivacyView.jsx';
 import TermsView from './pages/TermsView.jsx';
 import ProtocolView from './pages/ProtocolView.jsx';
+import ContactView from './pages/ContactView.jsx';
 import { normalizeLayout, presetAwardLayout } from './lib/awardLayout.js';
 // 统一的日期约束/校验（原生 date 控件年份可超 4 位，全站必须统一拦）
 import { DATE_FAR_MAX, validateDateInput, validateDateRangeInput } from './lib/dateInput.js';
@@ -4122,6 +4123,7 @@ export default function App() {
   if (publicPage === 'privacy') return <>{demoBar}<PrivacyView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
   if (publicPage === 'terms') return <>{demoBar}<TermsView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
   if (publicPage === 'protocol') return <>{demoBar}<ProtocolView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
+  if (publicPage === 'contact') return <>{demoBar}<ContactView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
 
   // ★ 首屏过渡页（view 初值 'loading'）：以前**什么都不渲染**（函数末尾 return null），
   //   后端重启/隧道抖动导致 /api/system-status 挂住时就是「纯白屏 + 无出口」。
@@ -4598,6 +4600,7 @@ export default function App() {
                       <a href="#/privacy" className="transition-colors hover:text-cyan-300">隐私政策</a>
                       <a href="#/terms" className="transition-colors hover:text-cyan-300">用户协议</a>
                       <a href="#/protocol" className="transition-colors hover:text-cyan-300">内容规范</a>
+                      <a href="#/contact" className="transition-colors hover:text-cyan-300">联系我们</a>
                   </div>
               </aside>
               {/* 站内通知面板（M4.1） */}
