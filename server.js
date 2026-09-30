@@ -1550,17 +1550,23 @@ app.get('/api/admin/awards/approved', verifyToken, verifyAdmin, async (req, res)
 // 系统管理员：获取已颁发奖状列表 (New)
 // ★ LEFT JOIN + 快照：奖状被删除后记录仍要能显示（detached=true 归入「已失效」）。
 //   注意所有同名列都要写表前缀 —— users 也有 id/created_at，裸写会 ambiguous 报 500。
+// ★ 2026-09-30 补 `creator_call`（发布人）：前端「颁发管理」按 发布人 → 奖状 → 详情 三级折叠展示，
+//   需要知道每条记录属于谁发布的奖状。为此**再 join 一次 users**（别名 c，走 awards.creator_id，
+//   与申请人别名 u 区分）；发布人账号已注销时为 null，前端显示「（发布人已注销）」。
+//   detached 记录没有 awards 行，creator_call 必然为 null —— 前端把它们单独成块，不进三级树。
 app.get('/api/admin/issued-awards', verifyToken, verifyAdmin, async (req, res) => {
     const r = await dbPool.query(`
         SELECT ua.id, ua.serial_number, ua.issued_at, ua.level, ua.award_id, ua.detached_at,
                ua.withdrawn_at, ua.withdraw_reason,
                u.callsign AS applicant_call,
+               c.callsign AS creator_call,
                COALESCE(a.name, ua.award_name) AS award_name,
                COALESCE(a.tracking_id, ua.award_tracking_id) AS tracking_id,
                (a.id IS NULL) AS detached
         FROM user_awards ua
         JOIN users u ON ua.user_id = u.id
         LEFT JOIN awards a ON ua.award_id = a.id
+        LEFT JOIN users c ON a.creator_id = c.id
         ORDER BY (a.id IS NULL), ua.issued_at DESC
     `);
     res.json(r.rows);

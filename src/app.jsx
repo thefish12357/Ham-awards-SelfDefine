@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Upload, Award, Database, LogOut, CheckCircle, 
   Shield, Download, Settings, Server, Lock, QrCode, 
@@ -2036,10 +2036,92 @@ const IssuanceManager = () => {
 
     useEffect(() => { load(); }, []);
 
-    const activeList = issuanceList.filter(i => !i.detached);
-    const detachedList = issuanceList.filter(i => i.detached);
-    // 已撤回的记录仍留在「有效颁发」表里（台账保留，见后端 /withdraw 的说明），这里单独计数
+    // ★ 三级折叠（2026-09-30 用户要求「按发布人 → 发布奖状 → 详情列表做下拉菜单，便于查找」）：
+    //   ① 发布人默认展开、奖状默认折叠（一眼看到有谁发布过，再点开看具体奖状）；
+    //   ② 顶部关键字过滤覆盖 发布人 / 奖状名 / 编号 / 序列号 / 申请人 / 等级，**命中路径自动展开**；
+    //   ③ 每级带计数（含「已撤回」数），不用点开就能判断规模。
+    const [keyword, setKeyword] = useState('');
+    const [collapsedCreators, setCollapsedCreators] = useState(new Set()); // 存"被折叠"的发布人（默认展开）
+    const [openAwards, setOpenAwards] = useState(new Set());               // 存"已展开"的奖状（默认折叠）
+
+    const toggleCreator = (key) => setCollapsedCreators((s) => {
+        const next = new Set(s);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+    });
+    const toggleAward = (key) => setOpenAwards((s) => {
+        const next = new Set(s);
+        if (next.has(key)) next.delete(key); else next.add(key);
+        return next;
+    });
+
+    const { activeList, detachedList } = useMemo(() => ({
+        activeList: issuanceList.filter((i) => !i.detached),
+        detachedList: issuanceList.filter((i) => i.detached),
+    }), [issuanceList]);
+    // 已撤回的记录仍留在台账里（见后端 /withdraw 的说明），单独计数免得管理员误以为还有效
     const withdrawnCount = activeList.filter(i => i.withdrawn_at).length;
+
+    /** 三级树：发布人 → 奖状 → 记录（detached 记录没有对应奖状，单独一块，不进树） */
+    const tree = useMemo(() => {
+        const byCreator = new Map();
+        activeList.forEach((it) => {
+            // 发布人账号已注销时后端返回 null（awards.creator_id 被置空），归到一个显式分组里
+            const creator = it.creator_call || '（发布人已注销）';
+            if (!byCreator.has(creator)) byCreator.set(creator, { creator, awards: new Map(), total: 0, withdrawn: 0 });
+            const g = byCreator.get(creator);
+            const aKey = `a${it.award_id}`;
+            if (!g.awards.has(aKey)) {
+                g.awards.set(aKey, {
+                    key: `${creator}::${aKey}`,
+                    name: it.award_name || '（名称缺失）',
+                    trackingId: it.tracking_id,
+                    items: [],
+                    withdrawn: 0,
+                });
+            }
+            const a = g.awards.get(aKey);
+            a.items.push(it);
+            if (it.withdrawn_at) { a.withdrawn += 1; g.withdrawn += 1; }
+            g.total += 1;
+        });
+        return [...byCreator.values()]
+            .map((g) => ({ ...g, awards: [...g.awards.values()] }))
+            .sort((x, y) => x.creator.localeCompare(y.creator, 'zh'));
+    }, [activeList]);
+
+    /** 关键字过滤：命中发布人则整支保留；否则在奖状（名称/编号）与记录（序列号/申请人/等级/ID）里找 */
+    const filteredTree = useMemo(() => {
+        const q = keyword.trim().toLowerCase();
+        if (!q) return tree;
+        const hit = (...vals) => vals.some((v) => String(v ?? '').toLowerCase().includes(q));
+        return tree
+            .map((g) => {
+                if (hit(g.creator)) return g;
+                const awards = g.awards
+                    .map((a) => (hit(a.name, a.trackingId)
+                        ? a
+                        : { ...a, items: a.items.filter((i) => hit(i.serial_number, i.applicant_call, i.level, i.id)) }))
+                    .filter((a) => a.items.length > 0);
+                return { ...g, awards };
+            })
+            .filter((g) => g.awards.length > 0);
+    }, [tree, keyword]);
+
+    const searching = keyword.trim().length > 0;
+    const treeAwardCount = tree.reduce((n, g) => n + g.awards.length, 0);
+    const hitAwardCount = filteredTree.reduce((n, g) => n + g.awards.length, 0);
+    const hitItemCount = filteredTree.reduce((n, g) => n + g.awards.reduce((m, a) => m + a.items.length, 0), 0);
+
+    /** 全部展开 / 全部折叠（展开 = 所有发布人也展开、所有奖状也展开） */
+    const expandAll = () => {
+        setCollapsedCreators(new Set());
+        setOpenAwards(new Set(tree.flatMap((g) => g.awards.map((a) => a.key))));
+    };
+    const collapseAll = () => {
+        setCollapsedCreators(new Set(tree.map((g) => g.creator)));
+        setOpenAwards(new Set());
+    };
 
     const handleDeleteIssuance = async (item) => {
         const ok = await confirmDialog({
@@ -2119,6 +2201,45 @@ const IssuanceManager = () => {
         </tr>
     );
 
+    /**
+     * 详情行（三级树的末级）：紧凑一行，窄屏自动换行 —— 取代原来的宽表格，
+     * 因为奖状名/编号已经在树的上两级显示过了，这里只留「凭据 + 人 + 状态 + 操作」。
+     */
+    const renderItemRow = (item) => (
+        <div
+            key={item.id}
+            className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-xl border px-3 py-2 text-xs ${
+                item.withdrawn_at ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'
+            }`}
+        >
+            <span className="font-mono text-slate-400">#{item.id}</span>
+            <span className="font-mono text-slate-700">{item.serial_number}</span>
+            <span className="font-bold text-blue-600">{item.applicant_call}</span>
+            <span className="rounded bg-yellow-100 px-2 py-0.5 font-bold text-yellow-800">{item.level}</span>
+            <span className="text-slate-500">{item.issued_at ? new Date(item.issued_at).toLocaleString() : '—'}</span>
+            {/* 已撤回：凭证已失效但台账行保留（用 red 系，深色主题映射只覆盖 red/amber，勿用 rose） */}
+            {item.withdrawn_at && (
+                <span
+                    className="rounded border border-red-200 bg-red-50 px-1.5 py-0.5 font-bold text-red-700"
+                    title={`撤回时间：${new Date(item.withdrawn_at).toLocaleString()}\n撤回理由：${item.withdraw_reason || '（未填写）'}`}
+                >
+                    已撤回
+                </span>
+            )}
+            {item.withdrawn_at && item.withdraw_reason && (
+                <span className="max-w-[240px] truncate text-slate-500" title={item.withdraw_reason}>
+                    理由：{item.withdraw_reason}
+                </span>
+            )}
+            <button
+                onClick={() => handleDeleteIssuance(item)}
+                className="ml-auto flex shrink-0 items-center gap-1 rounded border border-red-200 bg-red-50 px-2 py-1 font-bold text-red-600 hover:bg-red-100"
+            >
+                <Trash2 size={13} /> 删除颁发
+            </button>
+        </div>
+    );
+
     const tableHead = (
         <thead className="bg-slate-50 border-b">
             <tr>
@@ -2156,28 +2277,104 @@ const IssuanceManager = () => {
             )}
 
             <div className="space-y-3">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                     <h4 className="font-bold text-slate-700">有效颁发</h4>
                     <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{activeList.length}</span>
-                    {/* 已撤回的仍留在本表（台账保留），单独给个计数，免得管理员以为它们还有效 */}
+                    {/* 已撤回的仍留在台账里（见后端 /withdraw），单独给个计数，免得管理员以为它们还有效 */}
                     {withdrawnCount > 0 && (
                         <span className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">
                             其中已撤回 {withdrawnCount}
                         </span>
                     )}
                 </div>
-                <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
-                    {/* 窄屏表格横向滚动：见 admin_overview 同款注释 */}
-                    <div className="overflow-x-auto">
-                    <table className="w-full text-left">
-                        {tableHead}
-                        <tbody className="divide-y">
-                            {activeList.length === 0 && <tr><td colSpan="7" className="p-8 text-center text-slate-400">暂无颁发记录</td></tr>}
-                            {activeList.map(renderRow)}
-                        </tbody>
-                    </table>
+
+                {/* 查找栏：默认展开发布人、折叠奖状；搜索时命中路径自动展开 */}
+                <div className="flex flex-wrap items-center gap-3 rounded-2xl border bg-white p-3">
+                    <div className="relative min-w-[220px] flex-1">
+                        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <input
+                            value={keyword}
+                            onChange={(e) => setKeyword(e.target.value)}
+                            placeholder="搜索：发布人 / 奖状名 / 编号 / 序列号 / 申请人 / 等级"
+                            className="w-full rounded-xl border py-2 pl-9 pr-3 text-sm"
+                        />
                     </div>
+                    <button type="button" onClick={expandAll} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50">全部展开</button>
+                    <button type="button" onClick={collapseAll} className="rounded-lg border px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50">全部折叠</button>
+                    <span className="text-xs text-slate-500">
+                        {searching
+                            ? <>命中 <b className="text-slate-700">{hitAwardCount}</b> 个奖状 · <b className="text-slate-700">{hitItemCount}</b> 条</>
+                            : <>发布人 <b className="text-slate-700">{tree.length}</b> · 奖状 <b className="text-slate-700">{treeAwardCount}</b> · 颁发 <b className="text-slate-700">{activeList.length}</b></>}
+                    </span>
                 </div>
+
+                {activeList.length === 0 && (
+                    <div className="rounded-2xl border bg-white p-8 text-center text-slate-400">暂无颁发记录</div>
+                )}
+                {activeList.length > 0 && filteredTree.length === 0 && (
+                    <div className="rounded-2xl border bg-white p-8 text-center text-slate-400">没有匹配「{keyword.trim()}」的记录</div>
+                )}
+
+                {/* 第一级：发布人 */}
+                {filteredTree.map((g) => {
+                    const creatorOpen = searching || !collapsedCreators.has(g.creator);
+                    return (
+                        <div key={g.creator} className="overflow-hidden rounded-2xl border bg-white shadow-sm">
+                            <button
+                                type="button"
+                                onClick={() => toggleCreator(g.creator)}
+                                className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-slate-50"
+                            >
+                                <span className="flex min-w-0 items-center gap-2">
+                                    {creatorOpen ? <ChevronDown size={16} className="shrink-0 text-slate-400" /> : <ChevronRight size={16} className="shrink-0 text-slate-400" />}
+                                    <Users size={15} className="shrink-0 text-slate-400" />
+                                    <span className="truncate font-bold text-slate-800">{g.creator}</span>
+                                    <span className="shrink-0 text-xs text-slate-400">{g.awards.length} 个奖状</span>
+                                </span>
+                                <span className="shrink-0 text-xs text-slate-500">
+                                    共 {g.total} 条
+                                    {g.withdrawn > 0 && <span className="ml-1 font-bold text-red-600">· 已撤回 {g.withdrawn}</span>}
+                                </span>
+                            </button>
+
+                            {/* 第二级：该发布人的奖状 */}
+                            {creatorOpen && (
+                                <div className="divide-y border-t">
+                                    {g.awards.map((a) => {
+                                        const awardOpen = searching || openAwards.has(a.key);
+                                        return (
+                                            <div key={a.key}>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => toggleAward(a.key)}
+                                                    className="flex w-full items-center justify-between gap-3 py-2.5 pl-10 pr-4 text-left hover:bg-slate-50"
+                                                >
+                                                    <span className="flex min-w-0 items-center gap-2">
+                                                        {awardOpen ? <ChevronDown size={15} className="shrink-0 text-slate-400" /> : <ChevronRight size={15} className="shrink-0 text-slate-400" />}
+                                                        <Trophy size={14} className="shrink-0 text-orange-400" />
+                                                        <span className="truncate font-bold text-slate-700">{a.name}</span>
+                                                        {a.trackingId && <span className="shrink-0 font-mono text-[11px] text-slate-400">({a.trackingId})</span>}
+                                                    </span>
+                                                    <span className="shrink-0 text-xs text-slate-500">
+                                                        {a.items.length} 条
+                                                        {a.withdrawn > 0 && <span className="ml-1 font-bold text-red-600">· 已撤回 {a.withdrawn}</span>}
+                                                    </span>
+                                                </button>
+
+                                                {/* 第三级：详情列表 */}
+                                                {awardOpen && (
+                                                    <div className="space-y-2 border-t border-slate-100 bg-slate-50/70 py-3 pl-10 pr-4">
+                                                        {a.items.map(renderItemRow)}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })}
             </div>
 
             {detachedList.length > 0 && (

@@ -305,6 +305,14 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
   **禁用「下载 PDF」**、点卡片只弹 `infoDialog` 说明（不能进详情弹层：`award_id` 为空会去请求 `/awards/null/check`），
   排序把有效记录排在前面。
 - `DELETE /api/awards/:id` 对越权/状态不符返回 **403**（不再静默 success）。
+- ★ **「颁发管理」按 发布人 → 奖状 → 详情 三级折叠展示**（2026-09-30，`src/app.jsx` 的 `IssuanceManager`）：
+  `GET /api/admin/issued-awards` 为此**新增 `creator_call`**（再 `LEFT JOIN users AS c ON a.creator_id = c.id`；
+  申请人别名仍是 `u`，两者必须都带前缀，否则 ambiguous → 500）。
+  交互：发布人**默认展开**、奖状**默认折叠**（用 `collapsedCreators` / `openAwards` 两个 Set 表达，
+  所以新数据天然是"展开"状态，不需要初始化 effect）；顶部搜索覆盖 发布人 / 奖状名 / 编号 / 序列号 /
+  **申请人** / 等级（所以搜一个呼号会同时命中"他发布的"和"他申领的"，这是有意为之），**命中路径自动展开**；
+  每级带计数（含「已撤回」）。`detached`（原奖状已删除）记录**没有发布人**，仍走原来的独立区块 +
+  一键清理，不进三级树。
 
 ## 7. 编码约定与雷区
 
