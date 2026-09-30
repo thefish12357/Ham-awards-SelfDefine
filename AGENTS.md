@@ -3,7 +3,12 @@
 > 本文件为 AI 助手在本目录工作时的项目说明。新开对话时优先阅读本文件。
 > 上游仓库：https://github.com/BH2VSQ/Ham-awards-SelfDefine （main 分支，package version `2.2.0`）
 > 本仓库公开存档：https://github.com/thefish12357/Ham-awards-SelfDefine （public，`main` 分支）
-> 本文件最后核对时间：2026-09-22
+> 本文件最后核对时间：**2026-09-30**
+> ★ 2026-09-23 ~ 09-30 新增能力（细节见 §7 末尾「邮件 / 账号安全 / 部署红线」与 **§10 邮件系统**）：
+> 站内通知（M4.1）、**HamCQ OAuth 登录（M5，已强制 2FA）**、全站审计（M6）、角色升级申请、内测邀请码 + 邀请码溯源、
+> 实物材料同源鉴权代理、奖状「撤回」软删除、**演示实例（compose profile `demo`）**、
+> 安全审计整改（禁 SVG 上传 / 安装接口加固 / 上传 MIME 白名单）、Vite 4 → **6** 依赖升级、
+> **邮件能力**（注册邮箱强制验证 + 自助找回密码 + 腾讯企业邮 SMTP + **站内通知按事件转发邮件**：管理员配「哪些环节发邮件」、用户自助「邮件提醒」开关）。
 > 二次开发规划见 **`ROADMAP.md`**（6 项需求的技术方案、DB/API 变更、里程碑）
 > ✅ 许可证：上游已于 2026-09-21 补充 **GPL-3.0**（`LICENSE`，commit `b4773ab Add LICENSE.md`），作者已授权二次开发。
 > GPL-3.0 是**传染性**许可：对外分发本仓库或其衍生作品时，必须同样以 GPL-3.0 授权并提供源码；仅自用/内部使用不受限制。
@@ -24,14 +29,15 @@
 
 | 层       | 技术                                 | 备注                                                                                                                                                           |
 | -------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 前端     | React 18 + Vite 4                    | JSX（**非 TypeScript**）                                                                                                                                       |
+| 前端     | React 18 + **Vite 6**（`^6.4.3` + `@vitejs/plugin-react ^5`） | JSX（**非 TypeScript**）。⚠️ 升到 vite 6 是为修 esbuild 高危（漏洞范围 esbuild ≤0.24.2，vite ≥6.2.0 起用 esbuild ^0.25）；**改依赖必须在 Linux 容器里验证**（见 §7）                                                                                                                                       |
 | 样式     | **Tailwind CSS 3 本地构建**          | 入口 `src/index.css`（`@tailwind` 三条指令），配置 `tailwind.config.cjs` / `postcss.config.cjs`。**必须用 `.cjs` 后缀**，因为 `package.json` 是 `type: module` |
 | 图标     | lucide-react                         |                                                                                                                                                                |
 | 路由     | **轻量 Hash 路由**                   | 无 react-router。`App` 的 `subView` 与 `location.hash` 双向同步（`src/lib/routes.js`），刷新可停留当前页、链接可分享；`adminPath` 仍未被前端使用               |
 | 后端     | Express 4 单体（`server.js`）        |                                                                                                                                                                |
 | 数据库   | PostgreSQL（`pg`）                   | ADIF 记录存 JSONB                                                                                                                                              |
 | 对象存储 | MinIO + multer                       | 存奖状背景图                                                                                                                                                   |
-| 认证     | JWT + bcryptjs + TOTP(otplib/qrcode) | 支持 Google Authenticator 2FA                                                                                                                                  |
+| 认证     | JWT + bcryptjs + TOTP(otplib/qrcode) | 支持 Google Authenticator 2FA。⚠️ **OAuth 登录也必须过 2FA**（见 §10 / §7）                                                                                                                                  |
+| 邮件     | **nodemailer**（腾讯企业邮 SMTP）    | 注册邮箱验证 / 找回密码 /（后续）通知转发邮件；配置与坑见 **§10** |
 | 运行环境 | Node.js v16+                         | 实测环境 Node v24                                                                                                                                              |
 
 ## 3. 目录结构
@@ -64,22 +70,48 @@
 │   │   ├── DateInput.jsx       #   ★ 统一日期输入（强制 min/max + 行内中文校验）
 │   │   └── PasswordInput.jsx   #   带「显示密码」眼睛图标的密码框（登录/注册/用户中心）
 │   └── pages/          # ★ 新增：独立页面（app.jsx 只做最小接入）
-│       ├── LotwImportView.jsx  #   LoTW 直连页（需求①）
-│       └── VerifyView.jsx      #   公开校验页（免登录，二维码指向 #/verify/<serial>）
+│       ├── LotwImportView.jsx      #   LoTW 直连页（需求①）
+│       ├── MailNotifyView.jsx      # ★ 后台「邮件通知」设置页（#/mail_notify，仅 admin）
+│       ├── VerifyView.jsx          #   公开校验页（免登录，二维码指向 #/verify/<serial>）
+│       ├── EmailAuthView.jsx       # ★ 邮件公开页：邮箱验证 / 重置密码（#/verify-email、#/reset-password，**免登录**）
+│       ├── EvidenceAuditView.jsx   #   实物材料审核页
+│       ├── AuditLogsView.jsx       #   全站审计日志（仅 admin；长文本就地展开）
+│       └── LandingView.jsx         #   未登录落地页
 ├── server/             # ★ 新增：后端新增模块（server.js 仍是唯一入口）
-│   ├── services/         # （以下为节选，另有 cty / notifications / audit / invites / oauth 等）
+│   ├── services/         # ★ 业务服务层（server.js 只做装配）
 │   │   ├── adif.js           # ADIF 解析（整串 + 流式），替代 server.js 内联实现
 │   │   ├── awardEngine.js    # ★ 奖状判定引擎（纯函数，数据源可插拔；含 warnings/stats 自检）
 │   │   ├── awardTargets.js   # ★ 目标类型规格与清单校验（引擎 warnings 与 400 兜底共用）
 │   │   ├── dates.js          # ★ 服务端日期边界校验（与前端 dateInput.js 同规则）
+│   │   ├── cty.js            #   呼号 → DXCC（cty.dat，支持联网同步 + 缺文件降级）
+│   │   ├── email.js          #   ★ 邮箱**格式/占用**校验（normalizeEmail / isEmailTaken）——**不是发信**
+│   │   ├── emailTokens.js    # ★ 邮件一次性令牌（只存 sha256 / 一次性 / 可整批作废）
+│   │   ├── emailTemplates.js # ★ 邮件正文模板（纯文本；签名会印出 SMTP_REPLY_TO 作为求助入口）
+│   │   ├── mailer.js         # ★ SMTP 发信（nodemailer 单例 + 串行队列 + 未配置/演示站跳过）
+│   │   ├── mailSettings.js   # ★「哪些站内事件发邮件」（管理员配置，存 config.json 的 mail 段）
+│   │   ├── notifyEmail.js    # ★ 通知 → 邮件转发（四道闸 + 5 分钟同内容去重，失败只 log）
+│   │   ├── invites.js        #   内测邀请码（生成 / 消费 / 门禁开关）
+│   │   ├── loadEnv.js        # ★ 无依赖 .env 加载器（server.js 第一条 import，导入即生效）
 │   │   ├── lotwClient.js     # LoTW 报表拉取 + 自动二分重试
-│   │   └── lotwSessions.js   # ★ LoTW 临时会话（纯内存，TTL 30 分钟）
+│   │   ├── lotwSessions.js   # ★ LoTW 临时会话（内存 / 可切 Redis，TTL 30 分钟）
+│   │   ├── notifications.js  # ★ 站内通知（notifyUsers / 路由 + 按类型未读数）
+│   │   ├── audit.js          # ★ 全站审计 logAudit / 查询路由
+│   │   └── sessionStore.js   # ★ 临时会话存储抽象（内存 → Redis）
 │   └── routes/
-│       └── lotw.js           # /api/lotw/* 路由（工厂函数注入依赖，避免循环 import）
+│       ├── lotw.js           # /api/lotw/* 路由（工厂函数注入依赖，避免循环 import）
+│       ├── oauth.js          # ★ HamCQ OAuth（/start、/callback、/complete、/code；**出 JWT 必经 2FA**）
+│       └── evidence.js       # ★ 实物材料（私桶 + 同源鉴权代理 + magic bytes 校验）
 ├── public/
 │   └── favicon.svg     # ★ 新增：修掉 index.html 的 favicon 404
 ├── docs/
-│   └── hamcq-oauth-application.md  # ★ 新增：HamCQ OAuth2 接入材料（备查）
+│   ├── hamcq-oauth-application.md    # ★ HamCQ OAuth2 接入申请材料（备查）
+│   └── hamcq-oauth-troubleshooting.md # ⚠️ **已删除**（2026-09-30 用户明确要求，**勿重建**：不再主张 HamCQ 侧故障）
+├── scripts/            # ★ 运维 / 自检脚本（node 直跑，无第三方依赖）
+│   ├── dev.mjs                 # npm run dev:all —— 一条命令起前端 + 后端
+│   ├── backup-db.mjs           # npm run backup —— 备份数据库（gzip 落 backups/，保留 14 份）
+│   ├── update-cty.mjs          # 更新 data/cty.dat（呼号→DXCC）
+│   ├── check-smtp.mjs          # ★ SMTP 自检：默认**不发信**；`--auth` 验登录、`--send-to` 真投递
+│   └── selftest-oauth-2fa.mjs  # ★ OAuth 2FA 离线回归（10 项断言）——**改 OAuth 后必跑**
 ├── dist/               # 前端构建产物，由 server.js 静态托管（不入库）
 │
 ├── Dockerfile          # ★ 新增：多阶段构建（Vite 构建 -> 生产依赖运行时）
@@ -214,6 +246,22 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | `/api/award-templates/*`                | 奖状布局模板库：list / `:id` / 增 / PATCH 改名 / 删。**按创建者私有**，layout 存库时剥掉 `canvas.bgUrl` | 登录 / 奖状管理员                           |
 | `/api/evidence/:id/photo`               | 实物材料照片**同源鉴权代理**（内部客户端读私有桶，admin 全部 / award_admin 仅自己奖状；已审核的返回 404） | 登录 / 奖状管理员                           |
 
+**2026-09-23 之后新增的接口族**（上表未列全）：
+
+- `/api/auth/oauth/*`：HamCQ 授权登录 —— `/start`（跳授权页）、`/callback`（换令牌 + 取用户信息）、`/complete`（新号建号 / 老号验密绑定）、`/code`（一次性短码换 JWT，避免长期 JWT 进 URL）。**公开**（`/complete` 要密码或邀请码）。🔴 **`/complete` 与 `/code` 出 JWT 前必须校验 2FA**。
+- `/api/auth/verify-email`、`/api/auth/resend-verify`：邮箱验证（点邮件链接）与重发；**重发防枚举**。公开。
+- `/api/auth/forgot-password`、`/api/auth/reset-password`：找回密码（邮件链接，30 分钟一次性）；**防枚举**；服务端强制新密码 ≥8 位；成功后 `token_version+1` 让旧 JWT 全部失效。公开。
+- `/api/notifications`、`POST /api/notifications/read`：站内通知（未读优先 + `byType` 按类型未读数 → 侧栏红点）。登录。
+- `/api/evidence/*`：实物材料上传 / 列表 / 审核；`GET /api/evidence/:id/photo` 同源鉴权代理（读私有桶）。登录 / 奖状管理员。
+- `/api/admin/invite-codes*`：内测邀请码列表 / 生成 / 停用 / 删除。**系统管理员**。
+- `/api/admin/notify-unbound-emails`：给「没绑邮箱」的账号批量推站内提醒（幂等：已有未读同类则跳过）。**系统管理员**。
+- `/api/user/email`：用户自助绑定 / 修改 / 解绑邮箱（写 `email_source='manual'`）。登录。
+- `/api/user/notify-settings`：用户自助开关「邮件提醒」（`users.email_notify`，**默认关**；开启要求邮箱已绑定且已验证）。登录。
+- `/api/admin/mail-settings`（GET / POST）：管理员配置「**哪些站内事件同时发邮件**」—— 总开关 + 事件勾选，存 `config.json` 的 `mail` 段，改完立即生效。**系统管理员**（POST 走 `require2FA`）。
+- `/api/admin/mail-test`：给自己账号绑定的邮箱发一封测试信（验 SMTP 通道 + 模板）。**系统管理员**。
+
+⚠️ **登录门槛**：`users.email_verified = false` 的账号登录会被 **403 `EMAIL_NOT_VERIFIED`** 拦下（注册必须过邮箱验证，见 §10）。
+
 **颁发记录（`user_awards`）生命周期（2026-09-24 修订）**
 
 - **打回 / 撤回只改状态**（`awards.status='returned'`），记录原样保留。
@@ -313,7 +361,8 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - 实物材料审核通过/驳回 → 通知上传者（`evidence_approved` / `evidence_rejected`）
 - 奖状审核通过/退回 → 通知创建者（`award_approved` / `award_returned`）
 - 前端侧边栏顶部铃铛 + 未读红点 + 通知面板（10 秒轮询 `/notifications`）。
-- **只做站内，不接邮件**（邮件提醒已确认不做，2026-09-22）。将来加新事件：在业务路由里 `notifyUsers` 一行即可。
+- ~~**只做站内，不接邮件**（邮件提醒已确认不做，2026-09-22）~~ ⚠️ **此说法已过时（2026-09-30）**：邮件能力已上线，但「**站内通知 → 邮件转发**」**尚未实现**（见 §10 产品规则 5 与待办）。将来加新事件：在业务路由里 `notifyUsers` 一行即可；⚠️ **新增通知类型若要有侧栏红点，必须同时在 `src/app.jsx` 的 `MENU_NOTIF_TYPES` 里挂到对应菜单**，否则只会出现在铃铛里（普通用户侧栏没红点就是这么来的）。
+- 目前已接入的「非业务」通知类型：`role_request`（角色申请 → 管理员侧「用户管理」）、`email_unbound`（**未绑邮箱提醒** → 用户「用户中心」，见 §10）。
 
 17. **角色升级申请（2026-09-22 落地）**：普通用户可在用户中心「角色权限」区块申请成为奖状管理员，需 `admin` 在「用户管理」审核。
 
@@ -412,6 +461,40 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 31. `MyAwardsView` 的卡片改为按真实布局渲染（有布局时），无布局的老奖状自动退回旧卡片；抽出 `buildAwardRenderData()` 让**卡片与 PDF 共用同一份字段组装**。
 32. **多等级差异（`levelOverrides`）**：`awardLayout.js` 新增 `resolveElementForLevel` / `hasLevelOverride`；`AwardRenderer` 新增 `ignoreLevelOverrides`；`VisualDesigner` 新增「编辑范围」选择器（默认 / 各等级）+ 覆盖标记 + 清除覆盖。`AwardDesigner` 把 `rules.thresholds` 的名称作为 `levels` 传给编辑器。
 
+### ★ 邮件 / 账号安全 / 部署红线（2026-09-30 追加，给后续 AI 的硬约束）
+
+**邮件**
+- 发信统一走 `server/services/mailer.js`（`sendMail` / `enqueueMail`），**不要在业务路由里直接 new nodemailer**。
+- **两道禁发闸**：`SMTP_ENABLED != true` 或未配 `SMTP_HOST/USER/PASS` → 静默跳过；`DEMO_MODE=true` → 强制跳过（演示站不许发信）。**发信失败只记日志、绝不抛**（不能因为邮件把注册等业务链路搞崩）。
+- 发信**串行 + 间隔**（腾讯对并发敏感，基础版对外约 500 封/天）；请求链路里只 `enqueueMail`（不 await）。
+- ⚠️ 腾讯要求 **From 地址 == SMTP 登录账号**：发件地址固定取 `SMTP_USER`，只有**显示名**可配（`SMTP_FROM_NAME`）。
+- 邮件里的链接用 `publicBaseUrl(req)` 拼，**不要** `req.get('host')`（本机打开会生成 localhost 链接）。
+- 邮件公开页（`#/verify-email`、`#/reset-password`）**必须免登录 → 必须用裸 fetch**；`apiFetch` 遇 401 会强制重载、把用户甩回登录页。
+- 令牌只存 **sha256 摘要**、一次性、验证 24h / 重置 30min；`issueEmailToken` 会**先作废同用途旧令牌**（重发即让旧链接失效）。
+- 找回密码类接口**一律防枚举**：不管邮箱/账号是否存在，都回**同一句文案**，真实情况只写审计。
+- ★ **站内通知 → 邮件（2026-09-30）：四道闸缺一不可** —— ① 管理员在「后台管理 → 邮件通知」开了总开关并勾选了该事件（`server/services/mailSettings.js`，存 `config.json` 的 `mail` 段）；② 发信通道就绪（含 `DEMO_MODE` 强制禁发）；③ 收件人 `users.email_notify = TRUE`（用户自己在用户中心开，**默认关**）；④ 邮箱**已验证**且非空。
+  ⚠️ **不要为了"让邮件一定发出去"绕过第 ③ 道** —— 那等于给全站用户群发。
+- 转发只在 `notifyUsers()` **写库成功之后**触发（`server/services/notifyEmail.js`），保证「邮件里说的」与「铃铛里看到的」一致；异常只 log、绝不抛（不能让发信把注册/审核等业务链路搞崩），发送走 `enqueueMail()` 串行队列不阻塞请求。
+- 新增通知类型若要能发邮件：`MAIL_NOTIFY_CATALOG`（`mailSettings.js`）加一条 + 调用处 `type` **逐字一致**（与 `MENU_NOTIF_TYPES` 挂红点同理，两处都要加）。
+- 邮件签名里的「求助入口」取 `SMTP_REPLY_TO`（现为 `contact@hamglory.top`）：`no-reply@` 只发不收，**不给入口等于把用户堵死**；换地址只改 `.env`，模板自动跟随。
+
+**账号安全**
+- 🔴 **OAuth 出 JWT 的两条路径（`/api/auth/oauth/complete`、`/api/auth/oauth/code`）必须校验 `totp_secret`**（字段 `totp_code`），失败时**绝不消费** pendingToken / 一次性换码。这是 2026-09-30 修掉的高危（否则启用 2FA 的账号走一遍 HamCQ 授权即可免验证码登录）——**勿回退**。
+- ⚠️ `server/routes/oauth.js` 的 `/callback` 里 `const email` 有 **TDZ 陷阱**：任何代码/日志写在声明之前都会抛 `ReferenceError`，被外层 catch 吞掉 → **回调必然 500（OAuth 全挂）**。
+- **邮箱验证是登录门槛**：`users.email_verified=false` → 登录 403。⚠️ 改动用户数据（导入/迁移/批量脚本）时注意**存量账号必须回填为已验证**，否则全员被锁在门外。
+- ⚠️ `users.callsign` 一词三义（登录名/展示名/呼号），校验不一致，但**QSO 匹配只用 `user_id`**；用户已拍板**维持现状不修**，别主动重提。
+
+**前端样式**
+- ⚠️ **深色主题（`.app-dark`）的配色映射只覆盖部分色系**（`src/index.css`）：底 `bg-{red,amber,yellow,green,emerald,blue,orange,indigo,violet,purple,slate}-50/100`、字 `text-*-600/700`、边 `border-slate-*`，**没有 `rose`**、也没有 `*-800/900` 字色。新写颜色类**先查一眼 index.css**；带 `/xx` 的 hover 底是**独立类名**，映射命中不到，优先不带 `/xx`。
+- ⚠️ 通知红点靠 `app.jsx` 的 `MENU_NOTIF_TYPES` 映射（新增通知类型要同时挂到对应菜单，否则只出现在铃铛里、侧栏没红点）。
+
+**部署 / 环境**
+- 🔴 **`docker-compose.yml` 没有 `env_file`**，各服务是**显式变量列表**：**新增任何环境变量必须同步加进 `app` 服务的 `environment`**，否则容器读不到（本地裸跑由 `loadEnv.js` 读根 `.env`，不受影响）。
+- 🔴 **主站上线新功能必须同步重建 demo**（用户 2026-09-30 明确要求）：`docker compose --profile demo build demo && docker compose --profile demo up -d demo`；核验「容器内产物含新标识串」+「页面实机可见」。⚠️ 判断新功能有没有进镜像要 **grep 产物里的标识串**，别比对 bundle 文件名（本地与容器构建环境不同、哈希本就不一样）。
+- ⚠️ **改依赖（含 npm install 新包）必须在 Linux 容器里验证**：Windows 大小写不敏感会掩盖问题（minio 硬引用大写 `Parser.js`，本地全绿、容器 `ERR_MODULE_NOT_FOUND` 崩过一次）。
+- ⚠️ **DNS 归属**：`hamglory.top` 的 NS 在 **Cloudflare**（阿里云只是**域名注册商**）→ 解析记录（MX/SPF/DKIM/DMARC/验证 CNAME）**必须加在 Cloudflare**，加在阿里云云解析**不生效**；也**绝不能把 NS 改到阿里云**（隧道 CNAME 在 CF，改了主站 + 演示站一起挂）。邮箱类子域记录必须 **DNS only（灰云）**，开橙云会被隐藏导致第三方验证失败。
+- ⚠️ **只 push `archive`**：`git push archive release:main`。上游 `origin/main` 含泄露凭据历史（可达 `989f008`），**不要 merge 上游、不要试图 push origin**（无写权限）。曾暴露凭据一律按失效处理。
+
 ### 已知问题（改动相关代码时留意，勿盲改）
 
 - ~~`src/main.jsx` 导入 `./App` 而实际文件名是 `app.jsx`~~ → **已修复**（见上表第 4 条）；此坑在 Docker 构建里是致命错误，不要再改回去。
@@ -419,9 +502,9 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - ~~`adminPath` 未校验、前端也不使用~~ → 仍是**名存实亡**的配置，只是不再误导（见 §7 第 6 条）。
 - ~~`POST /api/awards` 不返回新 id~~ → **已修复**（第 10 条）。
 - `/api/admin/settings` 对 `adminPath` 未做合法性校验，可写入任意字符串。
-- 奖状序列号使用 `Math.random()` 生成 16 位数字，非密码学安全（计划改 `crypto.randomInt()`）。
+- ~~奖状序列号使用 `Math.random()` 生成 16 位数字，非密码学安全（计划改 `crypto.randomInt()`）~~ → **已修复**：改用 `crypto.randomInt(0,10)` 逐位生成。同理邀请码也走 `crypto.randomInt` + `UNIQUE` + `ON CONFLICT DO NOTHING` 重试。
 - MinIO 存储桶策略为公开读（`s3:GetObject` 允许 `*`），且**没有 CORS 配置**（做客户端 PDF 导出前必须补），**不要上传敏感内容**。
-- `cors()` 未限制 origin，完全放开。
+- ~~`cors()` 未限制 origin，完全放开~~ → **已修复**（2026-09-24 审计整改）：读 `CORS_ORIGINS`（逗号分隔可信源），**留空 = `origin: false`（默认拒绝跨域）**。
 - `jwt.verify` 未显式指定 `algorithms: ['HS256']`。
 - **判定引擎的类型陷阱**：`rules.targets.list` 被解析成**字符串**集合，而 `getTargetValue('dxcc')` 直接返回 `qso.dxcc || raw.dxcc`（不做 `String()` 转换）。数据库里 `dxcc` 是 `VARCHAR`、ADIF 也是字符串，所以现在能匹配；**一旦某处传进来数值（如 `291`），会静默匹配失败、得分变 0 且不报错**。改动相关代码时务必保持字符串。
 - **`lucide-react` 是 0.263.1，图标集有限**：例如 **没有 `ShieldX`**（用了会构建失败：`"ShieldX" is not exported by ...`），而 `BadgeCheck` / `XCircle` / `ShieldAlert` 有。新增图标前先验证：`node -e "import('lucide-react').then(m=>console.log('Xxx' in m))"`。
@@ -433,6 +516,11 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - **不要滥用 `autoApprove`**：本项目含登录、2FA、管理员审核流。未经确认就自动放行浏览器点击/输入或写操作类工具，可能造成后台数据被误改。
 - 该 MCP 配置为**本地开发用途**。不要用持久化浏览器 profile（会带上本机所有登录态），不要指向生产环境域名。
 - 提交前确认 `.env` / `config.json` / 数据库口令 / `GITHUB_PERSONAL_ACCESS_TOKEN` 等**未被纳入版本控制**。
+- **凭据一律走环境变量 / `.env`，不进库、不进 git、不写进文档**：`.env` 含 SMTP 客户端授权码、HamCQ `client_secret`、DB/MinIO 口令。新增凭据时**只加 `.env.example` 占位**。
+- **上传只允许位图**（PNG/JPEG/WebP/GIF）：`RASTER_MIME` + `rasterFileFilter` 在服务端白名单拦截，**禁 SVG**（SVG 可内嵌脚本，而媒体是同源直出 → 存储型 XSS）；写对象存储的 `Content-Type` 由**服务端按扩展名**决定（`RASTER_MIME_BY_EXT`，不信客户端 MIME）；`/api/media` 带 `nosniff` + `Content-Security-Policy: sandbox`。
+- **安装接口**：配了 `INSTALL_TOKEN` 则校验令牌；**没配时，带 `x-forwarded-for` / `x-real-ip`（说明前面有反代）的请求直接 403**，只放行「本机 / 私有网段**且不带转发头**」的请求。公网部署务必设强随机 `INSTALL_TOKEN`。
+- **审计永不记密码 / TOTP / LoTW 凭据 / SMTP 授权码**；日志（含 `[oauth]`、`[mail]`）只打标识与结论，不打值。
+- **演示实例禁发邮件**（compose 里 `SMTP_ENABLED: "false"` + 代码里 `DEMO_MODE` 兜底），避免刷爆发信配额、避免把测试信发给真人。
 
 ## 9. 可用工具（MCP）
 
@@ -442,3 +530,78 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 | `GitHub`     | 读取上游仓库文件、查提交、搜代码、开 issue / PR。用于**对照上游实现**              |
 
 > 改完 UI 后**自行用 Playwright 验证再交付**，不要只描述"应该没问题"。
+
+## 10. 邮件系统（SMTP / 邮箱验证 / 找回密码 / 通知转发，2026-09-30 落地）
+
+**用途**：注册邮箱**强制验证**（未验证不能登录）、自助**找回密码**、**站内通知按事件转发邮件**（✅ 2026-09-30 上线，见下方「站内通知 → 邮件转发」小节）。
+「哪些环节发邮件」由**系统管理员**配置，用户侧另有「邮件提醒」开关（`users.email_notify`，**默认关**）—— **两层都要满足才发**，详见「产品规则」第 5 条。
+
+**服务商**：腾讯企业邮（`smtp.exmail.qq.com`，**SSL 465**，隐式 TLS）。
+发信账号是**公共邮箱** `no-reply@hamglory.top` —— ⚠️ 公共邮箱**没有独立登录密码**，SMTP 的「密码」填的是【**客户端授权码**】（企业微信管理后台 → 协作 → 邮箱 → 管理 → 公共邮箱 → 点「密码」生成）。
+⚠️ 授权码在「**使用成员被移出公共邮箱**」时会**立即失效**（自动发信会突然挂）→ 该公共邮箱要固定留一个不动的成员，优先用管理后台生成的授权码。
+⚠️ **From 必须等于 SMTP 登录账号**（腾讯强制），所以显示名可配、地址不可配。
+
+**配置**（`.env` / `.env.example`，容器走 compose 的 `app` 服务显式注入）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `SMTP_ENABLED` | 总开关（false / 未配 = 完全不发信，业务自动降级） |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | `smtp.exmail.qq.com` / `465` / `true` |
+| `SMTP_USER` / `SMTP_PASS` | 发信邮箱完整地址 / **客户端授权码**（非邮箱密码） |
+| `SMTP_FROM_NAME` | 发件人显示名（现为「HamGlory 奖状系统」） |
+| `SMTP_REPLY_TO` | 回信地址，**同时**是邮件签名里印出的「求助入口」（现为 `contact@hamglory.top`；留空则签名退化为「请联系本站管理员」） |
+
+**自检工具**：`node scripts/check-smtp.mjs --auth`（只验连通 + 登录，**不发信**）；`--auth --send-to <地址>` 才会**真投递**一封测试信。用 node 内置 `tls` 手写 SMTP，与 nodemailer 解耦，排障时不会被库封装遮住原因。
+
+**表结构**（`upgradeSchema` 自动创建/迁移）：
+
+- `users.email_verified`（NOT NULL DEFAULT FALSE）/ `email_verified_at` / `email_notify`
+  🔴 **存量账号回填**：先加**可空**列 → `UPDATE users SET email_verified=TRUE, email_verified_at=COALESCE(email_verified_at,NOW()) WHERE email_verified IS NULL` → 再补 `DEFAULT FALSE` + `NOT NULL`。顺序不能反；新账号写入即非 NULL，所以这条 UPDATE 只在**首次**生效、**可重复执行**。
+- `email_tokens`：`user_id / email / purpose(verify_email|reset_password) / token_hash / expires_at / used_at / created_at`，索引在 `token_hash` 与 `(user_id, purpose)`。
+
+**代码位置**：`server/services/mailer.js`（transport + 队列 + 状态）、`emailTokens.js`（签发/消费/作废）、`emailTemplates.js`（正文模板，含通知模板）、`mailSettings.js`（事件开关）、`notifyEmail.js`（通知 → 邮件转发）、`src/pages/EmailAuthView.jsx`（两个公开页）、`src/pages/MailNotifyView.jsx`（后台设置页 `#/mail_notify`）、`src/lib/routes.js` 的 `parseEmailAuthHash`。
+
+**站内通知 → 邮件转发（2026-09-30 上线）**
+- 管理员侧：**后台管理 → 邮件通知**（`#/mail_notify`，仅 admin）—— 总开关 + 勾选事件 + 「给我发测试邮件」。
+  目录 `MAIL_NOTIFY_CATALOG` 共 11 类事件（奖状待审/打回/通过、实物材料三类、角色申请三类、撤回奖状、提醒绑邮箱），设置存 `config.json` 的 `mail` 段。
+- 用户侧：**用户中心 → 通知设置 → 邮件提醒**（`POST /api/user/notify-settings`），**默认关**；开启前提是邮箱已绑定且已验证（未满足时前端禁用 + 后端 400）。
+- 放行四道闸：管理员总开关+事件勾选 → 通道就绪（含演示站禁发）→ 用户已订阅 → 邮箱已验证且非空。**写库成功之后**才转发；同收件人+同类事件+同标题 5 分钟内只发一封（内存去重，防连点/重复提交刷屏）。
+- 邮件正文 = 站内通知原文 + 直达页面链接（`PUBLIC_BASE_URL`，路由映射同前端 `NOTIF_TARGET`）+ 关闭入口说明。
+
+**DNS / 送达**（与 HamCQ 现状对齐，2026-09-30 实测）：
+
+| 记录 | 状态 |
+| --- | --- |
+| MX | ✅ `mxbiz1.qq.com`(5) / `mxbiz2.qq.com`(10) —— 与 HamCQ 同款 |
+| SPF | ✅ `v=spf1 include:spf.mail.qq.com ~all` |
+| **DKIM** | ⏳ **未配**（后台【协作→邮箱→安全管理→DKIM验证】生成 TXT → Cloudflare 加（**灰云**）→ 回后台点「立即验证」）。实测**测试邮件进收件箱**，故不急 |
+| DMARC | ⏳ 未配（HamCQ 也没有）。要加就 `v=DMARC1; p=none;`，**不建议带 `rua`**（会每天收到机器可读 XML 汇总报告，本站没有多方代发、价值低） |
+
+**邮箱规划**（公共邮箱基础版最多 **3 个**，且**无别名功能** → 每个用途都要单独占一个，别一次用满）：
+`no-reply@`（✅ 已建，只发）+ **`contact@`**（✅ 已建，对外总信箱：公示在页脚/隐私政策，同时是邮件 `Reply-To` 与签名里的求助入口，对标 HamCQ 的 `Contact@hamcq.cn`）→ 建议再建 **`admin@`**（举报/申诉/第三方对接预留，**不公示**，类比 HamCQ 的 `emin@hamcq.cn`），第三个名额**留空备用**。
+⚠️ `contact@` 的客户端授权码**没有用于发信**（本站发信账号固定 `no-reply@`，腾讯要求 From == 登录账号），只存 `.env` 备用（`CONTACT_MAIL_PASS`）；真要改成以 `contact@` 发信，只需把 `SMTP_USER/SMTP_PASS` 换掉。
+> 参考：HamCQ 全站**只公示 1 个**自有域名邮箱 `Contact@hamcq.cn`（联系我们页 + 隐私政策「如何联系我们」），开发者对接用 `emin@hamcq.cn`（不公示），站长信箱甚至是**个人 QQ 邮箱**。
+
+**产品规则（2026-09-30 用户拍板，勿擅自改口径）**
+
+1. **注册强制邮箱验证**：注册必须填邮箱 → 发验证邮件 → **点了链接才能登录**。未验证登录返回 `403 EMAIL_NOT_VERIFIED`，登录页**就地**给「重新发送验证邮件」；注册成功后前端切到「去邮箱点链接」面板（不再只弹 alert）。
+2. **找回密码只对已绑邮箱的账号可用**：邮件链接 30 分钟、一次性。**没绑邮箱的老账号不强制补**，页面文案引导「用 HamCQ 登录一次会自动带上邮箱，或联系管理员」。
+3. **没绑邮箱的老账号怎么处理**（不做骚扰式强推）：
+   - 用户中心「安全设置 → 绑定邮箱」那一行直接显示提示（未绑定就无法用邮箱找回密码）；
+   - 管理员可在「用户管理」点 **「提醒未绑邮箱用户」** 一键批量推站内通知（类型 `email_unbound`，`POST /api/admin/notify-unbound-emails`），**幂等**：已有**未读**同类通知的用户会被跳过，连点两次不刷屏。
+4. **邮箱来源角标（三态）**——用户管理表格 + 用户中心都会显示：
+
+   | 角标 | 判定 | 含义 |
+   | --- | --- | --- |
+   | **HamCQ** | `email_source = 'hamcq'` | HamCQ 登录时**自动携带并写入**（OAuth 回调里回填，**绝不覆盖**用户已有值） |
+   | **自助** | `email_source` 为 `register` / `manual` | 注册时自己填的，或在用户中心自助绑定/修改的 |
+   | **未验证** | `email_verified = false` | 还没点验证链接（**与来源角标可同时出现**） |
+
+5. **邮件提醒是两层开关**（✅ 2026-09-30 已实现）：
+   - 管理员配「**哪些环节发邮件**」（后台管理 → 邮件通知，`config.json` 的 `mail` 段）；
+   - 用户自己配「**我收不收**」（用户中心 → 通知设置 → 邮件提醒，`users.email_notify` **默认关**）。
+   ⇒ 管理员勾了事件**不等于**会发：只有主动订阅且邮箱已验证的账号才收得到。**勿为"让邮件一定发"绕过用户开关**（等于群发）。
+6. **`no-reply@` 只发不收**（✅ 2026-09-30 已改）：邮件签名统一给出求助入口，地址取 `SMTP_REPLY_TO`（现为 `contact@hamglory.top`）。
+7. **演示站永不发信**（`SMTP_ENABLED=false` + `DEMO_MODE` 双闸）：演示环境注册/找回密码/通知转发都会「成功但不发邮件」，属预期。
+
+**待办**：①（可选）DKIM 记录（企业邮后台生成 TXT → Cloudflare 加，**灰云**）；②（可选）DMARC `p=none` 且不带 `rua`；③ 生产站需管理员在「邮件通知」页手动打开总开关（默认关，属安全设计）。

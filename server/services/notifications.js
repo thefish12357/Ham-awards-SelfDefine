@@ -8,13 +8,17 @@
  *   - 实物材料审核通过/驳回 → 上传者
  *   - 奖状审核通过/打回     → 奖状创建者
  *
- * 通知只做「站内」，不接邮件（邮件另议成本）。前端轮询未读数显示红点，
+ * 通知只做「站内」；★ 2026-09-30 起支持**按事件转发邮件**（交给
+ * `server/services/notifyEmail.js`，是否发、发给谁由「管理员事件开关 + 用户 email_notify
+ * 订阅开关」两层共同决定，见该文件顶部说明）。前端轮询未读数显示红点，
  * 点开面板可读详情、一键全部已读。
  */
 import express from 'express';
+import { forwardNotificationEmails } from './notifyEmail.js';
 
 /**
  * 批量插入通知。userIds 去重、过滤空值。
+ * 写库成功后按需转发邮件（转发失败只记日志，绝不影响站内通知与业务流程）。
  * @param {import('pg').Pool} pool
  * @param {number[]} userIds
  * @param {{type:string, title:string, body:string}} payload
@@ -33,7 +37,9 @@ export async function notifyUsers(pool, userIds, { type, title, body }) {
         );
     } catch (e) {
         console.error('notifyUsers error:', e.message);
+        return; // 没写进库就不发信，保证邮件与站内通知一致
     }
+    await forwardNotificationEmails(pool, uniq, { type, title, body });
 }
 
 export function createNotificationsRouter({ getDbPool, verifyToken }) {

@@ -39,9 +39,17 @@ import { INVITE_TABLE_SQL, consumeInviteCode, genInviteCode, inviteError, isInvi
 // 邮箱规范化/校验（注册与 OAuth 绑定共用同一套规则）
 import { normalizeEmail, isEmailTaken } from './server/services/email.js';
 // 邮件发送 + 一次性令牌 + 正文模板（注册邮箱验证 / 找回密码，2026-09-30）
-import { enqueueMail, mailerStatus } from './server/services/mailer.js';
+import { enqueueMail, sendMail, mailerStatus } from './server/services/mailer.js';
 import { PURPOSE as EMAIL_PURPOSE, issueEmailToken, consumeEmailToken, revokeEmailTokens } from './server/services/emailTokens.js';
-import { verifyEmailTemplate, resetPasswordTemplate } from './server/services/emailTemplates.js';
+import { verifyEmailTemplate, resetPasswordTemplate, notificationTemplate } from './server/services/emailTemplates.js';
+// 通知 → 邮件转发（2026-09-30）：管理员配置「哪些环节发邮件」，设置存 config.json 的 mail 段
+import {
+  applyMailSettings,
+  getMailSettings,
+  normalizeMailSettingsInput,
+  MAIL_NOTIFY_CATALOG,
+  MAIL_AUDIENCE_LABELS,
+} from './server/services/mailSettings.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -381,6 +389,8 @@ function loadConfig() {
   }
   // 环境变量覆盖最后执行，优先级高于 config.json（供 .env 管理 HamCQ 凭据/隧道地址）
   applyOauthEnvOverrides();
+  // 邮件通知设置（哪些站内事件同时发邮件）：从 config.json 的 mail 段刷新内存快照
+  applyMailSettings(appConfig);
 }
 
 async function upgradeSchema() {
@@ -1314,6 +1324,40 @@ app.post('/api/user/email', verifyToken, async (req, res) => {
             detail: { email: email || undefined, cleared: email ? undefined : true },
         });
         res.json({ success: true, email: email || null, email_source: email ? 'manual' : null });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+/**
+ * 用户级「邮件提醒」开关（2026-09-30）
+ * ------------------------------------------------------------------
+ * 与管理员侧「哪些事件发邮件」是**两层开关**：这里管「我愿不愿意收」，
+ * 默认 **关**（`users.email_notify` DEFAULT FALSE）；管理员勾了事件也只会发给
+ * 主动开启开关的人，避免上线就给全站用户发信。
+ * 规则：
+ *   - 开启前必须有**已验证**的邮箱，否则开了也收不到（直接 400 说清原因）；
+ *   - 关闭随时可以；站内通知不受影响（只是不再发邮件）。
+ */
+app.post('/api/user/notify-settings', verifyToken, async (req, res) => {
+    try {
+        const emailNotify = (req.body || {}).emailNotify === true;
+        if (emailNotify) {
+            const r = await dbPool.query('SELECT email, email_verified FROM users WHERE id=$1', [req.user.id]);
+            const u = r.rows[0] || {};
+            if (!u.email) {
+                return res.status(400).json({ error: 'NO_EMAIL', message: '请先绑定邮箱，再开启邮件提醒' });
+            }
+            if (u.email_verified !== true) {
+                return res.status(400).json({ error: 'EMAIL_NOT_VERIFIED', message: '邮箱尚未验证，完成验证后才能接收邮件提醒' });
+            }
+        }
+        await dbPool.query('UPDATE users SET email_notify=$1 WHERE id=$2', [emailNotify, req.user.id]);
+        await logAudit(dbPool, req, {
+            action: 'user.notify_update',
+            targetType: 'user',
+            targetId: req.user.id,
+            detail: { email_notify: emailNotify },
+        });
+        res.json({ success: true, email_notify: emailNotify });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2688,6 +2732,82 @@ app.post('/api/admin/settings', verifyToken, verifyAdmin, require2FA, async (req
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(appConfig, null, 2));
     await logAudit(dbPool, req, { action: 'admin.settings_update', detail: { useHttps, adminPath } });
     res.json({ success: true });
+});
+
+/**
+ * 邮件通知设置（2026-09-30）
+ * ------------------------------------------------------------------
+ * 「哪些站内事件同时发邮件」由**系统管理员**配置。两层开关，缺一不可：
+ *   ① 管理员（本接口）：总开关 + 勾选事件；
+ *   ② 用户（`users.email_notify`，默认关）：本人是否愿意收邮件 —— 在用户中心自助开。
+ * 所以勾了事件≠一定会发：只有**主动订阅且邮箱已验证**的账号才收得到。
+ * 存 config.json 的 `mail` 段（与 invite-settings 同一套写法，改完无需重启）。
+ */
+app.get('/api/admin/mail-settings', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const subscribed = await dbPool.query(
+            `SELECT COUNT(*)::int AS n
+               FROM users
+              WHERE email_notify = TRUE AND email_verified = TRUE
+                AND email IS NOT NULL AND email <> ''`,
+        );
+        res.json({
+            success: true,
+            settings: getMailSettings(),
+            catalog: MAIL_NOTIFY_CATALOG,
+            audienceLabels: MAIL_AUDIENCE_LABELS,
+            mailer: mailerStatus(),
+            subscribed: subscribed.rows[0].n,
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post('/api/admin/mail-settings', verifyToken, verifyAdmin, require2FA, async (req, res) => {
+    try {
+        const next = normalizeMailSettingsInput(req.body || {});
+        appConfig.mail = next;
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(appConfig, null, 2));
+        applyMailSettings(appConfig); // 立即生效，不用重启
+        await logAudit(dbPool, req, {
+            action: 'mail.notify_settings',
+            detail: { enabled: next.notifyEnabled, types: next.notifyTypes },
+        });
+        res.json({ success: true, settings: getMailSettings() });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// 给自己发一封测试信：一次把「SMTP 通道 + 回信地址 + 模板渲染」全验掉
+app.post('/api/admin/mail-test', verifyToken, verifyAdmin, require2FA, async (req, res) => {
+    try {
+        const st = mailerStatus();
+        if (!st.ready) return res.status(400).json({ error: 'MAIL_NOT_READY', message: st.reason || '当前不能发信' });
+        const me = await dbPool.query('SELECT callsign, email FROM users WHERE id=$1', [req.user.id]);
+        const row = me.rows[0] || {};
+        if (!row.email) {
+            return res.status(400).json({ error: 'NO_EMAIL', message: '你的账号还没绑定邮箱，请先到「用户中心 → 安全设置 → 绑定邮箱」' });
+        }
+        const tpl = notificationTemplate({
+            callsign: row.callsign,
+            title: 'SMTP 测试邮件',
+            body: '这是一封来自 HamGlory 奖状系统的测试邮件。收到它说明邮件通道（SMTP）配置正确，站内通知可以按设置转发到邮箱了。',
+            link: String(process.env.PUBLIC_BASE_URL || '').trim(),
+        });
+        const result = await sendMail({ to: row.email, subject: tpl.subject, text: tpl.text });
+        await logAudit(dbPool, req, {
+            action: 'mail.test',
+            detail: { to: row.email, ok: !!result?.ok, error: result?.error || undefined },
+        });
+        if (!result?.ok) {
+            return res.status(502).json({ error: 'SEND_FAILED', message: result?.error || '发信失败，请查看服务端日志' });
+        }
+        res.json({ success: true, to: row.email });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // 从 country-files.com 同步最新 cty.dat（DXCC 前缀库）。同步后模块自动重新解析，无需重启。

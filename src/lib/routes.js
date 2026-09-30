@@ -32,6 +32,7 @@ export const ALL_ROUTES = [
   'users',
   'evidence_audit',
   'admin_logs',
+  'mail_notify',
   'userCenter',
 ];
 
@@ -68,6 +69,7 @@ export const ROUTES_BY_ROLE = {
     'users',
     'evidence_audit',
     'admin_logs', // 全站审计日志：仅最高级管理员
+    'mail_notify', // 邮件通知设置（哪些事件发邮件）：仅最高级管理员
   ],
 };
 

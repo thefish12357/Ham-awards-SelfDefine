@@ -8,7 +8,7 @@ import {
   Search, ShieldCheck, UserPlus, Info, ExternalLink, Image as ImageIcon,
   Users, Activity, Radio, FileText, HardDrive, Clock, FileWarning,
   Target, Calculator, Filter, Layers, Trophy, Crop, ZoomIn, ZoomOut, Grid, ChevronDown, ChevronRight, Bell,
-  Loader2, Monitor, Sun, Moon, AlertTriangle, FolderOpen
+  Loader2, Monitor, Sun, Moon, AlertTriangle, FolderOpen, MailCheck
 } from 'lucide-react';
 
 // ================= 公共模块 =================
@@ -28,6 +28,8 @@ import VerifyView from './pages/VerifyView.jsx';
 import EmailAuthView from './pages/EmailAuthView.jsx';
 import EvidenceAuditView from './pages/EvidenceAuditView.jsx';
 import AuditLogsView from './pages/AuditLogsView.jsx';
+// 邮件通知设置（哪些站内事件同时发邮件）：仅最高级管理员，见 AGENTS.md §10
+import MailNotifyView from './pages/MailNotifyView.jsx';
 import LandingView from './pages/LandingView.jsx';
 // 演示环境全局横幅：仅 demoMode 时在每一页顶部展示（见下方各视图 return 包裹）
 import DemoBanner from './components/DemoBanner.jsx';
@@ -2671,6 +2673,8 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
     const [confirmActionPass, setConfirmActionPass] = useState('');
     const [qsoCount, setQsoCount] = useState(null);
     const [roleReq, setRoleReq] = useState(null);
+    // 邮件提醒开关（与管理员「哪些事件发邮件」是两层开关，默认关）
+    const [notifySaving, setNotifySaving] = useState(false);
     const [roleReqSubmitting, setRoleReqSubmitting] = useState(false);
     const [showRoleReqForm, setShowRoleReqForm] = useState(false);
     const [roleReqForm, setRoleReqForm] = useState({ award_name: '', reason: '', experience: '', contact: '' });
@@ -2679,6 +2683,11 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
         apiFetch('/stats/dashboard').then((s) => setQsoCount(Number(s.qsos) || 0)).catch(() => {});
     };
     useEffect(loadStats, []);
+
+    // 进页面拉一次最新资料：登录响应里缓存的 user 可能是旧的（例如后来才绑定的邮箱、
+    // 或本页新加的「邮件提醒」开关状态），不刷新就会出现「明明绑了邮箱却显示未绑定、
+    // 开关被误禁用」这类误判。
+    useEffect(() => { refreshUser(); }, []);
 
     const loadRoleReq = () => {
         apiFetch('/user/role-request').then(setRoleReq).catch(() => {});
@@ -2740,6 +2749,22 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
             await apiFetch('/user/password', { method: 'POST', body: JSON.stringify(passForm) });
             alert('密码修改成功'); setModal(null);
         } catch(err) { alert(err.message); }
+    };
+
+    /**
+     * 邮件提醒开关（2026-09-30）：默认关。
+     * 开启前提是「已绑定 + 已验证」邮箱 —— 后端也会拦（400），这里先在前端给出可读提示。
+     */
+    const toggleEmailNotify = async (next) => {
+        setNotifySaving(true);
+        try {
+            await apiFetch('/user/notify-settings', { method: 'POST', body: JSON.stringify({ emailNotify: next }) });
+            await refreshUser();
+        } catch (err) {
+            alert(err.message || '操作失败');
+        } finally {
+            setNotifySaving(false);
+        }
     };
 
     // 保存邮箱：留空 = 解绑；同一邮箱只能绑一个账号（撞车后端返回 409，这里提示原因）
@@ -2846,6 +2871,42 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                         <button onClick={() => { setEmailInput(user.email || ''); setModal('email'); }} className="shrink-0 bg-white border px-4 py-2 rounded-lg text-sm font-bold">{user.email ? '修改' : '绑定'}</button>
                     </div>
                 </div>
+            </div>
+            {/* 通知设置（2026-09-30）：邮件提醒开关。与「后台管理 → 邮件通知」是两层开关 ——
+                管理员决定"哪些事件值得发邮件"，这里决定"我本人收不收"，默认关。 */}
+            <div className="bg-white p-6 rounded-2xl shadow-sm border">
+                <h4 className="font-bold text-lg mb-4 flex items-center gap-2"><MailCheck className="text-blue-600"/> 通知设置</h4>
+                <div className="flex items-center justify-between gap-4 p-4 bg-slate-50 rounded-xl">
+                    <div className="flex items-center gap-3 min-w-0">
+                        <MailCheck className="text-slate-400 shrink-0" />
+                        <div className="min-w-0">
+                            <div className="font-bold">邮件提醒</div>
+                            <div className="text-xs text-slate-400 break-words">
+                                审核待办与结果、角色申请结果等事件同时发一份邮件到你绑定的邮箱
+                                {user.email ? `（${user.email}）` : ''}。
+                            </div>
+                            {!user.email && (
+                                <div className="mt-1 text-[10px] text-amber-700">需先绑定邮箱，开启前还要完成验证。</div>
+                            )}
+                            {user.email && user.email_verified === false && (
+                                <div className="mt-1 text-[10px] text-amber-700">邮箱尚未验证，验证通过后才能开启。</div>
+                            )}
+                        </div>
+                    </div>
+                    <label className={`shrink-0 inline-flex items-center gap-2 ${notifySaving ? 'opacity-60' : 'cursor-pointer'}`}>
+                        <input
+                            type="checkbox"
+                            className="h-5 w-5 accent-slate-900"
+                            checked={!!user.email_notify}
+                            disabled={notifySaving || !user.email || user.email_verified === false}
+                            onChange={(e) => toggleEmailNotify(e.target.checked)}
+                        />
+                        <span className="text-sm font-bold text-slate-600">{user.email_notify ? '已开启' : '已关闭'}</span>
+                    </label>
+                </div>
+                <p className="mt-3 text-xs text-slate-400">
+                    关闭后仍会收到站内通知（铃铛与侧栏红点），只是不再给你发邮件。
+                </p>
             </div>
             {user.role === 'user' && (
                 <div className="bg-white p-6 rounded-2xl shadow-sm border">
@@ -4399,6 +4460,8 @@ export default function App() {
           { id: 'users', label: '用户管理', icon: Users, show: user.role === 'admin', group: '后台管理', notification: notifDot(['role_request']) },
           { id: 'evidence_audit', label: '实物材料审核', icon: ImageIcon, show: user.role === 'admin', group: '后台管理', notification: notifDot(['evidence_pending']) },
           { id: 'admin_logs', label: '审计日志', icon: ShieldCheck, show: user.role === 'admin', group: '后台管理' },
+          // 邮件通知（2026-09-30）：管理员配置「哪些站内事件同时发邮件」
+          { id: 'mail_notify', label: '邮件通知', icon: MailCheck, show: user.role === 'admin', group: '后台管理' },
           
           // Common Bottom
           { id: 'userCenter', label: '用户中心', icon: User, show: true, notification: notifDot(['role_approved', 'role_rejected']) },
@@ -4554,6 +4617,7 @@ export default function App() {
                       {subView === 'issuanceManager' && <IssuanceManager />}                      
                       {subView === 'evidence_audit' && <EvidenceAuditView />}
                       {subView === 'admin_logs' && <AuditLogsView />}
+                      {subView === 'mail_notify' && <MailNotifyView />}
                       {subView === 'userCenter' && <UserCenterView user={user} refreshUser={refreshUser} onLogout={handleLogout} />}
                   </div>
               </main>

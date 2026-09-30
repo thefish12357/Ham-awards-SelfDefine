@@ -25,6 +25,9 @@ const ACTION_LABELS = {
   'user.email_update': '修改邮箱',
   'user.email_verified': '邮箱验证通过',
   'user.email_verify_resend': '重发验证邮件',
+  'user.notify_update': '修改邮件提醒开关',
+  'mail.notify_settings': '修改邮件通知设置',
+  'mail.test': '发送测试邮件',
   'auth.login_blocked': '登录被拦（邮箱未验证）',
   'auth.password_reset_request': '申请重置密码',
   'user.password_reset': '重置密码',
@@ -97,8 +100,6 @@ const DETAIL_LABELS = {
   creator_id: '创建者 ID',
   applicant: '申请人',
   applicant_id: '申请人 ID',
-  level: '等级',
-  serial: '序列号',
   score: '得分',
   matched_qso: '匹配日志条数',
   deleted: '删除条数',
@@ -107,6 +108,11 @@ const DETAIL_LABELS = {
   bytes: '文件字节',
   useHttps: 'HTTPS',
   adminPath: '管理入口路径',
+  enabled: '总开关',
+  types: '事件',
+  to: '收件人',
+  ok: '发送成功',
+  email_notify: '邮件提醒',
 };
 
 const OP_LABELS = { approve: '通过', reject: '驳回', create: '新建', update: '更新', recall: '撤回' };
