@@ -13,9 +13,62 @@
     -->
   </head>
   <body>
-    <div id="root"></div>
+    <!--
+      ★ 首屏占位（2026-09-30）：此前 #root 是空的，一旦**入口模块加载失败**
+      （隧道→Vite 偶发 502、部署后旧 chunk 失效、网络抖动…），React 永远不会挂载，
+      页面就是**纯白屏、无提示、无出口** —— 用户反馈的「打开主站白屏」即此。
+      React 挂载时会整体替换 #root 的内容，所以下面这块只在「还没挂载 / 挂载失败」时可见。
+      样式全部内联且用 position:fixed 铺满视口，确保在 Tailwind 尚未加载时也正常。
+    -->
+    <div id="root">
+      <div
+        id="boot-fallback"
+        style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:#0A0A0B;color:#e2e8f0;font-family:system-ui,-apple-system,'Segoe UI',sans-serif;padding:24px;text-align:center;"
+      >
+        <div>
+          <div style="font-size:14px;font-weight:700;color:#cbd5e1;">正在加载 HamGlory 奖状系统…</div>
+          <div id="boot-hint" style="margin-top:10px;font-size:12px;line-height:1.7;color:#64748b;">
+            首次加载可能需要几秒；若长时间停留在此页面，请刷新（Ctrl / Cmd + F5）。
+          </div>
+          <button
+            id="boot-retry"
+            type="button"
+            style="display:none;margin-top:14px;border:1px solid rgba(255,255,255,0.18);background:#141416;color:#e2e8f0;border-radius:10px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;"
+          >
+            重新加载
+          </button>
+        </div>
+      </div>
+    </div>
     <!-- 指向 React 入口文件 -->
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // 入口自愈：模块/样式没加载成功、或迟迟没挂载时，把「加载中」变成「可点重新加载」。
+      // 纯原生 JS，不依赖任何被打包/可能加载失败的资源。
+      (function () {
+        var mounted = function () { return !document.getElementById('boot-fallback'); };
+        var showRetry = function (why) {
+          if (mounted()) return;
+          var hint = document.getElementById('boot-hint');
+          var btn = document.getElementById('boot-retry');
+          if (hint) {
+            hint.style.color = '#fbbf24';
+            hint.textContent = (why || '资源加载失败') + '：可能是网络波动或服务正在重启，点下方按钮重试。';
+          }
+          if (btn) btn.style.display = 'inline-block';
+        };
+        var btn = document.getElementById('boot-retry');
+        if (btn) btn.addEventListener('click', function () { window.location.reload(); });
+        // 1) 资源加载失败（<script type="module"> / <link> 报错，如隧道返回 502）
+        window.addEventListener('error', function (e) {
+          var t = e.target;
+          if (t && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) showRetry('部分资源加载失败');
+          else if (!mounted() && e.message) showRetry('页面脚本出错');
+        }, true);
+        // 2) 15 秒还没挂载 → 给出口（慢网络下仍会继续加载，按钮出现不影响自动恢复）
+        setTimeout(function () { showRetry('加载超时'); }, 15000);
+      })();
+    </script>
     <!-- 百度统计（站点 hamglory.top）：按百度建议放在 </body> 标签前 -->
     <script>
     var _hmt = _hmt || [];

@@ -3606,6 +3606,10 @@ const UserManage = () => {
 
 export default function App() {
   const [view, setView] = useState('loading'); 
+  // 首屏引导（/api/system-status）超过 8 秒没回来 → 在过渡页上给「重新加载」入口。
+  // 背景：view 初值 'loading'，组件末尾是 `return null` —— 后端重启/隧道抖动导致
+  // 该请求**挂住**（不是失败）时，用户看到的是纯白屏、既无提示也无恢复手段（2026-09-30 反馈）。
+  const [bootSlow, setBootSlow] = useState(false);
   const [user, setUser] = useState(null);
   // 公开静态页（关于 / 隐私政策）：与 view 无关、独立于登录态
   const [publicPage, setPublicPage] = useState(() => readPublicPage());
@@ -3764,19 +3768,35 @@ export default function App() {
       return;
     }
 
-    apiFetch('/system-status').then(status => {
+    // ★ 兜底 1：8 秒没回来就在过渡页显示「重新加载」（避免白屏且无出口）。
+    const slowTimer = setTimeout(() => setBootSlow(true), 8000);
+    // ★ 兜底 2：12 秒硬超时 —— 请求**挂住**时主动 abort，走 catch 落到落地页，
+    //   绝不让页面永远停在 loading（以前那种情况就是白屏）。
+    const ctl = new AbortController();
+    const hardTimer = setTimeout(() => ctl.abort(), 12000);
+    apiFetch('/system-status', { signal: ctl.signal }).then(status => {
         if (!status.installed) {
             setView('install');
         } else {
             const savedUser = localStorage.getItem('ham_user');
             if (savedUser) {
-                setUser(JSON.parse(savedUser));
-                setView('main');
+                try {
+                    setUser(JSON.parse(savedUser));
+                    setView('main');
+                } catch {
+                    // localStorage 里的用户对象坏了（被扩展/手工改过）→ 清掉重来，别让整站白屏
+                    localStorage.removeItem('ham_user');
+                    localStorage.removeItem('ham_token');
+                    setView('landing');
+                }
             } else {
                 setView('landing'); // 已安装未登录：先展示网站首页，由 CTA 进入 auth
             }
         }
-    }).catch(() => setView('landing'));
+    }).catch(() => setView('landing')).finally(() => {
+        clearTimeout(slowTimer);
+        clearTimeout(hardTimer);
+    });
   }, []);
 
   // OAuth 提供方查询（M5）：登录页据此决定是否显示「使用 HamCQ 登录」
@@ -4102,6 +4122,36 @@ export default function App() {
   if (publicPage === 'privacy') return <>{demoBar}<PrivacyView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
   if (publicPage === 'terms') return <>{demoBar}<TermsView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
   if (publicPage === 'protocol') return <>{demoBar}<ProtocolView onBack={closePublicPage} theme={theme} onToggleTheme={toggleTheme} /></>;
+
+  // ★ 首屏过渡页（view 初值 'loading'）：以前**什么都不渲染**（函数末尾 return null），
+  //   后端重启/隧道抖动导致 /api/system-status 挂住时就是「纯白屏 + 无出口」。
+  //   现在至少给转圈、慢速提示与「重新加载」按钮，用户知道在等什么、也能自救。
+  if (view === 'loading') {
+      return (
+          <div className="app-dark bg-slate-950 flex min-h-screen items-center justify-center p-6">
+              <div className="flex flex-col items-center gap-3 text-center">
+                  <Loader2 className="animate-spin text-slate-500" size={28} />
+                  <div className="text-sm font-bold text-slate-300">正在加载 HamGlory 奖状系统…</div>
+                  {bootSlow ? (
+                      <>
+                          <div className="max-w-xs text-xs leading-relaxed text-amber-400">
+                              服务器响应较慢，可能是网络波动或服务正在重启。
+                          </div>
+                          <button
+                              type="button"
+                              onClick={() => window.location.reload()}
+                              className="mt-1 rounded-xl border border-white/10 bg-slate-900 px-4 py-2 text-sm font-bold text-white"
+                          >
+                              重新加载
+                          </button>
+                      </>
+                  ) : (
+                      <div className="text-xs text-slate-500">首次加载可能需要几秒</div>
+                  )}
+              </div>
+          </div>
+      );
+  }
 
   if (view === 'install') return <>{demoBar}<InstallView onComplete={() => window.location.reload()} /></>;
 

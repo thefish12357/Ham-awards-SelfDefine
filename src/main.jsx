@@ -5,6 +5,7 @@ import ReactDOM from 'react-dom/client';
 import App from './app.jsx';
 import './index.css';
 import { reloadForNewVersion } from './lib/lazyImport.js';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 
 /**
  * 部署后旧页面自愈（2026-09-24）
@@ -19,8 +20,12 @@ window.addEventListener('vite:preloadError', (e) => {
   if (reloadForNewVersion()) e.preventDefault();
 });
 
+// ★ 错误边界（2026-09-30）：React 18 渲染期抛错会卸载整棵树 → 纯白屏、无提示、无法自救。
+//   包一层，让偶发崩溃变成「可见 + 可刷新自愈」，而不是用户以为站点挂了。
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </React.StrictMode>,
 );
