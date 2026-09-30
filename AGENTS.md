@@ -280,6 +280,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 - `/api/auth/oauth/*`：HamCQ 授权登录 —— `/start`（跳授权页）、`/callback`（换令牌 + 取用户信息）、`/complete`（新号建号 / 老号验密绑定）、`/code`（一次性短码换 JWT，避免长期 JWT 进 URL）。**公开**（`/complete` 要密码或邀请码）。🔴 **`/complete` 与 `/code` 出 JWT 前必须校验 2FA**。
 - `/api/auth/verify-email`、`/api/auth/resend-verify`：邮箱验证（点邮件链接）与重发；**重发防枚举**。公开。
+- `POST /api/awards/preview-check`：**奖状规则自检**（草稿阶段，`verifyToken` + `verifyAwardAdmin`）。`source='user'` 真实调取该用户自己的 QSO；`source='virtual'` 用请求体里的虚拟日志 —— 由 `normalizeVirtualQsos()` 在**内存**里构造引擎行结构，**绝不入库**（条数上限 500、字段截断）。⚠️ 刻意不走 `evaluateAward(userId, awardId)`（那个封装要求奖状已 approved，而自检发生在草稿阶段）。返回引擎完整结果（`eligible` / `current_score` / `stats` / `warnings` / `matching_qsos`）+ `qso_count`。
 - `/api/auth/forgot-password`、`/api/auth/reset-password`：找回密码（邮件链接，30 分钟一次性）；**防枚举**；服务端强制新密码 ≥8 位；成功后 `token_version+1` 让旧 JWT 全部失效。公开。
 - `/api/notifications`、`POST /api/notifications/read`：站内通知（未读优先 + `byType` 按类型未读数 → 侧栏红点）。登录。
 - `/api/evidence/*`：实物材料上传 / 列表 / 审核；`GET /api/evidence/:id/photo` 同源鉴权代理（读私有桶）。登录 / 奖状管理员。
@@ -435,6 +436,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     - **筛选条件与目标对象是「与」的关系**：`evaluateAward` 先跑 Step 1 `rules.filters`（基础筛选），再跑 Step 2 目标匹配。所以"DXCC ID=318（只算中国台）+ 目标=呼号分区 0~9"直接可用（实测：1538 条日志 → 515 条中国台 → 10/10 达标）。
     - `filters[].field` 支持 `band/mode/call/dxcc/state/gridsquare/iota/freq/station_callsign` + **`district`**（2026-09-25 新增，引擎里现算呼号区号，不是 ADIF 字段）。操作符 `eq/neq/contains` 一直有，**`gt`/`lt` 以前只在下拉里、引擎完全没实现（选了等于没选）**，2026-09-25 才补上（两端可转数字按数值比，否则字符串比）。新增筛选字段时若它不是 ADIF 字段，必须在引擎里显式解析，否则会"选了但静默不生效"。
     - 🔴 **同一字段的多个 `eq` 是 OR（2026-09-30 修，提交 `b6325b1`）**：`filters` 里同字段的多个「等于」按**任一命中**处理（如 波段 in {2M, 70CM}、模式 in {SSB, CW, PKT, FM}）；**不同字段之间、以及 `neq`/`contains`/`gt`/`lt` 之间仍是 AND**。此前一律 AND → 「波段=2M」+「波段=70CM」这类**多选**规则恒不成立（一条 QSO 的同一字段不可能等于两个不同值）→ 进度永远 0、零报错。奖状 8「远距离业余卫星通联奖」(SSB/CW/PKT/FM) 与奖状 11「本地人」(2M/70CM) 曾因此判定为 0，已修。两个不同值做 eq AND 在逻辑上必然为假，故改 OR 只修好、不破坏任何合法规则 —— **勿改回 AND**。
+    - 🔴 **提交审核前必须做「规则自检」（2026-09-30 新增，提交 `7814380`）**：`AwardDesigner` 的 step 2 有第 5 个模块「5. 规则自检」，数据源二选一 —— **用我自己的日志**（服务端真实调取该管理员自己的 QSO）/ **虚拟日志**（表格里临时填写，`用完即删`，请求体传入、服务端**不入库**，本地也只存在组件 state）。判定通过 = `eligible === true` **且**规则指纹（`JSON.stringify(rules)`）与自检时一致；否则底部「提交审核」按钮禁用、`saveAward('pending')` 抛明确错误。**规则一改动，旧自检结果自动作废**（防"先跑通再改规则"绕过）。保存草稿不受限制。
     - ⚠️ **收集型 + 勾「必须全收集」时，分数门槛应等于清单条数**（`scoreTargetOf`）：`target_score` 取 `breakdown.total_required` 而不是 `thresholds[].value`。否则用户新建"收集 0~9 区"奖状时阈值默认是 1，进度会显示 `0 / 1`（像通联 1 个就够）而实际必须集齐。计分型 + 全收集时 `value` 仍是分数门槛，另外还要求集齐。
     - 判定引擎另外产出 **`warnings` + `stats`**（`total_qsos` / `basic_filtered` / `target_matched`），进度区与明细页都会展示——凡是"进度是 0"必须在界面上说清是**目标没命中 / 基础筛选滤掉了 / 日志缺字段 / 没有日志**中的哪一种，不能只给一个 0。
 
