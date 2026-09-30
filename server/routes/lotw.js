@@ -100,8 +100,12 @@ const validateReportRange = (from, to) => {
   return null;
 };
 
-export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc }) {
+export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc, logAudit }) {
   const router = express.Router();
+
+  // 全站审计由 server.js 注入；未注入时静默跳过（best-effort，与 oauth.js 同套路）
+  const audit = (req, entry) =>
+    typeof logAudit === 'function' ? logAudit(getDbPool(), req, entry) : Promise.resolve();
 
   const lotwConfig = () => {
     const cfg = getConfig().lotw || {};
@@ -310,8 +314,9 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
       }
 
       const levelName = evaluation.achieved_level.name;
+      // 已撤回的不算「已领取」，允许重新申领（与主路径 /api/awards/:id/apply 保持一致）
       const exists = await dbPool.query(
-        'SELECT id FROM user_awards WHERE user_id=$1 AND award_id=$2 AND level=$3',
+        'SELECT id FROM user_awards WHERE user_id=$1 AND award_id=$2 AND level=$3 AND withdrawn_at IS NULL',
         [req.user.id, awardId, levelName],
       );
       if (exists.rows.length > 0) {
@@ -327,6 +332,23 @@ export function createLotwRouter({ getDbPool, verifyToken, getConfig, lookupDxcc
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [req.user.id, awardId, levelName, evaluation.current_score, serial, award.name || null, award.tracking_id || null],
       );
+      // ★ 审计留痕（2026-10-01 修）：这条「用 LoTW 临时日志申领」的路径此前插完 user_awards
+      //   就直接返回，**没写审计** —— 于是这类申领在「审计日志」里完全查不到
+      //   （用户实测：BH7CNC 领了两张，审计列表零记录）。与主路径同 action `award.apply`，
+      //   额外标 `channel:'lotw'` 便于区分来源。
+      await audit(req, {
+        action: 'award.apply',
+        targetType: 'award',
+        targetId: awardId,
+        detail: {
+          award: award.name,
+          level: levelName,
+          score: evaluation.current_score,
+          serial,
+          channel: 'lotw',
+          source: '临时日志会话',
+        },
+      });
       res.json({ success: true, serial, level: levelName });
     } catch (e) {
       console.error('LoTW apply failed:', e && e.message);

@@ -830,6 +830,8 @@ app.use('/api/lotw', createLotwRouter({
     verifyToken,
     getConfig: () => appConfig,
     lookupDxcc,
+    // ★ 审计必须注入（2026-10-01）：「用临时日志申领奖状」这条路径也要留痕，否则会漏审计
+    logAudit,
 }));
 
 // --- 实物材料（M4 新增）---
