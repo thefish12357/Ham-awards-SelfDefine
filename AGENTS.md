@@ -8,7 +8,11 @@
 > 站内通知（M4.1）、**HamCQ OAuth 登录（M5，已强制 2FA）**、全站审计（M6）、角色升级申请、内测邀请码 + 邀请码溯源、
 > 实物材料同源鉴权代理、奖状「撤回」软删除、**演示实例（compose profile `demo`）**、
 > 安全审计整改（禁 SVG 上传 / 安装接口加固 / 上传 MIME 白名单）、Vite 4 → **6** 依赖升级、
-> **邮件能力**（注册邮箱强制验证 + 自助找回密码 + 腾讯企业邮 SMTP + **站内通知按事件转发邮件**：管理员配「哪些环节发邮件」、用户自助「邮件提醒」开关）。
+> **邮件能力**（注册邮箱强制验证 + 自助找回密码 + 腾讯企业邮 SMTP + **站内通知按事件转发邮件**：管理员配「哪些环节发邮件」、用户自助「邮件提醒」开关）、
+> **「联系我们」公开页 `#/contact`**（对外信箱 `contact@hamglory.top`，站长个人信箱仅作底部备用）、
+> **颁发管理「发布人 → 奖状 → 详情」三级折叠**（含申请人搜搜、命中路径自动展开）、
+> **防白屏三件套**（首屏过渡页 + 入口占位自愈 + 全局 ErrorBoundary，2026-09-30 修「远端打开白屏」）、
+> **线上主站改由 `server.js`(9993) 托管 `dist`**（不再经 Vite dev；**改前端必须 `npm run build`**，见 §4）。
 > 二次开发规划见 **`ROADMAP.md`**（6 项需求的技术方案、DB/API 变更、里程碑）
 > ✅ 许可证：上游已于 2026-09-21 补充 **GPL-3.0**（`LICENSE`，commit `b4773ab Add LICENSE.md`），作者已授权二次开发。
 > GPL-3.0 是**传染性**许可：对外分发本仓库或其衍生作品时，必须同样以 GPL-3.0 授权并提供源码；仅自用/内部使用不受限制。
@@ -32,12 +36,12 @@
 | 前端     | React 18 + **Vite 6**（`^6.4.3` + `@vitejs/plugin-react ^5`） | JSX（**非 TypeScript**）。⚠️ 升到 vite 6 是为修 esbuild 高危（漏洞范围 esbuild ≤0.24.2，vite ≥6.2.0 起用 esbuild ^0.25）；**改依赖必须在 Linux 容器里验证**（见 §7）                                                                                                                                       |
 | 样式     | **Tailwind CSS 3 本地构建**          | 入口 `src/index.css`（`@tailwind` 三条指令），配置 `tailwind.config.cjs` / `postcss.config.cjs`。**必须用 `.cjs` 后缀**，因为 `package.json` 是 `type: module` |
 | 图标     | lucide-react                         |                                                                                                                                                                |
-| 路由     | **轻量 Hash 路由**                   | 无 react-router。`App` 的 `subView` 与 `location.hash` 双向同步（`src/lib/routes.js`），刷新可停留当前页、链接可分享；`adminPath` 仍未被前端使用               |
+| 路由     | **轻量 Hash 路由**                   | 无 react-router。`App` 的 `subView` 与 `location.hash` 双向同步（`src/lib/routes.js`），刷新可停留当前页、链接可分享。**登录后页面**登记 `ALL_ROUTES` + `ROUTES_BY_ROLE`；**公开静态页**登记 `PUBLIC_PAGES`（`#/about`、`#/privacy`、`#/terms`、`#/protocol`、`#/contact`），由 `App` 在登录判断之前拦截；`adminPath` 仍未被前端使用 |
 | 后端     | Express 4 单体（`server.js`）        |                                                                                                                                                                |
 | 数据库   | PostgreSQL（`pg`）                   | ADIF 记录存 JSONB                                                                                                                                              |
 | 对象存储 | MinIO + multer                       | 存奖状背景图                                                                                                                                                   |
 | 认证     | JWT + bcryptjs + TOTP(otplib/qrcode) | 支持 Google Authenticator 2FA。⚠️ **OAuth 登录也必须过 2FA**（见 §10 / §7）                                                                                                                                  |
-| 邮件     | **nodemailer**（腾讯企业邮 SMTP）    | 注册邮箱验证 / 找回密码 /（后续）通知转发邮件；配置与坑见 **§10** |
+| 邮件     | **nodemailer**（腾讯企业邮 SMTP）    | 注册邮箱验证 / 找回密码 / **站内通知按事件转发**（`mailSettings.js` + `notifyEmail.js`）；配置与坑见 **§10** |
 | 运行环境 | Node.js v16+                         | 实测环境 Node v24                                                                                                                                              |
 
 ## 3. 目录结构
@@ -495,6 +499,17 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 31. `MyAwardsView` 的卡片改为按真实布局渲染（有布局时），无布局的老奖状自动退回旧卡片；抽出 `buildAwardRenderData()` 让**卡片与 PDF 共用同一份字段组装**。
 32. **多等级差异（`levelOverrides`）**：`awardLayout.js` 新增 `resolveElementForLevel` / `hasLevelOverride`；`AwardRenderer` 新增 `ignoreLevelOverrides`；`VisualDesigner` 新增「编辑范围」选择器（默认 / 各等级）+ 覆盖标记 + 清除覆盖。`AwardDesigner` 把 `rules.thresholds` 的名称作为 `levels` 传给编辑器。
 
+**G. 邮件通知 / 联系我们 / 白屏加固 / 服务方式（2026-09-30 当天，提交 `5a411ef`→`9b6f912`）**
+> 这一段是"当天最后一轮"的改动清单，细节点到为止；完整规则见 §4、§7 红线、§10。
+
+33. **站内通知 → 邮件转发**：新增 `server/services/mailSettings.js`（11 类事件目录，存 `config.json` 的 `mail` 段）与 `notifyEmail.js`（四道闸 + 5 分钟同内容去重）；`notifyUsers()` 写库成功后调用。接口 `GET/POST /api/admin/mail-settings`、`POST /api/admin/mail-test`、`POST /api/user/notify-settings`；前端新增 `src/pages/MailNotifyView.jsx`（`#/mail_notify`，仅 admin）+ 用户中心「通知设置 → 邮件提醒」开关。
+34. **邮件签名改为给出求助入口**：`emailTemplates.js` 的 `SIGN` 由常量改为函数，统一印出 `SMTP_REPLY_TO`（现 `contact@hamglory.top`）；`no-reply@` 只发不收的说明也写进了页面文案。
+35. **新增「联系我们」公开页**：`src/pages/ContactView.jsx` + `PUBLIC_PAGES['#/contact']`；侧边栏底部 + **5 个公开页页脚** + 关于页小节都挂了入口。**联系方式分两级**：公示的是自有域名对外信箱 `contact@hamglory.top`，站长个人信箱 `bh7csa@163.com` 只在页面最底部小字 + 隐私政策第八条出现。隐私政策新增「八、如何联系我们」，第六条改为可执行的联系方式（对标 HamCQ：联系页只公示 `Contact@hamcq.cn`）。
+36. **防白屏三件套**（用户报「远端打开主站白屏」后定位并修复）：① `App` 的 `view==='loading'` 渲染首屏过渡页（8 秒慢速提示 + 「重新加载」）+ `/api/system-status` **12 秒硬超时**（`AbortController`）→ 回落落地页，localStorage 里坏掉的 `ham_user` 自愈；② `index.html` 的 `#root` 内置首屏占位 `#boot-fallback` + 原生自愈脚本（`script`/`link` 加载失败或 15 秒未挂载 → 显示「重新加载」）——**这是错误边界救不了的那一类**（入口模块没加载时 React 从不挂载）；③ 新增 `src/components/ErrorBoundary.jsx` 并在 `main.jsx` 包住 `<App/>`（渲染期异常不再卸载整树）。
+37. **线上主站改由 `server.js`(9993) 托管 `dist`**：`web` 隧道的 ingress 是 **Cloudflare 云端托管配置**（计划任务的 `--url` 被忽略），已用 `~/.cloudflared/cert.pem` 里的 ARGO TUNNEL TOKEN 调 API 把 `hamglory.top` + catch-all 指到 `http://127.0.0.1:9993`。带来的**新约束**：改前端必须 `npm run build`。`start-local.ps1` 已把 build 纳入启动流程并把自检改为校验「公网返回 dist 而非 dev」；**Vite 开发预览（5173）改为默认不启动**，需要热更新时加 `-WithDev`。
+38. **颁发管理三级折叠**：`GET /api/admin/issued-awards` 新增 `creator_call`（多 join 一次 `users`，别名与申请人的 `u` 区分）；`IssuanceManager` 重写为 发布人（默认展开）→ 奖状（默认折叠）→ 详情行，带关键字搜索（覆盖发布人/奖状名/编号/序列号/申请人/等级，**命中路径自动展开**）、每级计数、全部展开/折叠；`detached` 记录仍走原独立区块 + 一键清理。
+39. **两个顺手修复**：① `UserCenterView` 进页面调用一次 `refreshUser()` —— 否则用户中心的 `user` 来自 localStorage 快照，会出现「明明绑了邮箱却显示未绑定、新加的开关被误禁用」；② `AuditLogsView` 的 `DETAIL_LABELS` 去掉重复的 `level`/`serial` 键（vite 构建告警），并补齐本轮新增动作的中文名与 detail 标签。
+
 ### ★ 邮件 / 账号安全 / 部署红线（2026-09-30 追加，给后续 AI 的硬约束）
 
 **邮件**
@@ -532,6 +547,8 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 ### 已知问题（改动相关代码时留意，勿盲改）
 
+- ★ **防白屏三件套（2026-09-30 落地，详见 §4 / §7 红线「前端样式」与 G 段第 36 条）**：① `App` 的 `view==='loading'` 有**首屏过渡页**（8s 慢提示 + 「重新加载」按钮）+ `/api/system-status` **12s 硬超时**（`AbortController`）→ 否则该请求**挂住**时组件末尾 `return null` → 纯白屏、永不自恢复；② `index.html` 的 `#root` 内置**首屏占位 `#boot-fallback` + 原生自愈脚本**（`script`/`link` 加载失败或 15s 未挂载 → 显示「重新加载」）—— 这是**错误边界救不了的那一类**（入口模块没加载时 React 从不挂载）；③ `src/components/ErrorBoundary.jsx` 包住 `<App/>`（渲染期异常不再卸载整树）。**排查白屏先抓 `.playwright-mcp/console-*.log` 有没有 502**（隧道→源站偶发 502 会让入口模块加载失败）。
+- ⚠️ **`App` 组件末尾是 `return null`**：新增**登录后页面**必须在 `App` 内加渲染分支（`subView === 'xxx'`），并在 `src/lib/routes.js` 登记 `ALL_ROUTES` + `ROUTES_BY_ROLE`；新增**公开页**要登记 `PUBLIC_PAGES` 并在 `App` 登录判断**之前**拦截。漏了任一步，访问该路由会**落到 `return null` → 空白页**（加上面三件套也只是变成「重新加载」兜底，体验差）。
 - ~~`src/main.jsx` 导入 `./App` 而实际文件名是 `app.jsx`~~ → **已修复**（见上表第 4 条）；此坑在 Docker 构建里是致命错误，不要再改回去。
 - ~~`index.html` 引用 `/vite.svg` 但无 `public/` 目录会 404~~ → **已修复**（第 6/11 条）。
 - ~~`adminPath` 未校验、前端也不使用~~ → 仍是**名存实亡**的配置，只是不再误导（见 §7 第 6 条）。
