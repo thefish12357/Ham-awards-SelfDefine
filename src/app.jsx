@@ -2033,6 +2033,8 @@ const IssuanceManager = () => {
 
     const activeList = issuanceList.filter(i => !i.detached);
     const detachedList = issuanceList.filter(i => i.detached);
+    // 已撤回的记录仍留在「有效颁发」表里（台账保留，见后端 /withdraw 的说明），这里单独计数
+    const withdrawnCount = activeList.filter(i => i.withdrawn_at).length;
 
     const handleDeleteIssuance = async (item) => {
         const ok = await confirmDialog({
@@ -2073,7 +2075,7 @@ const IssuanceManager = () => {
 
     /** 表格行（有效 / 已失效 共用一套渲染，只差归属标签与按钮文案） */
     const renderRow = (item) => (
-        <tr key={item.id} className={item.detached ? 'bg-amber-50' : undefined}>
+        <tr key={item.id} className={item.detached ? 'bg-amber-50' : (item.withdrawn_at ? 'bg-red-50' : undefined)}>
             <td className="p-4 text-xs font-mono">{item.id}</td>
             <td className="p-4 font-bold">
                 {item.award_name || '（名称缺失）'}{' '}
@@ -2081,6 +2083,23 @@ const IssuanceManager = () => {
                     <span className="ml-1 text-[11px] font-bold text-amber-700 bg-amber-100 border border-amber-200 px-1.5 py-0.5 rounded">原奖状已删除</span>
                 ) : (
                     <span className="text-xs text-slate-400">({item.tracking_id})</span>
+                )}
+                {/* 用户自助撤回（2026-09-30）：凭证已失效、但台账行保留 ——
+                    这里是管理员唯一能"一眼看到它已被撤回"的地方（校验页也会 404，「我的奖状」里已隐藏）。
+                    ⚠️ 用 red 系而不是 rose 系：深色主题的映射只覆盖 red/amber（见 src/index.css），
+                        rose 在深色下不会跟着变色，会变成深红字落在暗底上。 */}
+                {item.withdrawn_at && (
+                    <span
+                        className="ml-1 align-middle text-[11px] font-bold text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded"
+                        title={`撤回时间：${new Date(item.withdrawn_at).toLocaleString()}\n撤回理由：${item.withdraw_reason || '（未填写）'}`}
+                    >
+                        已撤回
+                    </span>
+                )}
+                {item.withdrawn_at && item.withdraw_reason && (
+                    <div className="mt-1 max-w-[260px] truncate text-[11px] font-normal text-slate-500" title={item.withdraw_reason}>
+                        撤回理由：{item.withdraw_reason}
+                    </div>
                 )}
             </td>
             <td className="p-4 font-mono text-sm">{item.serial_number}</td>
@@ -2135,6 +2154,12 @@ const IssuanceManager = () => {
                 <div className="flex items-center gap-2">
                     <h4 className="font-bold text-slate-700">有效颁发</h4>
                     <span className="text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{activeList.length}</span>
+                    {/* 已撤回的仍留在本表（台账保留），单独给个计数，免得管理员以为它们还有效 */}
+                    {withdrawnCount > 0 && (
+                        <span className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">
+                            其中已撤回 {withdrawnCount}
+                        </span>
+                    )}
                 </div>
                 <div className="bg-white rounded-2xl shadow-sm border overflow-hidden">
                     {/* 窄屏表格横向滚动：见 admin_overview 同款注释 */}
