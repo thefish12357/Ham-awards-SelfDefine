@@ -88,18 +88,44 @@ export function evaluateAward({ rules, qsos = [], claimedLevels = [], includeQso
     // 两者是"与"的关系，所以可以这样组合：「DXCC ID = 318（只算中国台）」+
     // 「目标对象类型 = 呼号分区 0~9」= 收集中国的 0~9 区。
     if (Array.isArray(rules.filters)) {
-      for (const f of rules.filters) {
-        if (!f.field || !f.value || f.value === 'ANY') continue;
+      // 读取某条件对应的日志字段值。
+      // 「呼号分区」不是 ADIF 字段，得现算 —— 与目标类型 district 共用同一套抽取规则，
+      // 否则会出现"目标按分区算、筛选按 undefined 比"的错位。
+      const readFilterValue = (f) => {
         const fieldKey = String(f.field).toLowerCase();
-        // 「呼号分区」不是 ADIF 字段，得现算 —— 与目标类型 district 共用同一套抽取规则，
-        // 否则会出现"目标按分区算、筛选按 undefined 比"的错位。
         const rawVal =
           fieldKey === 'district'
             ? districtOfCallsign(q.callsign || raw.call)
             : (raw[fieldKey] ?? q[fieldKey] ?? '');
-        const val = String(rawVal).toUpperCase();
+        return String(rawVal).toUpperCase();
+      };
+
+      // ★ 同字段的多个「等于」按 **OR** 处理（2026-09-30 修）。
+      //   此前所有条件一律 AND → 一条 QSO 的某字段不可能同时等于两个不同值，
+      //   于是「波段 = 2M」+「波段 = 70CM」这类**多选**规则恒不成立（进度永远 0，
+      //   且无任何报警）。注意：两个不同值做 eq AND 在逻辑上必然为假，
+      //   所以任何合法规则都不可能依赖它 —— 改为 OR 只会修好这类规则，不会破坏既有判定。
+      //   其它操作符（neq/contains/gt/lt）之间、以及不同字段之间仍是 AND。
+      const eqGroups = new Map(); // fieldKey -> 允许值数组（同字段多个 eq = 可任选其一）
+      const andFilters = [];
+      for (const f of rules.filters) {
+        if (!f.field || !f.value || f.value === 'ANY') continue;
+        if (f.operator === 'eq') {
+          const k = String(f.field).toLowerCase();
+          if (!eqGroups.has(k)) eqGroups.set(k, []);
+          eqGroups.get(k).push(String(f.value).toUpperCase());
+        } else {
+          andFilters.push(f);
+        }
+      }
+      // OR 组：字段值命中该字段的任一允许值即通过
+      for (const [fieldKey, allowed] of eqGroups) {
+        if (!allowed.includes(readFilterValue({ field: fieldKey }))) return false;
+      }
+      // 其余条件：逐条 AND
+      for (const f of andFilters) {
+        const val = readFilterValue(f);
         const targetVal = String(f.value).toUpperCase();
-        if (f.operator === 'eq' && val !== targetVal) return false;
         if (f.operator === 'neq' && val === targetVal) return false;
         if (f.operator === 'contains' && !val.includes(targetVal)) return false;
         // 大于/小于：以前下拉里有「大于」但引擎**完全没实现** → 选了等于没选（静默失效）。
