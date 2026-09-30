@@ -814,6 +814,24 @@ app.use('/api/auth/oauth', createOauthRouter({
 
 // --- 基础 & 认证 ---
 
+/**
+ * 对外可访问的站点基址（用于二维码、校验链接这类**会印在纸上 / 离开浏览器**的 URL）。
+ * 优先级：`PUBLIC_BASE_URL`（.env，生产显式写死公网域名）
+ *        → `OAUTH_REDIRECT_URI` 的 origin（同一站点的公网地址）
+ *        → 最后才回落到本次请求的 protocol + host。
+ * ⚠️ 不能拿 `req.get('host')` 当主方案：本机直连时它是 `http://localhost:9993`，
+ *    印到奖状二维码上就废了（2026-09-30 用户反馈「扫码出来还是 localhost:9993」）。
+ */
+const publicBaseUrl = (req) => {
+    const explicit = String(process.env.PUBLIC_BASE_URL || '').trim().replace(/\/+$/, '');
+    if (explicit) return explicit;
+    const redirectUri = (appConfig.oauth && appConfig.oauth.redirectUri) || '';
+    if (redirectUri) {
+        try { return new URL(redirectUri).origin; } catch { /* 配置写坏了就继续回落 */ }
+    }
+    return `${req.protocol}://${req.get('host')}`;
+};
+
 app.get('/api/system-status', (req, res) => {
     const demoMode = process.env.DEMO_MODE === 'true';
     res.json({ 
@@ -828,6 +846,8 @@ app.get('/api/system-status', (req, res) => {
         demoUrl: demoMode ? '' : (process.env.DEMO_URL || ''),
         demoUser: demoMode ? (process.env.DEMO_USER || '') : '',
         demoPass: demoMode ? (process.env.DEMO_PASS || '') : '',
+        // 对外站点地址：前端用它拼「校验链接」等会离开浏览器的 URL（本机开发时不致于印成 localhost）
+        publicBaseUrl: publicBaseUrl(req),
     });
 });
 
@@ -2068,11 +2088,15 @@ app.get('/api/verify/:serial', async (req, res) => {
 app.get('/api/verify/:serial/qr', async (req, res) => {
     const serial = String(req.params.serial || '').trim();
     if (!/^\d{6,32}$/.test(serial)) return res.status(400).end();
-    const target = `${req.protocol}://${req.get('host')}/#/verify/${serial}`;
+    // 用「对外站点地址」而不是本次请求的 host：本机直连时 host 是 localhost:9993，
+    // 扫出来的链接就废了（2026-09-30 用户反馈）。
+    const target = `${publicBaseUrl(req)}/#/verify/${serial}`;
     try {
         const buf = await qrcode.toBuffer(target, { type: 'png', width: 600, margin: 1, errorCorrectionLevel: 'M' });
         res.setHeader('Content-Type', 'image/png');
         res.setHeader('Cache-Control', 'public, max-age=86400');
+        // 便于自测/排查：把二维码实际编码的内容回显在响应头（这个地址本身公开，不含隐私）
+        res.setHeader('X-Verify-Url', target);
         res.send(buf);
     } catch (e) {
         console.error('qr failed:', e.message);

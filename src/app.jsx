@@ -597,6 +597,15 @@ const LogMatchMatrix = ({ qsos, award, checkResult, onGoLogbook }) => {
     );
 };
 
+/**
+ * 对外站点基址（模块级缓存，由 /api/system-status 的 publicBaseUrl 填充）。
+ * 为什么不能直接用 window.location.origin：本机打开时它是 http://localhost:9993，
+ * 而「校验链接」是要印在奖状上、由别人扫码访问的 —— 印成 localhost 就废了
+ * （2026-09-30 用户反馈「扫码还是 localhost:9993」）。
+ * 服务端同一套优先级见 server.js 的 publicBaseUrl()。
+ */
+let PUBLIC_BASE = '';
+
 /** 组装奖状渲染/导出所需的动态字段（卡片展示与 PDF 导出共用，避免两处不一致） */
 const buildAwardRenderData = (ua, callsign) => ({
     callsign: callsign || '',
@@ -606,7 +615,8 @@ const buildAwardRenderData = (ua, callsign) => ({
     issueDate: ua.issued_at ? new Date(ua.issued_at).toLocaleDateString('zh-CN') : '',
     score: ua.score_snapshot ?? '',
     issuer: ua.issuer || ua.tracking_id || '',
-    verifyUrl: `${window.location.origin}/#/verify/${ua.serial_number || ''}`,
+    // 优先用服务端给的对外地址（.env 的 PUBLIC_BASE_URL）；拿不到才退回当前 origin
+    verifyUrl: `${PUBLIC_BASE || window.location.origin}/#/verify/${ua.serial_number || ''}`,
     description: ua.description || '',
 });
 
@@ -3582,6 +3592,7 @@ export default function App() {
       .then((r) => r.json())
       .then((d) => {
         setRequireInvite(!!d.requireInvite);
+        PUBLIC_BASE = String(d.publicBaseUrl || '').replace(/\/+$/, '');
         setDemoUrl(d.demoUrl || '');
         setDemoMode(!!d.demoMode);
         // 把 demo 状态交给统一请求层：demo 下写操作直接跳主站登录页
@@ -3635,12 +3646,27 @@ export default function App() {
       };
       poll();
       const t = setInterval(poll, 10000);
-      return () => clearInterval(t);
+      // 切回标签页 / 窗口重新获得焦点时立刻补一次：否则「刚回来还要等最多 10 秒才亮红点」，
+      // 观感上就是「不实时」。
+      const onWake = () => { if (document.visibilityState === 'visible') poll(); };
+      window.addEventListener('focus', onWake);
+      document.addEventListener('visibilitychange', onWake);
+      return () => {
+          clearInterval(t);
+          window.removeEventListener('focus', onWake);
+          document.removeEventListener('visibilitychange', onWake);
+      };
   }, [view, user]);
 
   /**
    * 通知类型 → 侧边栏菜单：点进对应页面就把该类型的未读清掉（红点消失）。
-   * 没在表里的类型（如"审核通过/驳回"这类**结果通知给申请人自己**的）只出现在铃铛里。
+   * ★ 2026-09-30 补：以前只映射了管理员侧菜单，于是**普通用户永远看不到侧栏红点**
+   *   —— 他能收到的 `evidence_approved/rejected`、`role_approved/rejected` 全都不在表里，
+   *   只出现在铃铛里（用户反馈「普通用户状态下通知红点不显示」即此）。
+   *   现在按语义挂到用户自己的页面：
+   *     · 材料审核结果 → 「我的奖状」（申请进度在这里看）
+   *     · 角色升级结果 → 「用户中心」（申请入口与状态在这里）
+   * 仍未映射的类型只出现在铃铛里。
    */
   const MENU_NOTIF_TYPES = {
       admin_audit: ['award_pending'],
@@ -3648,6 +3674,8 @@ export default function App() {
       drafts_group: ['award_returned'],
       evidence_audit: ['evidence_pending'],
       users: ['role_request'],
+      my_awards: ['evidence_approved', 'evidence_rejected'],
+      userCenter: ['role_approved', 'role_rejected'],
   };
 
   /** 某菜单项的未读数（未映射的类型返回 0，不显示红点） */
@@ -4114,7 +4142,7 @@ export default function App() {
           { id: 'awards', label: '奖状大厅', icon: Award, show: true },
           
           // 日志与申请（所有角色都可用：管理员/审核员同样能申请奖状）
-          { id: 'my_awards', label: '我的奖状', icon: CheckCircle, show: true },
+          { id: 'my_awards', label: '我的奖状', icon: CheckCircle, show: true, notification: notifDot(['evidence_approved', 'evidence_rejected']) },
           { id: 'logbook', label: '日志上传', icon: Upload, show: true }, 
           { id: 'lotw_import', label: 'LoTW 直连', icon: Globe, show: true },
           { id: 'all_logs', label: '全部日志', icon: List, show: true }, 
@@ -4148,7 +4176,7 @@ export default function App() {
           { id: 'admin_logs', label: '审计日志', icon: ShieldCheck, show: user.role === 'admin', group: '后台管理' },
           
           // Common Bottom
-          { id: 'userCenter', label: '用户中心', icon: User, show: true },
+          { id: 'userCenter', label: '用户中心', icon: User, show: true, notification: notifDot(['role_approved', 'role_rejected']) },
       ].filter(i => i.show);
 
       return (
