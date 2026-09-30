@@ -1,8 +1,13 @@
 import React from 'react';
 import { Award, ShieldCheck, Database, KeyRound, Share2, Lock, UserCheck, RefreshCw, Mail, Sun, Moon } from 'lucide-react';
 
-/** 对外联系邮箱（个人站长邮箱；改这里同时要改 pages/ContactView.jsx 与 AboutView.jsx） */
-export const CONTACT_EMAIL = 'bh7csa@163.com';
+/**
+ * 对外联系邮箱（公示）= 自有域名的**对外联系信箱**（公共邮箱，长期有效、不随人员变动失效）。
+ * ⚠️ 改邮箱要同步三处：本常量 + `pages/ContactView.jsx` 的 `MAIL` + `pages/AboutView.jsx` 文案。
+ */
+export const CONTACT_EMAIL = 'contact@hamglory.top';
+/** 站长信箱（个人、备用）：不放在明面，仅作必要时的直达渠道（对标 HamCQ 隐私政策里的站长个人信箱） */
+export const ADMIN_MAILBOX = 'bh7csa@163.com';
 
 /**
  * 隐私政策页（公开）
@@ -76,10 +81,11 @@ const SECTIONS = [
     icon: Mail,
     title: '八、如何联系我们',
     items: [
-      `账号与数据相关请求（访问、更正、删除、注销、导出）请发送邮件至站长邮箱 ${CONTACT_EMAIL}。`,
-      '内容举报、处理结果申诉、使用故障与功能建议，也可通过该邮箱联系；一般 1–3 个工作日内回复。',
+      `账号与数据相关请求（访问、更正、删除、注销、导出）请发送邮件至本站对外联系信箱 ${CONTACT_EMAIL}。`,
+      '内容举报、处理结果申诉、使用故障与功能建议，同样通过该信箱受理；一般 1–3 个工作日内回复。',
+      `该信箱为本站专属（自有域名），长期有效、不随人员变动失效；如长时间未收到回复，可另写信至站长信箱 ${ADMIN_MAILBOX}。`,
       '受理范围与响应说明另见「联系我们」页面（页脚可进入）。',
-      '系统邮件由 no-reply@hamglory.top 自动发出，该地址只发不收，直接回复不会有人看到，请改用上面的邮箱。',
+      '系统邮件由 no-reply@hamglory.top 自动发出，该地址只发不收，直接回复不会有人看到，请改用上面的信箱。',
     ],
   },
 ];
@@ -148,7 +154,7 @@ export default function PrivacyView({ onBack, theme = 'dark', onToggleTheme }) {
           </div>
 
           <div className="mt-12 rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-sm leading-relaxed text-slate-400 backdrop-blur">
-            如对本政策有任何疑问，或需行使上述权利，请写信至站长邮箱
+            如对本政策有任何疑问，或需行使上述权利，请写信至本站对外联系信箱
             <span className="mx-1 font-mono text-slate-200">{CONTACT_EMAIL}</span>
             ，或见
             <a href="#/contact" className="mx-1 text-cyan-300 underline decoration-dotted underline-offset-2">联系我们</a>

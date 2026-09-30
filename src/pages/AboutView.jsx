@@ -134,8 +134,8 @@ export default function AboutView({ onBack, theme = 'dark', onToggleTheme }) {
               <p>
                 问题反馈、账号与数据请求（注销 / 导出）、举报与申诉，详见
                 <a href="#/contact" className="mx-1 text-cyan-300 underline decoration-dotted underline-offset-2">「联系我们」</a>
-                页面，也可直接写信至站长邮箱
-                <span className="mx-1 font-mono text-slate-200">bh7csa@163.com</span>。
+                页面，或直接写信至对外联系信箱
+                <span className="mx-1 font-mono text-slate-200">contact@hamglory.top</span>。
               </p>
             </div>
           </section>

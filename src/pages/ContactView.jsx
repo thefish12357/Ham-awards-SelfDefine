@@ -28,12 +28,23 @@ import {
  *   3. 后续「举报 / 申诉 / 第三方对接」也要有落点，一页集中收。
  * 「关于」页里只放一个指过来的入口，避免介绍性内容与联系方式混在一起。
  *
- * ⚠️ 站长邮箱是**个人邮箱**（不像 HamCQ 有自有域名邮箱）。页面里明文展示 + `mailto:`
- *    可点，同时给「复制」按钮 —— 纯 SPA，邮箱字符串只存在于 JS 产物里，不落在静态 HTML，
- *    常规爬虫抓不到（够用，不做过度混淆）。
+ * ⚠️ 联系方式分两级（2026-09-30 用户指正后调整，对标 HamCQ）：
+ *    主 = 自有域名的**对外联系信箱** `contact@hamglory.top`（公示、长期有效、系统邮件回信也进它）；
+ *    备 = **站长个人信箱**只在**页面最底部小字** + 隐私政策第八条出现，不放明面。
+ *    页面里明文展示 + `mailto:` 可点 + 「复制」按钮 —— 纯 SPA，邮箱字符串只存在于 JS 产物里，
+ *    不落在静态 HTML，常规爬虫抓不到（够用，不做过度混淆）。
  */
 
-const MAIL = 'bh7csa@163.com';
+/**
+ * ★ 联系方式分两级（对标 HamCQ：联系页只公示自有域名总信箱 `Contact@hamcq.cn`，
+ *   站长个人邮箱只在隐私政策里作为「站长信箱」出现，不放在明面）：
+ *   1. 对外联系信箱（主、公示）= 自有域名的公共邮箱：长期有效、不随人员变动失效，
+ *      系统邮件的「回信地址」也指向它；
+ *   2. 站长信箱（个人、备用）= 只在页面最底部小字出现 + 隐私政策第八条里写明，
+ *      作为「总信箱长时间无回复」时的直达渠道。
+ */
+const MAIL = 'contact@hamglory.top';
+const ADMIN_MAILBOX = 'bh7csa@163.com';
 
 /** 受理范围：按用途分类，比一句"有问题找我们"有用得多 */
 const TOPICS = [
@@ -115,13 +126,13 @@ export default function ContactView({ onBack, theme = 'dark', onToggleTheme }) {
           <h1 className="text-3xl font-black tracking-tight md:text-4xl">联系我们</h1>
           <p className="mt-5 max-w-3xl leading-relaxed text-slate-400">
             HAM AWARDS 由业余无线电爱好者个人建立与维护，用于奖状申请、审核与真伪校验。
-            使用中遇到问题、需要行使个人数据权利，或有举报与建议，都可以直接给站长写信。
+            使用中遇到问题、需要行使个人数据权利，或有举报与建议，都可以直接给我们写信。
           </p>
 
           {/* 邮箱主卡 */}
           <section className="mt-10 rounded-2xl border border-cyan-400/20 bg-cyan-400/[0.04] p-6 backdrop-blur">
             <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-cyan-300">
-              <Mail size={14} /> 站长邮箱
+              <Mail size={14} /> 对外联系信箱
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <a
@@ -139,7 +150,11 @@ export default function ContactView({ onBack, theme = 'dark', onToggleTheme }) {
                 {copied ? '已复制' : '复制'}
               </button>
             </div>
-            <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-slate-400">
+            <p className="mt-4 text-xs leading-relaxed text-slate-400">
+              本站专属的对外信箱（自有域名），长期有效、不随人员变动失效；
+              系统通知邮件的「回信地址」也指向这里，在邮件客户端点「回复」即可送达。
+            </p>
+            <p className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-slate-400">
               <Clock size={14} className="mt-0.5 shrink-0 text-slate-500" />
               本站为个人维护，一般 <b className="text-slate-300">1–3 个工作日</b>内回复；
               为便于定位问题，来信请尽量附上<b className="text-slate-300">呼号</b>与相关
@@ -177,8 +192,8 @@ export default function ContactView({ onBack, theme = 'dark', onToggleTheme }) {
                 自动发出，该地址<b className="text-slate-200">只发不收</b>，直接回复不会有人看到。
               </p>
               <p>
-                需要人工答复时，请直接写信到上面的<b className="text-slate-200">站长邮箱</b>。
-                系统邮件的「回信地址」是本站的对外信箱（会统一收取），但处理<b className="text-slate-200">不如给站长邮箱直接来信及时</b>。
+                需要人工答复时，请写信到上面的<b className="text-slate-200">对外联系信箱</b>
+                （系统邮件的回信地址同样是它，点「回复」即可）。
               </p>
             </div>
           </section>
@@ -206,6 +221,11 @@ export default function ContactView({ onBack, theme = 'dark', onToggleTheme }) {
                 <ExternalLink size={15} /> 开源仓库（Issue / 源码）
               </a>
             </div>
+            {/* 站长个人信箱只在最底部小字出现（对标 HamCQ：个人信箱不放在明面） */}
+            <p className="mt-4 text-[11px] leading-relaxed text-slate-500">
+              站长信箱（个人备用，仅在上述信箱长时间无回复时使用）：
+              <span className="ml-1 font-mono">{ADMIN_MAILBOX}</span>
+            </p>
             <p className="mt-4 flex items-start gap-2 text-xs leading-relaxed text-slate-500">
               <ShieldCheck size={14} className="mt-0.5 shrink-0" />
               涉及个人数据处理的请求，处理方式与范围见
