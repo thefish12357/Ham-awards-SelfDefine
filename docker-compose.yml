@@ -103,6 +103,16 @@ services:
       OAUTH_USERINFO_URL: ${OAUTH_USERINFO_URL:-}
       OAUTH_SCOPE: ${OAUTH_SCOPE:-}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI:-}
+      # SMTP（腾讯企业邮 / 企业微信邮箱）：发信账号 + 客户端授权码。
+      # ⚠️ 本服务**没有 env_file**，变量必须在这里显式列出，否则容器里读不到（本地裸跑无此问题）。
+      SMTP_ENABLED: ${SMTP_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_SECURE: ${SMTP_SECURE:-true}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-}
+      SMTP_REPLY_TO: ${SMTP_REPLY_TO:-}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - appdata:/data
@@ -251,6 +261,9 @@ services:
       SKIP_CREDENTIAL_CHECKS: "true"
       DEMO_USER: ${DEMO_USER:-DEMO}
       DEMO_PASS: ${DEMO_USER_PASSWORD:-demo123456}
+      # 演示实例**禁止真实发信**：既避免刷爆企业邮配额，也避免把测试邮件发给真人。
+      # （代码里另有 DEMO_MODE 兜底判断，这里是第二道闸）
+      SMTP_ENABLED: "false"
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - demoappdata:/data

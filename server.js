@@ -38,6 +38,10 @@ import { createAuditRouter, logAudit } from './server/services/audit.js';
 import { INVITE_TABLE_SQL, consumeInviteCode, genInviteCode, inviteError, isInviteRequired } from './server/services/invites.js';
 // 邮箱规范化/校验（注册与 OAuth 绑定共用同一套规则）
 import { normalizeEmail, isEmailTaken } from './server/services/email.js';
+// 邮件发送 + 一次性令牌 + 正文模板（注册邮箱验证 / 找回密码，2026-09-30）
+import { enqueueMail, mailerStatus } from './server/services/mailer.js';
+import { PURPOSE as EMAIL_PURPOSE, issueEmailToken, consumeEmailToken, revokeEmailTokens } from './server/services/emailTokens.js';
+import { verifyEmailTemplate, resetPasswordTemplate } from './server/services/emailTemplates.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -418,6 +422,37 @@ async function upgradeSchema() {
     if (!userColNames.includes('status')) await client.query("ALTER TABLE users ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'active'");
     await client.query("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL");
     await client.query("CREATE UNIQUE INDEX IF NOT EXISTS users_oauth_uniq ON users(oauth_provider, oauth_sub) WHERE oauth_provider IS NOT NULL");
+
+    // 邮箱验证（2026-09-30）：邮箱从「可选联系方式」升级为**登录门槛** —— 注册必须填邮箱，
+    // 且点了邮件里的验证链接才能登录（见 /api/auth/login 的 EMAIL_NOT_VERIFIED 分支）。
+    // 🔴 存量账号必须一次性回填为「已验证」，否则上线瞬间全员被拦在门外（先加可空列 →
+    //    回填 NULL → 再补 NOT NULL DEFAULT FALSE；顺序不能反，且**可重复执行**：
+    //    新账号写入时 never NULL，所以后续启动这条 UPDATE 不会影响任何人）。
+    if (!userColNames.includes('email_verified')) await client.query('ALTER TABLE users ADD COLUMN email_verified BOOLEAN');
+    if (!userColNames.includes('email_verified_at')) await client.query('ALTER TABLE users ADD COLUMN email_verified_at TIMESTAMP');
+    await client.query('UPDATE users SET email_verified = TRUE, email_verified_at = COALESCE(email_verified_at, NOW()) WHERE email_verified IS NULL');
+    await client.query('ALTER TABLE users ALTER COLUMN email_verified SET DEFAULT FALSE');
+    await client.query('ALTER TABLE users ALTER COLUMN email_verified SET NOT NULL');
+    // 用户级「邮件提醒」开关（默认关，用户自己在用户中心打开；
+    // 至于「哪些事件才发邮件」由系统管理员配置 —— 见后续的通知转发设置）
+    if (!userColNames.includes('email_notify')) await client.query('ALTER TABLE users ADD COLUMN email_notify BOOLEAN NOT NULL DEFAULT FALSE');
+
+    // 邮件一次性令牌：验证邮箱 / 重置密码共用一张表（靠 purpose 区分）。
+    // ⚠️ 只存 sha256 摘要，原文只出现在邮件链接里；used_at 非空即已消费。
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_tokens (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        email VARCHAR(254),
+        purpose VARCHAR(32) NOT NULL,
+        token_hash CHAR(64) NOT NULL,
+        expires_at TIMESTAMP NOT NULL,
+        used_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS email_tokens_hash_idx ON email_tokens(token_hash)');
+    await client.query('CREATE INDEX IF NOT EXISTS email_tokens_user_idx ON email_tokens(user_id, purpose)');
 
     // QSO 表
     await client.query(`
@@ -971,6 +1006,18 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
             return res.status(401).json({ error: 'AUTH_FAILED', message: '密码错误' });
         }
 
+        // 强制邮箱验证（2026-09-30）：未验证就不给 JWT。
+        // ★ 放在 2FA 之前：没验证的人是"账号没生效"，不该让他白刷两步验证码（也省得 2FA 失败计数被误加）。
+        //   ⚠️ 前端要能处理 403 EMAIL_NOT_VERIFIED：给「重发验证邮件」的入口（见 /api/auth/resend-verify）。
+        if (user.email_verified === false) {
+            await logAudit(dbPool, req, { action: 'auth.login_blocked', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, reason: 'EMAIL_NOT_VERIFIED' } });
+            return res.status(403).json({
+                error: 'EMAIL_NOT_VERIFIED',
+                message: '邮箱尚未验证：请到注册时填写的邮箱里点验证链接',
+                email: user.email || null,
+            });
+        }
+
         // Removed role guard to allow merged login
         // if (loginType === 'admin' && user.role === 'user') { ... }
 
@@ -996,6 +1043,8 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
     //   也避免与 HamCQ 带过来的邮箱撞车（详见 server/services/email.js 的说明）。
     const email = normalizeEmail(req.body.email);
     if (email === '') return res.status(400).json({ error: 'INVALID_EMAIL', message: '邮箱格式不正确' });
+    // ★ 强制验证（2026-09-30）：邮箱从「可选」变「必填」—— 注册后要点邮件里的链接才能登录。
+    if (!email) return res.status(400).json({ error: 'EMAIL_REQUIRED', message: '注册需要填写邮箱（用于验证身份与找回密码）' });
     try {
         // 先查重再消费邀请码：否则撞呼号时会把码白白用掉一次
         const dup = await dbPool.query('SELECT id FROM users WHERE callsign = $1', [callsignUp]);
@@ -1038,11 +1087,113 @@ app.post('/api/auth/register', loginLimiter, async (req, res) => {
                 detail: { callsign: callsignUp.slice(0, 32), channel: 'register' },
             });
         }
-        res.json({ success: true });
+        // 发验证邮件（**入队**，不阻塞响应）。没配 SMTP 或演示站时 mailer 会跳过并记一行日志，
+        // 注册本身照常成功 —— 前端只需提示"去邮箱点链接"。
+        const mailSent = await sendVerifyEmail(req, { id: ins.rows[0]?.id, callsign: callsignUp, email });
+        res.json({ success: true, needVerify: true, email, mailSent });
     } catch (e) {
         if (e.code === '23505') res.status(400).json({ error: 'EXISTS', message: '呼号已被注册' });
         else res.status(500).json({ error: 'ERROR', message: e.message });
     }
+});
+
+// --- 邮箱验证 & 找回密码（2026-09-30）---
+// 设计要点：
+//   · 邮箱验证是**登录门槛**：注册后必须点链接才能登录（见 /api/auth/login 的 EMAIL_NOT_VERIFIED）。
+//   · 找回密码**防枚举**：不论邮箱是否存在、账号是否被禁用，一律回同一句文案；
+//     真实情况（存在/不存在）只写审计日志 —— 否则这个接口会变成「批量探测哪些邮箱注册过本站」的工具。
+//   · 令牌只存 sha256 摘要、一次性、带有效期（验证 24h / 重置 30min），实现见 server/services/emailTokens.js。
+
+/** 令牌消费失败的统一响应（把内部原因转成用户能懂的话） */
+const emailTokenErrBody = (reason) => {
+    const map = {
+        USED: { status: 400, body: { error: 'TOKEN_USED', message: '该链接已经用过了，请重新获取' } },
+        EXPIRED: { status: 400, body: { error: 'TOKEN_EXPIRED', message: '链接已过期，请重新获取' } },
+        NOT_FOUND: { status: 400, body: { error: 'TOKEN_INVALID', message: '链接无效，请重新获取' } },
+    };
+    return map[reason] || map.NOT_FOUND;
+};
+
+/** 生成并投递一封邮箱验证信；返回是否真的投出去了（没配 SMTP 时是 false） */
+async function sendVerifyEmail(req, { id, callsign, email }) {
+    if (!id || !email) return false;
+    const token = await issueEmailToken(dbPool, { userId: id, email, purpose: EMAIL_PURPOSE.VERIFY_EMAIL });
+    const link = `${publicBaseUrl(req)}/#/verify-email?token=${token}`;
+    const r = await enqueueMail({ to: email, ...verifyEmailTemplate({ callsign, link }) });
+    return !!r?.ok;
+}
+
+/** 点验证链接后由前端调用（链接形如 `#/verify-email?token=…`） */
+app.post('/api/auth/verify-email', async (req, res) => {
+    const token = String((req.body || {}).token || '').trim();
+    try {
+        const r = await consumeEmailToken(dbPool, { token, purpose: EMAIL_PURPOSE.VERIFY_EMAIL });
+        if (!r.ok) { const e = emailTokenErrBody(r.reason); return res.status(e.status).json(e.body); }
+        const u = await dbPool.query('SELECT id, callsign, email FROM users WHERE id=$1', [r.row.user_id]);
+        const user = u.rows[0];
+        if (!user) return res.status(400).json({ error: 'USER_NOT_FOUND', message: '账号不存在' });
+        await dbPool.query('UPDATE users SET email_verified=TRUE, email_verified_at=NOW() WHERE id=$1', [user.id]);
+        await logAudit(dbPool, req, { action: 'user.email_verified', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, email: user.email } });
+        res.json({ success: true, callsign: user.callsign, email: user.email });
+    } catch (e) { res.status(500).json({ error: 'SERVER_ERROR', message: e.message }); }
+});
+
+/** 重发验证邮件（登录页「没收到？重发」用；同样防枚举，一律同一句回复） */
+app.post('/api/auth/resend-verify', loginLimiter, async (req, res) => {
+    const generic = { success: true, message: '如果该账号存在且邮箱尚未验证，验证邮件已重新发送' };
+    try {
+        const callsign = String((req.body || {}).callsign || '').toUpperCase().trim();
+        if (!callsign) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少呼号' });
+        const r = await dbPool.query('SELECT id, callsign, email, email_verified, status FROM users WHERE callsign=$1', [callsign]);
+        const user = r.rows[0];
+        if (user && user.email && user.email_verified === false && user.status !== 'disabled') {
+            await sendVerifyEmail(req, user);
+            await logAudit(dbPool, req, { action: 'user.email_verify_resend', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, email: user.email } });
+        }
+        res.json(generic);
+    } catch (e) { res.json(generic); }
+});
+
+/** 忘记密码：给已绑定邮箱的账号发重置链接 */
+app.post('/api/auth/forgot-password', loginLimiter, async (req, res) => {
+    const generic = { success: true, message: '如果该邮箱已绑定账号，我们已发送重置链接（30 分钟内有效）' };
+    try {
+        const email = normalizeEmail((req.body || {}).email);
+        if (email === '') return res.status(400).json({ error: 'INVALID_EMAIL', message: '邮箱格式不正确' });
+        const r = await dbPool.query('SELECT id, callsign, email, status FROM users WHERE lower(email)=lower($1)', [email]);
+        const user = r.rows[0];
+        if (user && user.status !== 'disabled') {
+            const token = await issueEmailToken(dbPool, { userId: user.id, email: user.email, purpose: EMAIL_PURPOSE.RESET_PASSWORD });
+            const link = `${publicBaseUrl(req)}/#/reset-password?token=${token}`;
+            enqueueMail({ to: user.email, ...resetPasswordTemplate({ callsign: user.callsign, link }) });
+            await logAudit(dbPool, req, { action: 'auth.password_reset_request', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, email: user.email } });
+        } else {
+            // 记下"这个邮箱没账号"，便于发现扫号行为，但**不告诉客户端**
+            await logAudit(dbPool, req, { action: 'auth.password_reset_request', detail: { email, found: false } });
+        }
+        res.json(generic);
+    } catch (e) { res.json(generic); }
+});
+
+/** 重置密码（页面 `#/reset-password?token=…` 提交新密码） */
+app.post('/api/auth/reset-password', loginLimiter, async (req, res) => {
+    const { token, password } = req.body || {};
+    const pwd = String(password || '');
+    // 服务端必须自己兜住强度：这是**匿名入口**，不能只靠前端校验
+    if (pwd.length < 8) return res.status(400).json({ error: 'WEAK_PASSWORD', message: '新密码至少 8 位' });
+    try {
+        const r = await consumeEmailToken(dbPool, { token, purpose: EMAIL_PURPOSE.RESET_PASSWORD });
+        if (!r.ok) { const e = emailTokenErrBody(r.reason); return res.status(e.status).json(e.body); }
+        const u = await dbPool.query('SELECT id, callsign FROM users WHERE id=$1', [r.row.user_id]);
+        const user = u.rows[0];
+        if (!user) return res.status(400).json({ error: 'USER_NOT_FOUND', message: '账号不存在' });
+        const hash = await bcrypt.hash(pwd, 10);
+        // token_version +1：改密后**其它设备上的旧 JWT 立即失效**（与用户中心改密同一策略）
+        await dbPool.query('UPDATE users SET password_hash=$1, token_version=token_version+1 WHERE id=$2', [hash, user.id]);
+        await revokeEmailTokens(dbPool, { userId: user.id, purpose: EMAIL_PURPOSE.RESET_PASSWORD });
+        await logAudit(dbPool, req, { action: 'user.password_reset', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign } });
+        res.json({ success: true, callsign: user.callsign });
+    } catch (e) { res.status(500).json({ error: 'SERVER_ERROR', message: e.message }); }
 });
 
 // --- 统计概览 ---
@@ -1127,7 +1278,7 @@ app.get('/api/stats/dashboard', verifyToken, async (req, res) => {
 // --- 用户中心 ---
 
 app.get('/api/user/profile', verifyToken, async (req, res) => {
-    const r = await dbPool.query('SELECT id, callsign, role, totp_secret, created_at, email, email_source FROM users WHERE id=$1', [req.user.id]);
+    const r = await dbPool.query('SELECT id, callsign, role, totp_secret, created_at, email, email_source, email_verified, email_notify FROM users WHERE id=$1', [req.user.id]);
     const u = r.rows[0];
     res.json({ ...u, has2fa: !!u.totp_secret, totp_secret: undefined });
 });
@@ -2193,7 +2344,7 @@ app.get('/api/admin/users', verifyToken, verifyAdmin, async (req, res) => {
     //  · invite_issued_by 取自 invite_codes.created_by（发放者注销/被删 → ON DELETE SET NULL → 显示未知）。
     //  · u.totp_secret 必须写全表前缀，JOIN 后无前缀列会 ambiguous。
     const r = await dbPool.query(
-        `SELECT u.id, u.callsign, u.role, u.created_at, u.email, u.email_source,
+        `SELECT u.id, u.callsign, u.role, u.created_at, u.email, u.email_source, u.email_verified,
                 u.totp_secret IS NOT NULL AS has_2fa,
                 u.invite_code,
                 ic.note AS invite_note,
@@ -2207,6 +2358,37 @@ app.get('/api/admin/users', verifyToken, verifyAdmin, async (req, res) => {
           ORDER BY u.id`,
     );
     res.json(r.rows);
+});
+
+/**
+ * 给「没绑邮箱」的老账号推一条站内提醒（2026-09-30 用户要求）。
+ * 为什么要这个入口：这些账号**用不了邮箱找回密码**（本站老账号大量 email 为空），
+ * 而「用 HamCQ 登录一次」就会把 HamCQ 已验证的邮箱自动带过来 —— 所以提醒他们登一次最省事。
+ * 幂等：已有**未读**同类通知的用户跳过（管理员连点两次不刷屏；用户读过后可以再推一轮）。
+ */
+app.post('/api/admin/notify-unbound-emails', verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const targets = await dbPool.query(`
+            SELECT u.id FROM users u
+             WHERE u.email IS NULL AND u.status <> 'disabled'
+               AND NOT EXISTS (
+                   SELECT 1 FROM notifications n
+                    WHERE n.user_id = u.id AND n.type = 'email_unbound' AND n.read = FALSE
+               )`);
+        const ids = targets.rows.map((r) => r.id);
+        await notifyUsers(dbPool, ids, {
+            type: 'email_unbound',
+            title: '建议绑定邮箱',
+            body: '你的账号还没有绑定邮箱，暂时无法用邮箱找回密码。用 HamCQ 登录一次会自动带上邮箱，'
+                + '也可以到「用户中心 → 安全设置 → 绑定邮箱」自行填写。',
+        });
+        const total = await dbPool.query("SELECT count(*)::int AS n FROM users WHERE email IS NULL AND status <> 'disabled'");
+        await logAudit(dbPool, req, {
+            action: 'admin.notify_unbound_emails',
+            detail: { sent: ids.length, total: total.rows[0].n },
+        });
+        res.json({ success: true, sent: ids.length, total: total.rows[0].n });
+    } catch (e) { res.status(500).json({ error: 'SERVER_ERROR', message: e.message }); }
 });
 
 app.post('/api/admin/users', verifyToken, verifyAdmin, require2FA, async (req, res) => {

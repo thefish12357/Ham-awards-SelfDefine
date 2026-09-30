@@ -21,9 +21,11 @@ import { confirmDialog, promptDialog, infoDialog } from './lib/confirm.jsx';
 import { importWithRetry } from './lib/lazyImport.js';
 // 奖状目标类型规格（placeholder / 即时提示 / 保存前校验）
 import { TARGET_SPECS, validateRulesTargets } from './lib/awardTargets.js';
-import { DEFAULT_ROUTE, isPublicHashRoute, isRouteAllowed, parseVerifyHash, readPublicPage, readRoute, writeRoute } from './lib/routes.js';
+import { DEFAULT_ROUTE, isPublicHashRoute, isRouteAllowed, parseEmailAuthHash, parseVerifyHash, readPublicPage, readRoute, writeRoute } from './lib/routes.js';
 import LotwImportView from './pages/LotwImportView.jsx';
 import VerifyView from './pages/VerifyView.jsx';
+// 邮件里的公开页：邮箱验证 / 重置密码（免登录，同样在登录态判断之前拦截）
+import EmailAuthView from './pages/EmailAuthView.jsx';
 import EvidenceAuditView from './pages/EvidenceAuditView.jsx';
 import AuditLogsView from './pages/AuditLogsView.jsx';
 import LandingView from './pages/LandingView.jsx';
@@ -2828,7 +2830,17 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                                     {user.email && user.email_source === 'hamcq' && (
                                         <span className="ml-1 rounded bg-cyan-50 px-1.5 py-0.5 text-[10px] font-bold text-cyan-700">来自 HamCQ</span>
                                     )}
+                                    {user.email && user.email_verified === false && (
+                                        <span className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">未验证</span>
+                                    )}
                                 </div>
+                                {/* 没绑邮箱的老账号：提醒用 HamCQ 登录一次（会自动带上 HamCQ 已验证的邮箱），
+                                    否则「忘记密码」用不了。 */}
+                                {!user.email && (
+                                    <div className="mt-1 text-[10px] leading-relaxed text-amber-700">
+                                        未绑定邮箱就无法用邮箱找回密码；用 HamCQ 登录一次会自动带上邮箱。
+                                    </div>
+                                )}
                             </div>
                         </div>
                         <button onClick={() => { setEmailInput(user.email || ''); setModal('email'); }} className="shrink-0 bg-white border px-4 py-2 rounded-lg text-sm font-bold">{user.email ? '修改' : '绑定'}</button>
@@ -3364,6 +3376,26 @@ const UserManage = () => {
                 <div className="text-xs text-slate-500">
                     用户数：<b className="text-slate-700">{keyword ? `${filteredUsers.length} / ${users.length}` : users.length}</b>
                 </div>
+                {/* 一键提醒「没绑邮箱」的老账号：用 HamCQ 登录一次会自动带上邮箱（否则用不了邮箱找回密码）。
+                    幂等：已有未读同类提醒的人会被后端跳过，连点两次不会刷屏。 */}
+                <button
+                    onClick={async () => {
+                        const ok = await confirmDialog({
+                            title: '提醒未绑邮箱用户',
+                            message: '给所有还没绑定邮箱的账号推送一条站内提醒？',
+                            detail: '提醒他们用 HamCQ 登录一次（会自动带上 HamCQ 的邮箱），或到「用户中心 → 安全设置 → 绑定邮箱」自行填写。\n已有未读同类提醒的用户会被跳过。',
+                            confirmText: '推送',
+                        });
+                        if (!ok) return;
+                        try {
+                            const d = await apiFetch('/admin/notify-unbound-emails', { method: 'POST' });
+                            alert(`已推送 ${d.sent} 人（未绑邮箱共 ${d.total} 人）`);
+                        } catch (e) { alert(e.message || '推送失败'); }
+                    }}
+                    className="inline-flex items-center rounded-xl border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-bold text-amber-700"
+                >
+                    提醒未绑邮箱用户
+                </button>
                 <button onClick={() => setCreating(true)} className="inline-flex items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-bold text-white">
                     <UserPlus size={16} /> 新建用户
                 </button>
@@ -3425,8 +3457,16 @@ const UserManage = () => {
                                                 {u.email ? (
                                                     <span className="inline-flex items-center gap-1">
                                                         <span className="max-w-[180px] truncate" title={u.email}>{u.email}</span>
-                                                        {u.email_source === 'hamcq' && (
+                                                        {/* 邮箱来源角标：HamCQ 登录时自动带过来的 →「HamCQ」；
+                                                            用户自己填的（注册填的 / 用户中心绑的）→「自助」。
+                                                            未验证的单独标一个 —— 管理员一眼看出谁还没点验证链接。 */}
+                                                        {u.email_source === 'hamcq' ? (
                                                             <span className="shrink-0 rounded bg-cyan-50 px-1.5 py-0.5 text-[10px] font-bold text-cyan-700">HamCQ</span>
+                                                        ) : (
+                                                            <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">自助</span>
+                                                        )}
+                                                        {u.email_verified === false && (
+                                                            <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">未验证</span>
                                                         )}
                                                     </span>
                                                 ) : '—'}
@@ -3537,6 +3577,14 @@ export default function App() {
   const [show2FAInput, setShow2FAInput] = useState(false);
   const [loginForm, setLoginForm] = useState({});
   const [authMode, setAuthMode] = useState('login'); // Added for in-page register
+  // 邮箱验证流程（2026-09-30）：
+  //   registerDone —— 注册成功后的「去邮箱点链接」面板（替代原来那句 alert，避免用户以为注册完就能登录）
+  //   loginNotice  —— 登录被 EMAIL_NOT_VERIFIED 拦下时的提示（带「重发验证邮件」）
+  //   showForgot   —— 登录页里的「忘记密码」表单（发邮件重置链接）
+  const [registerDone, setRegisterDone] = useState(null);
+  const [loginNotice, setLoginNotice] = useState(null);
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
   // OAuth（M5）：登录页按钮显隐 + 授权后「补全呼号」会话
   const [oauthProviders, setOauthProviders] = useState([]);
   const [oauthPendingToken, setOauthPendingToken] = useState(null);
@@ -3764,7 +3812,7 @@ export default function App() {
       evidence_audit: ['evidence_pending'],
       users: ['role_request'],
       my_awards: ['evidence_approved', 'evidence_rejected'],
-      userCenter: ['role_approved', 'role_rejected'],
+      userCenter: ['role_approved', 'role_rejected', 'email_unbound'],
   };
 
   /** 某菜单项的未读数（未映射的类型返回 0，不显示红点） */
@@ -3861,8 +3909,30 @@ export default function App() {
           if (err.error === '2FA_REQUIRED') {
               setLoginForm(data);
               setShow2FAInput(true);
+          } else if (err.error === 'EMAIL_NOT_VERIFIED') {
+              // ★ 强制邮箱验证（2026-09-30）：还没点验证链接 → 就地给「重发验证邮件」，
+              //   而不是丢一个 alert 了事（用户这时最需要的就是重发入口）。
+              setLoginNotice({ callsign: payload.callsign, email: err.email || null, message: err.message });
           } else { alert(err.message || '登录失败'); }
       }
+  };
+
+  /** 重发验证邮件（登录页提示块 与 注册成功面板 共用） */
+  const handleResendVerify = async (callsign) => {
+      try {
+          const r = await apiFetch('/auth/resend-verify', { method: 'POST', body: JSON.stringify({ callsign }) });
+          alert(r.message || '已重新发送');
+      } catch (e) { alert(e.message || '发送失败'); }
+  };
+
+  /** 忘记密码：发重置链接（后端**防枚举**，无论邮箱是否存在都回同一句文案） */
+  const handleForgot = async (e) => {
+      e.preventDefault();
+      try {
+          const r = await apiFetch('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email: forgotEmail }) });
+          alert(r.message || '已发送');
+          setShowForgot(false);
+      } catch (err) { alert(err.message || '发送失败'); }
   };
 
   const handleRegister = async (e) => {
@@ -3872,9 +3942,13 @@ export default function App() {
       if (data.password !== data.confirmPassword) return alert("两次输入的密码不一致");
       
       try {
-          await apiFetch('/auth/register', { method: 'POST', body: JSON.stringify(data) });
-          alert('注册成功！请登录。');
-          setAuthMode('login');
+          // 注册成功 ≠ 能登录：还要去邮箱点验证链接（强制验证）。所以这里切到「去验证」面板。
+          const r = await apiFetch('/auth/register', { method: 'POST', body: JSON.stringify(data) });
+          setRegisterDone({
+              callsign: String(data.callsign || '').toUpperCase(),
+              email: r.email || data.email,
+              mailSent: r.mailSent,
+          });
       } catch (err) { alert(err.message); }
   };
 
@@ -3952,6 +4026,11 @@ export default function App() {
   // 所以在任何登录态判断之前拦截。
   const verifySerial = parseVerifyHash();
   if (verifySerial) return <>{demoBar}<VerifyView serial={verifySerial} theme={theme} /></>;
+
+  // 邮件里的公开页（邮箱验证 / 重置密码）：用户多半在手机邮箱里点链接，
+  // 那个浏览器上没有登录态，所以必须免登录 → 同样在任何登录态判断之前拦截。
+  const emailAuth = parseEmailAuthHash();
+  if (emailAuth) return <>{demoBar}<EmailAuthView mode={emailAuth.mode} token={emailAuth.token} theme={theme} /></>;
 
   // 公开静态页（关于 / 隐私政策）：同样免登录，返回时清掉 hash 回到原视图。
   const closePublicPage = () => {
@@ -4110,31 +4189,84 @@ export default function App() {
                     </button>
                 </form>
 
-                {!show2FAInput && (
+                {/* 邮箱未验证被拦下：就地给「重发验证邮件」，别让用户卡在登录页干等 */}
+                {loginNotice && (
+                    <div className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-relaxed text-amber-200">
+                        <div className="font-bold">邮箱还没验证</div>
+                        <div className="mt-1 text-amber-200/90">
+                            {loginNotice.message}
+                            {loginNotice.email ? `（${loginNotice.email}）` : ''}
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => handleResendVerify(loginNotice.callsign)}
+                            className="mt-2 rounded-lg bg-amber-500/20 px-3 py-1.5 font-bold text-amber-100 transition-colors hover:bg-amber-500/30"
+                        >
+                            重新发送验证邮件
+                        </button>
+                    </div>
+                )}
+
+                {/* 忘记密码：改成真发重置链接（原来是纯提示弹层，因为当时还没有邮件能力） */}
+                {!show2FAInput && (showForgot ? (
+                    <form onSubmit={handleForgot} className="mt-4 space-y-3 rounded-xl border border-white/10 bg-white/[0.03] p-3">
+                        <div className="text-xs leading-relaxed text-slate-400">
+                            填写注册/绑定的邮箱，我们会发一封重置链接（30 分钟内有效）。
+                            没绑过邮箱的老账号请改用 HamCQ 登录，进站后在用户中心补绑邮箱。
+                        </div>
+                        <input
+                            type="email"
+                            required
+                            value={forgotEmail}
+                            onChange={(e) => setForgotEmail(e.target.value)}
+                            placeholder="你的邮箱"
+                            className={field}
+                        />
+                        <div className="flex gap-2">
+                            <button className="flex-1 rounded-lg bg-white/10 py-2 text-xs font-bold text-cyan-300 transition-colors hover:bg-white/15">发送重置链接</button>
+                            <button type="button" onClick={() => setShowForgot(false)} className="rounded-lg px-3 py-2 text-xs text-slate-400 transition-colors hover:text-slate-200">返回</button>
+                        </div>
+                    </form>
+                ) : (
                     <button
                         type="button"
-                        onClick={() => infoDialog({
-                            title: '忘记密码了？',
-                            message: '本站目前没有自助找回密码，请用下面两种方式之一进入账号：',
-                            detail:
-                                '① 用 HamCQ 登录（推荐）\n'
-                                + '如果你之前把 HamCQ 账号绑定过本站，点下面的「使用 HamCQ 登录」会直接进站，不需要本站密码；\n'
-                                + '进站后到「用户中心 → 修改密码」重新设置即可。\n\n'
-                                + '② 请管理员重置\n'
-                                + '把你的呼号发给站点管理员，管理员可在「后台管理 → 用户管理」里为你设置一个新密码。\n\n'
-                                + '提示：新注册账号建议直接用 HamCQ 登录，就不会再有忘记密码的问题。',
-                            confirmText: '知道了',
-                        })}
+                        onClick={() => setShowForgot(true)}
                         className="mt-3 block w-full text-center text-xs text-slate-500 underline transition-colors hover:text-slate-300"
                     >
                         忘记密码？
                     </button>
-                )}
+                ))}
 
                 {oauthBlock}
             </div>
         ) : (
             <div className="pt-6">
+                {registerDone ? (
+                    <div className="space-y-4 rounded-xl border border-green-400/25 bg-green-400/[0.08] p-4 text-green-100">
+                        <div className="text-sm font-bold">注册成功，还差一步：验证邮箱</div>
+                        <div className="text-xs leading-relaxed text-green-200/90">
+                            验证邮件已发送到 <b className="font-mono">{registerDone.email}</b>
+                            {registerDone.mailSent === false
+                                ? '（提示：本机未配置 SMTP，邮件未真正发出，请联系管理员）'
+                                : ''}
+                            。请点邮件里的链接完成验证，之后即可用刚才的呼号与密码登录。
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => handleResendVerify(registerDone.callsign)}
+                            className="w-full rounded-xl bg-white/10 py-2.5 text-xs font-bold text-green-100 transition-colors hover:bg-white/15"
+                        >
+                            没收到？重新发送验证邮件
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { setRegisterDone(null); setAuthMode('login'); }}
+                            className="block w-full text-center text-xs text-slate-400 underline transition-colors hover:text-slate-200"
+                        >
+                            已点过链接，去登录
+                        </button>
+                    </div>
+                ) : (
                 <form onSubmit={handleRegister} className="space-y-4">
                     <div className="space-y-1"><label className={labelCls}>注册呼号</label><input name="callsign" required className={field} placeholder="例如: BA1AA" /></div>
                     <div className="space-y-1">
@@ -4146,9 +4278,12 @@ export default function App() {
                         <PasswordInput variant="dark" name="confirmPassword" required autoComplete="new-password" className={field} />
                     </div>
                     <div className="space-y-1">
-                        <label className={labelCls}>邮箱（可选）</label>
-                        <input name="email" type="email" autoComplete="email" className={field} placeholder="例如: bh1abc@example.com" />
-                        <span className="text-[10px] text-slate-500">用于站点联系与身份核对；用 HamCQ 登录时会自动带上 HamCQ 的邮箱。本站暂不支持自助找回密码。</span>
+                        <label className={labelCls}>邮箱（必填，用于验证）</label>
+                        <input name="email" type="email" required autoComplete="email" className={field} placeholder="例如: bh1abc@example.com" />
+                        <span className="text-[10px] text-slate-500">
+                            注册后我们会发一封验证邮件，需点链接完成验证才能登录；该邮箱也用于找回密码。
+                            用 HamCQ 登录时同样会自动带上 HamCQ 的邮箱。
+                        </span>
                     </div>
                     {requireInvite && (
                         <div className="space-y-1">
@@ -4159,6 +4294,7 @@ export default function App() {
                     )}
                     <button className="w-full rounded-xl bg-green-600 py-3.5 font-bold text-white transition-all hover:-translate-y-0.5 active:scale-95">立即注册</button>
                 </form>
+                )}
 
                 {/* 注册就引导用 HamCQ：绑定后即使忘记本站密码也能直接进站（唯一免密通道） */}
                 <div className="mt-4 rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] p-3 text-xs leading-relaxed text-slate-300">

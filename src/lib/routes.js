@@ -107,8 +107,22 @@ export const readPublicPage = () => {
   return PUBLIC_PAGES[h] || null;
 };
 
+/**
+ * 邮件里的两个公开页（2026-09-30）：**免登录**，且带查询参数，所以不属于 subView 体系。
+ *   `#/verify-email?token=…`   邮箱验证（注册后点邮件里的链接）
+ *   `#/reset-password?token=…` 重置密码（忘记密码邮件）
+ * 由 `App` 在登录态判断**之前**拦截渲染（同 `#/verify/<序列号>`）。
+ */
+export const parseEmailAuthHash = () => {
+  if (typeof window === 'undefined') return null;
+  const [path, query] = (window.location.hash || '').split('?');
+  const mode = path === '#/verify-email' ? 'verify' : path === '#/reset-password' ? 'reset' : null;
+  if (!mode) return null;
+  return { mode, token: new URLSearchParams(query || '').get('token') || '' };
+};
+
 /** 是否处于「公开路由」，此时不要用 subView 覆盖 URL */
-export const isPublicHashRoute = () => !!parseVerifyHash();
+export const isPublicHashRoute = () => !!parseVerifyHash() || !!parseEmailAuthHash();
 
 /** 读取当前 URL 中的路由；非法或为空时返回 null */
 export const readRoute = () => {
