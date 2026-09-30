@@ -2954,6 +2954,15 @@ const formatDxcc = (row) => {
     return name || num;
 };
 
+/**
+ * 取一条 QSO 的梅登黑格网格（Maidenhead Grid，即 VUCC 用的「网格」）。
+ * 网格**不是 qsos 表的列**，只存在 adif_raw(JSONB) 里（ADIF 字段 GRIDSQUARE，解析后键名小写）；
+ * 由实物卡片补建的记录没有网格 → 返回空串，调用方显示 "—"。
+ * 只做大写与去空白，不做截断：6 位网格（如 PM95UR）对用户是有用信息，
+ * 而奖状引擎比较的仍是前 4 位（见 server/services/awardEngine.js 的 `substring(0,4)`）。
+ */
+const qsoGrid = (row) => String(row?.adif_raw?.gridsquare || '').trim().toUpperCase();
+
 const AllLogsView = () => {
     const [logs, setLogs] = useState([]);
     const [detailQso, setDetailQso] = useState(null);
@@ -2985,7 +2994,7 @@ const AllLogsView = () => {
         } catch(e) { console.error(e); }
     };
 
-    // 前端搜索：按呼号 / 波段 / 模式 / DXCC / 日期 / 州省过滤（数据量不大，客户端过滤即可，与用户管理页一致）
+    // 前端搜索：按呼号 / 波段 / 模式 / DXCC / 日期 / 州省 / 网格过滤（数据量不大，客户端过滤即可，与用户管理页一致）
     const keyword = search.trim().toLowerCase();
     const filteredLogs = keyword
         ? logs.filter((l) =>
@@ -2995,7 +3004,8 @@ const AllLogsView = () => {
             (l.qso_date || '').toLowerCase().includes(keyword) ||
             (l.country || '').toLowerCase().includes(keyword) ||
             String(l.dxcc || '').toLowerCase().includes(keyword) ||
-            (l.state || l.adif_raw?.state || '').toLowerCase().includes(keyword)
+            (l.state || l.adif_raw?.state || '').toLowerCase().includes(keyword) ||
+            qsoGrid(l).toLowerCase().includes(keyword)
           )
         : logs;
 
@@ -3009,7 +3019,7 @@ const AllLogsView = () => {
                         <input
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
-                            placeholder="搜索呼号 / 波段 / 模式 / DXCC / 日期"
+                            placeholder="搜索呼号 / 波段 / 模式 / DXCC / 网格 / 日期"
                             className="pl-9 pr-3 py-1.5 rounded-lg border text-sm w-64 focus:outline-none focus:ring-2 focus:ring-blue-200"
                         />
                     </div>
@@ -3034,15 +3044,16 @@ const AllLogsView = () => {
                                 <th className="p-4">Band</th>
                                 <th className="p-4">Mode</th>
                                 <th className="p-4">DXCC</th>
+                                <th className="p-4" title="梅登黑格网格（Maidenhead Grid / VUCC 网格）">网格</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y">
                             {loading ? (
-                                <tr><td colSpan="6" className="p-8 text-center text-slate-400">加载中...</td></tr>
+                                <tr><td colSpan="7" className="p-8 text-center text-slate-400">加载中...</td></tr>
                             ) : logs.length === 0 ? (
-                                <tr><td colSpan="6" className="p-8 text-center text-slate-400">暂无日志</td></tr>
+                                <tr><td colSpan="7" className="p-8 text-center text-slate-400">暂无日志</td></tr>
                             ) : filteredLogs.length === 0 ? (
-                                <tr><td colSpan="6" className="p-8 text-center text-slate-400">没有匹配「{search}」的日志</td></tr>
+                                <tr><td colSpan="7" className="p-8 text-center text-slate-400">没有匹配「{search}」的日志</td></tr>
                             ) : (
                                 filteredLogs.map(log => (
                                     <tr key={log.id} className="hover:bg-slate-50">
@@ -3064,6 +3075,10 @@ const AllLogsView = () => {
                                         <td className="p-4">{log.mode}</td>
                                         {/* 实物卡片补建的日志没有国家字段（卡片不采集），显式显示"—"免得看着像加载失败 */}
                                         <td className="p-4 text-slate-500 truncate max-w-[200px]">{formatDxcc(log)}</td>
+                                        {/* 网格（梅登黑格）：来自 adif_raw.gridsquare，日志缺该字段时显示"—" */}
+                                        <td className="p-4 font-mono" title={qsoGrid(log) || '该日志没有网格字段（GRIDSQUARE）'}>
+                                            {qsoGrid(log) || <span className="text-slate-300">—</span>}
+                                        </td>
                                     </tr>
                                 ))
                             )}
@@ -3085,6 +3100,7 @@ const AllLogsView = () => {
                             <div><span className="text-slate-400 block text-xs uppercase">Mode</span><span className="font-bold">{detailQso.mode}</span></div>
                             <div className="col-span-2"><span className="text-slate-400 block text-xs uppercase">DXCC</span><span className="font-bold">{formatDxcc(detailQso)}</span></div>
                             <div className="col-span-2"><span className="text-slate-400 block text-xs uppercase">State</span><span className="font-bold">{detailQso.state || detailQso.adif_raw?.state || '-'}</span></div>
+                            <div className="col-span-2"><span className="text-slate-400 block text-xs uppercase">Grid</span><span className="font-bold font-mono">{qsoGrid(detailQso) || '-'}</span></div>
                         </div>
 
                         {/* 3. 查看该条日志参与申领的奖项 */}
@@ -3186,8 +3202,15 @@ const UserManage = () => {
     // ★ 参考 HamCQ 后台的「用户分页列表」（2026-09-23）：标题 + 副标题、搜索框、用户数、
     //   「新建用户」按钮、表格（ID / 呼号 / 注册时间 / 用户组徽标 / 状态 / 操作）。
     const keyword = search.trim().toLowerCase();
+    // 搜索也覆盖邀请码与发放者：管理员常见的诉求是「这个码放进来哪些人」，
+    // 直接把码（或发放者呼号）粘进搜索框即可筛出这批账号。
     const filteredUsers = keyword
-        ? users.filter((u) => u.callsign.toLowerCase().includes(keyword) || String(u.id) === keyword || u.role.includes(keyword))
+        ? users.filter((u) =>
+            u.callsign.toLowerCase().includes(keyword)
+            || String(u.id) === keyword
+            || u.role.includes(keyword)
+            || (u.invite_code || '').toLowerCase().includes(keyword)
+            || (u.invite_issued_by || '').toLowerCase().includes(keyword))
         : users;
 
     const ROLE_META = {
@@ -3235,7 +3258,7 @@ const UserManage = () => {
                     <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder="搜索呼号 / ID / 角色"
+                        placeholder="搜索呼号 / ID / 角色 / 邀请码"
                         className="w-full rounded-xl border bg-white py-2 pl-9 pr-3 text-sm"
                     />
                 </div>
@@ -3257,6 +3280,7 @@ const UserManage = () => {
                                 <tr className="bg-slate-50 text-xs text-slate-500">
                                     <th className="px-4 py-3 text-left font-bold">ID</th>
                                     <th className="px-4 py-3 text-left font-bold">呼号</th>
+                                    <th className="px-4 py-3 text-left font-bold whitespace-nowrap">邀请码</th>
                                     <th className="px-4 py-3 text-left font-bold">邮箱</th>
                                     <th className="px-4 py-3 text-left font-bold whitespace-nowrap">注册时间</th>
                                     <th className="px-4 py-3 text-left font-bold">用户组</th>
@@ -3267,7 +3291,7 @@ const UserManage = () => {
                             <tbody>
                                 {filteredUsers.length === 0 && (
                                     <tr>
-                                        <td colSpan={7} className="px-4 py-10 text-center text-slate-400">没有匹配「{search}」的用户</td>
+                                        <td colSpan={8} className="px-4 py-10 text-center text-slate-400">没有匹配「{search}」的用户</td>
                                     </tr>
                                 )}
                                 {filteredUsers.map((u) => {
@@ -3277,6 +3301,27 @@ const UserManage = () => {
                                         <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50">
                                             <td className="px-4 py-3 font-mono text-xs text-slate-500">{u.id}</td>
                                             <td className="px-4 py-3 font-mono font-bold text-blue-600">{u.callsign}</td>
+                                            <td className="px-4 py-3 text-xs">
+                                                {u.invite_code ? (
+                                                    <div className="space-y-0.5">
+                                                        <span className="font-mono font-bold text-slate-700">{u.invite_code}</span>
+                                                        <div className="whitespace-nowrap text-[10px] text-slate-400">
+                                                            {/* 发放者取 invite_codes.created_by；发放者被删 → 未知 */}
+                                                            {u.invite_issued_by ? `由 ${u.invite_issued_by} 发放` : '发放者未知'}
+                                                            {u.invite_note ? ` · ${u.invite_note}` : ''}
+                                                        </div>
+                                                        {/* invite_max_uses 为空说明该码已从邀请码列表删除（用户行仍留快照） */}
+                                                        {u.invite_max_uses == null && (
+                                                            <span className="inline-block rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">码已删除</span>
+                                                        )}
+                                                        {u.invite_disabled && (
+                                                            <span className="inline-block rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700">码已停用</span>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <span className="text-slate-300" title="未使用邀请码（邀请制开启前注册，或由管理员直接创建）">—</span>
+                                                )}
+                                            </td>
                                             <td className="px-4 py-3 text-xs text-slate-500">
                                                 {u.email ? (
                                                     <span className="inline-flex items-center gap-1">

@@ -2043,7 +2043,26 @@ app.get('/api/verify/:serial/qr', async (req, res) => {
 // --- 系统管理 ---
 
 app.get('/api/admin/users', verifyToken, verifyAdmin, async (req, res) => {
-    const r = await dbPool.query('SELECT id, callsign, role, created_at, email, email_source, totp_secret IS NOT NULL as has_2fa FROM users ORDER BY id');
+    // 邀请码溯源（2026-09-30）：用户列表要能看出「这个账号是拿哪个码进来的」+「码是谁发的」。
+    //  · u.invite_code 是注册/首次建号时写入的**快照**，邀请码被删除后依然保留在用户行上
+    //    → 用 LEFT JOIN 而不是 INNER JOIN，否则老账号会整行消失；
+    //    落空时 invite_max_uses 为 null，前端据此显示「码已删除」而不是「无邀请码」。
+    //  · invite_issued_by 取自 invite_codes.created_by（发放者注销/被删 → ON DELETE SET NULL → 显示未知）。
+    //  · u.totp_secret 必须写全表前缀，JOIN 后无前缀列会 ambiguous。
+    const r = await dbPool.query(
+        `SELECT u.id, u.callsign, u.role, u.created_at, u.email, u.email_source,
+                u.totp_secret IS NOT NULL AS has_2fa,
+                u.invite_code,
+                ic.note AS invite_note,
+                ic.max_uses AS invite_max_uses,
+                ic.used_count AS invite_used_count,
+                ic.disabled AS invite_disabled,
+                cb.callsign AS invite_issued_by
+           FROM users u
+           LEFT JOIN invite_codes ic ON ic.code = u.invite_code
+           LEFT JOIN users cb ON cb.id = ic.created_by
+          ORDER BY u.id`,
+    );
     res.json(r.rows);
 });
 

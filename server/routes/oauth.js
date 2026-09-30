@@ -110,18 +110,38 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       scope: cfg.scope,
       state,
     });
-    res.redirect(`${cfg.authorizeUrl}?${params.toString()}`);
+    const authorizeUrl = `${cfg.authorizeUrl}?${params.toString()}`;
+    // ★ 日志断点①：把**完整授权地址**打出来，便于直接粘到浏览器复现。
+    //   client_id 是公开的应用 ID，可打印；client_secret / token 永不进日志。
+    console.log(`[oauth] start: provider=${cfg.provider} redirect_uri=${cfg.redirectUri} scope=${cfg.scope}`);
+    console.log(`[oauth] start -> ${authorizeUrl}`);
+    res.redirect(authorizeUrl);
   });
 
   // ---- 授权回调：换 token → 取 userinfo → 登录 / 要求绑定 ----
   router.get('/callback', async (req, res) => {
     const { code, state, error } = req.query;
-    if (error) return res.status(400).send('授权被取消或失败');
-    if (!code || !state) return res.status(400).send('缺少 code 或 state');
+    // ★ 日志断点②：回调是否被触发？带了什么？
+    //   code / state 只打印长度与前几位 —— 它们是凭据，绝不完整落盘。
+    console.log(
+      `[oauth] callback 命中: error=${error || '-'} code=${code ? `${String(code).slice(0, 6)}…(len=${String(code).length})` : '无'} state=${state ? `${String(state).slice(0, 8)}…` : '无'}`,
+    );
+    if (error) {
+      console.error(`[oauth] callback 失败：授权服务器返回 error=${error}`);
+      return res.status(400).send('授权被取消或失败');
+    }
+    if (!code || !state) {
+      console.error('[oauth] callback 失败：缺少 code 或 state');
+      return res.status(400).send('缺少 code 或 state');
+    }
 
     const stateOk = await states.get(state);
-    if (!stateOk) return res.status(400).send('state 无效或已过期');
+    if (!stateOk) {
+      console.error(`[oauth] callback 失败：state 无效或已过期（${String(state).slice(0, 8)}…）`);
+      return res.status(400).send('state 无效或已过期');
+    }
     await states.del(state); // 一次性消费
+    console.log('[oauth] state 校验通过');
 
     const cfg = oauthConfig(getConfig);
     try {
@@ -140,24 +160,41 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         // 防止 HamCQ 卡住时我们的回调页无限转圈（无超时 = 浏览器一直等）
         signal: AbortSignal.timeout(15000),
       });
+      console.log(`[oauth] 换令牌 -> POST ${cfg.tokenUrl} 结果 status=${tokenRes.status}`);
       if (!tokenRes.ok) {
         const t = await tokenRes.text().catch(() => '');
+        console.error(`[oauth] 换令牌失败 status=${tokenRes.status} 响应片段=${t.slice(0, 200)}`);
         throw new Error(`换令牌失败（${tokenRes.status}）${t.slice(0, 120)}`);
       }
       const tokens = await tokenRes.json();
       const accessToken = tokens.access_token;
-      if (!accessToken) throw new Error('授权服务器未返回 access_token');
+      if (!accessToken) {
+        console.error(`[oauth] 响应里没有 access_token，仅有字段=${Object.keys(tokens || {}).join(', ')}`);
+        throw new Error('授权服务器未返回 access_token');
+      }
+      console.log('[oauth] 换令牌成功（access_token 不打印）');
 
       // 2) 取用户信息（HamCQ：token 走 query）
       const uiRes = await fetch(`${cfg.userInfoUrl}?access_token=${encodeURIComponent(accessToken)}`, {
         signal: AbortSignal.timeout(15000),
       });
-      if (!uiRes.ok) throw new Error(`获取用户信息失败（${uiRes.status}）`);
+      console.log(`[oauth] 取用户信息 -> status=${uiRes.status}`);
+      if (!uiRes.ok) {
+        const t = await uiRes.text().catch(() => '');
+        console.error(`[oauth] 取用户信息失败 status=${uiRes.status} 响应片段=${t.slice(0, 200)}`);
+        throw new Error(`获取用户信息失败（${uiRes.status}）`);
+      }
       const profile = await uiRes.json();
+      // ★ 只打印**字段名**，不打印值 —— userinfo 里有邮箱等隐私，值一律不进日志
+      console.log(`[oauth] 用户信息字段: ${Object.keys(profile || {}).join(', ') || '(空)'}`);
 
       const callsign = String(profile[cfg.callsignField] || '').trim().toUpperCase();
       const sub = String(profile[cfg.userSubField] ?? profile.id ?? '').trim();
-      if (!callsign || !sub) throw new Error('未能从授权服务器获取呼号 / 用户 ID');
+      if (!callsign || !sub) {
+        console.error(`[oauth] 字段映射失败 callsignField=${cfg.callsignField}->'${callsign}' userSubField=${cfg.userSubField}->'${sub}'`);
+        throw new Error('未能从授权服务器获取呼号 / 用户 ID');
+      }
+      console.log(`[oauth] 解析成功 callsign=${callsign} sub=${sub} 有邮箱=${!!email}（值不打印）`);
       // HamCQ 的邮箱（可能为空，取决于 scope / 是否已验证）。
       // 非法格式一律当作「没有」——绝不因为一个邮箱把整条登录链路打断。
       const providerEmail = normalizeEmail(profile[cfg.emailField]);
@@ -199,7 +236,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         `${frontendOrigin(cfg)}/#/oauth/complete?pending_token=${pendingToken}&username=${encodeURIComponent(callsign)}`,
       );
     } catch (e) {
-      console.error('oauth callback error:', e);
+      console.error('[oauth] callback 异常中断:', e?.message || e);
       res.status(500).send(`登录失败：${e.message}`);
     }
   });
@@ -207,9 +244,12 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   // ---- 补全信息：确认呼号 → 绑定已有账号（需密码）或创建新账号 ----
   router.post('/complete', async (req, res) => {
     const { pending_token: pendingToken, callsign, password, invite_code: inviteCode } = req.body || {};
+    // ★ 日志断点③：补全信息页提交 —— 第一次建号 / 绑定老账号都从这里过
+    console.log(`[oauth] complete: pending=${pendingToken ? `${String(pendingToken).slice(0, 6)}…` : '无'} 呼号=${callsign || '(空)'} 有密码=${!!password} 邀请码=${inviteCode ? '有' : '无'}`);
     if (!pendingToken) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少参数' });
     const pending = await pendingBinds.get(pendingToken);
     if (!pending || pending.expiresAt < Date.now()) {
+      console.error(`[oauth] complete 失败：待绑定会话无效/过期（sub=${pending?.sub || '-'}）`);
       return res.status(400).json({ error: 'BIND_EXPIRED', message: '会话已过期，请重新登录' });
     }
 
@@ -305,10 +345,13 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   // ---- 一次性换码：前端拿 URL 里的 code 来换 JWT（code 不长期留在 URL/历史里）----
   router.post('/code', async (req, res) => {
     const { code } = (req.body || {});
+    // ★ 日志断点④：前端拿一次性换码换 JWT（"已绑定 → 直接登录"这条路径的最后一跳）
+    console.log(`[oauth] code 换登录: ${code ? `${String(code).slice(0, 6)}…(len=${String(code).length})` : '无'}`);
     if (!code) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少换码' });
     const entry = await sessionCodes.get(code);
     if (!entry || entry.exp < Date.now()) {
       await sessionCodes.del(code);
+      console.error('[oauth] code 换登录失败：换码无效或已过期（一次性，可能已被消费）');
       return res.status(401).json({ error: 'CODE_INVALID', message: '登录码无效或已过期，请重新登录' });
     }
     await sessionCodes.del(code); // 一次性消费
