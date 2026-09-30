@@ -483,6 +483,10 @@ async function upgradeSchema() {
     if (!uaColNames.includes('serial_number')) await client.query("ALTER TABLE user_awards ADD COLUMN serial_number VARCHAR(20)");
     if (!uaColNames.includes('level')) await client.query("ALTER TABLE user_awards ADD COLUMN level VARCHAR(50)");
     if (!uaColNames.includes('score_snapshot')) await client.query("ALTER TABLE user_awards ADD COLUMN score_snapshot INTEGER");
+    // 用户自助「撤回奖状」（2026-09-30 用户需求）：**软撤回** —— 台账行保留（有序列号、可审计），
+    // 只是从「我的奖状」隐藏、校验页标记为已撤回、并允许重新申请。理由必填且写审计。
+    await client.query("ALTER TABLE user_awards ADD COLUMN IF NOT EXISTS withdrawn_at TIMESTAMP");
+    await client.query("ALTER TABLE user_awards ADD COLUMN IF NOT EXISTS withdraw_reason TEXT");
 
     // ---- 颁发记录与奖状解耦（2026-09-24）----
     // 需求：奖状被打回 / 删除时，**已颁发的记录必须留存**（有序列号、可扫码校验的凭证不能凭空消失），
@@ -582,6 +586,8 @@ async function upgradeSchema() {
     await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS award_name VARCHAR(200)`);
     await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS reason TEXT`);
     await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS experience TEXT`);
+    // 「通过」时的可选留言（2026-09-30）：admin 批的时候可以捎一句话给申请人
+    await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS approve_message TEXT`);
     await client.query(`ALTER TABLE role_requests ADD COLUMN IF NOT EXISTS contact VARCHAR(200)`);
 
     // 全站操作审计（2026-09-23）：全站级敏感操作留痕，仅最高级管理员可查。
@@ -1352,6 +1358,7 @@ app.get('/api/admin/awards/approved', verifyToken, verifyAdmin, async (req, res)
 app.get('/api/admin/issued-awards', verifyToken, verifyAdmin, async (req, res) => {
     const r = await dbPool.query(`
         SELECT ua.id, ua.serial_number, ua.issued_at, ua.level, ua.award_id, ua.detached_at,
+               ua.withdrawn_at, ua.withdraw_reason,
                u.callsign AS applicant_call,
                COALESCE(a.name, ua.award_name) AS award_name,
                COALESCE(a.tracking_id, ua.award_tracking_id) AS tracking_id,
@@ -1830,7 +1837,8 @@ app.post('/api/awards/:id/apply', verifyToken, async (req, res) => {
         const levelName = achieved_level.name;
 
         // Check if already applied for this level
-        const exists = await dbPool.query('SELECT id FROM user_awards WHERE user_id=$1 AND award_id=$2 AND level=$3', [req.user.id, req.params.id, levelName]);
+        // 已撤回的不算「已领取」，允许重新申请（撤回是软操作，台账行还在库里）
+        const exists = await dbPool.query('SELECT id FROM user_awards WHERE user_id=$1 AND award_id=$2 AND level=$3 AND withdrawn_at IS NULL', [req.user.id, req.params.id, levelName]);
         if (exists.rows.length > 0) return res.status(400).json({ error: 'Already applied', message: `您已领取过此等级(${levelName})的奖状` });
 
         // Generate 16-digit Serial
@@ -1874,9 +1882,65 @@ app.get('/api/user/my-awards', verifyToken, async (req, res) => {
         FROM user_awards ua
         LEFT JOIN awards a ON ua.award_id = a.id
         WHERE ua.user_id = $1
+          AND ua.withdrawn_at IS NULL   -- 已撤回的不再出现在「我的奖状」（台账行仍保留在库里）
         ORDER BY (a.id IS NULL), ua.issued_at DESC
     `, [req.user.id]);
     res.json(result.rows);
+});
+
+/**
+ * 用户自助撤回自己已领取的奖状（2026-09-30 用户需求）
+ * ------------------------------------------------------------------
+ * 为什么做成**软撤回**而不是删行：已发出的凭证带序列号、可扫码，属于审计台账
+ * （与「删除奖状不删颁发记录」同一原则）。撤回后：
+ *   · 从「我的奖状」隐藏，且**允许重新申请**（重复检查里排除 withdrawn 行）；
+ *   · 校验页对该序列号返回 404 + `revoked/withdrawn`，明确告知「已由持证人撤回」；
+ *   · 台账行保留在库里，管理员在「颁发管理」仍能看到（带「已撤回」标记）。
+ * 理由**必填**，与撤回动作一起写审计（`award.withdraw`），并站内通知管理员。
+ */
+app.post('/api/user/my-awards/:id/withdraw', verifyToken, async (req, res) => {
+    const reason = String((req.body || {}).reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'NO_REASON', message: '请填写撤回理由' });
+    try {
+        const r = await dbPool.query(
+            `SELECT ua.id, ua.award_id, ua.serial_number, ua.level, ua.withdrawn_at,
+                    COALESCE(a.name, ua.award_name) AS award_name
+               FROM user_awards ua
+               LEFT JOIN awards a ON a.id = ua.award_id
+              WHERE ua.id = $1 AND ua.user_id = $2`,
+            [req.params.id, req.user.id],
+        );
+        if (r.rows.length === 0) return res.status(404).json({ error: 'NOT_FOUND', message: '找不到该奖状记录' });
+        const row = r.rows[0];
+        if (row.withdrawn_at) return res.status(400).json({ error: 'ALREADY_WITHDRAWN', message: '该奖状已经撤回过了' });
+
+        await dbPool.query(
+            `UPDATE user_awards SET withdrawn_at = NOW(), withdraw_reason = $1 WHERE id = $2`,
+            [reason.slice(0, 500), row.id],
+        );
+        await logAudit(dbPool, req, {
+            action: 'award.withdraw',
+            targetType: 'award_issued',
+            targetId: row.id,
+            detail: {
+                callsign: req.user.callsign,
+                award_name: row.award_name || undefined,
+                serial: row.serial_number || undefined,
+                level: row.level || undefined,
+                reason: reason.slice(0, 500),
+            },
+        });
+        // 撤回是可审计的重要动作，管理员应当知情
+        const admins = await dbPool.query(`SELECT id FROM users WHERE role='admin'`);
+        await notifyUsers(dbPool, admins.rows.map((x) => x.id), {
+            type: 'award_withdrawn',
+            title: '有用户撤回了奖状',
+            body: `${req.user.callsign} 撤回了奖状「${row.award_name || '—'}」（${row.level || '默认等级'}${row.serial_number ? `，编号 ${row.serial_number}` : ''}）。理由：${reason}`,
+        });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // API for User Logbook (View All) - Verified Logic
@@ -2035,6 +2099,7 @@ app.get('/api/verify/:serial', async (req, res) => {
         // 否则扫码会得到「未找到该序列号对应的奖状」这种误导性结论（记录其实还在）。
         const r = await dbPool.query(`
             SELECT ua.serial_number, ua.level, ua.issued_at, ua.score_snapshot, ua.detached_at,
+                   ua.withdrawn_at,
                    COALESCE(a.name, ua.award_name) AS award_name,
                    a.description,
                    COALESCE(a.tracking_id, ua.award_tracking_id) AS tracking_id,
@@ -2062,6 +2127,20 @@ app.get('/api/verify/:serial', async (req, res) => {
                 issueDate: row.issued_at,
                 holder: maskCallsign(row.holder_callsign),
                 message: `该奖状（${row.award_name || '—'}）已被主办方下架，此证书不再有效。`,
+            });
+        }
+        // 持证人自己撤回了（2026-09-30）→ 凭证同样失效，但原因与"主办方下架"不同，要分开告知
+        if (row.withdrawn_at) {
+            return res.status(404).json({
+                valid: false,
+                revoked: true,
+                withdrawn: true,
+                serial: row.serial_number,
+                awardName: row.award_name,
+                level: row.level,
+                issueDate: row.issued_at,
+                holder: maskCallsign(row.holder_callsign),
+                message: `该奖状（${row.award_name || '—'}）已由持证人撤回，此证书不再有效。`,
             });
         }
         res.json({
@@ -2205,7 +2284,7 @@ app.delete('/api/admin/users/:id', verifyToken, verifyAdmin, require2FA, async (
 app.get('/api/user/role-request', verifyToken, async (req, res) => {
     try {
         const r = await dbPool.query(
-            `SELECT id, requested_role, status, reject_reason, created_at FROM role_requests WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
+            `SELECT id, requested_role, status, reject_reason, approve_message, created_at FROM role_requests WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`,
             [req.user.id],
         );
         res.json(r.rows[0] || null);
@@ -2270,9 +2349,12 @@ app.get('/api/admin/role-requests', verifyToken, verifyAdmin, async (req, res) =
 
 app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async (req, res) => {
     const id = Number(req.params.id);
-    const { action, reason } = req.body || {};
+    const { action, reason, message } = req.body || {};
     if (action !== 'approve' && action !== 'reject') return res.status(400).json({ error: 'BAD_ACTION', message: 'action 必须是 approve 或 reject' });
     if (action === 'reject' && !String(reason || '').trim()) return res.status(400).json({ error: 'NO_REASON', message: '驳回必须填写原因' });
+    // 「通过」时的**可选**留言（2026-09-30 用户需求）：随站内通知发给申请人、写进审计，
+    // 并展示在申请人的「角色权限」卡片上。留空 = 不留言（不是必填）。
+    const approveMsg = String(message || '').trim().slice(0, 500);
 
     const client = await dbPool.connect();
     try {
@@ -2282,19 +2364,22 @@ app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async 
         if (old.rows[0].status !== 'pending') { await client.query('ROLLBACK'); return res.status(400).json({ error: 'ALREADY_REVIEWED', message: '该申请已处理' }); }
 
         const approved = action === 'approve';
+        // ★ 申请人呼号 / 角色必须在**改角色之前**取：改完再查，审计里的 role_from 会等于新角色。
+        //   （2026-09-30 发现：此前 approve 的 role_from 恒为 award_admin，等于这条留痕是错的）
+        const applicantRes = await client.query('SELECT callsign, role FROM users WHERE id=$1', [old.rows[0].user_id]);
         if (approved) {
             await client.query(`UPDATE users SET role = 'award_admin' WHERE id = $1`, [old.rows[0].user_id]);
             // 角色提升后立即令旧令牌失效
             await client.query('UPDATE users SET token_version = token_version + 1 WHERE id = $1', [old.rows[0].user_id]);
         }
         await client.query(
-            `UPDATE role_requests SET status=$1, reviewer_id=$2, reviewed_at=NOW(), reject_reason=$3 WHERE id=$4`,
-            [approved ? 'approved' : 'rejected', req.user.id, approved ? null : String(reason || '').slice(0, 500), id],
+            `UPDATE role_requests SET status=$1, reviewer_id=$2, reviewed_at=NOW(), reject_reason=$3, approve_message=$4 WHERE id=$5`,
+            [approved ? 'approved' : 'rejected', req.user.id, approved ? null : String(reason || '').slice(0, 500), approved ? (approveMsg || null) : null, id],
         );
         await client.query('COMMIT');
 
-        // 申请人呼号 / 原角色：审计里要能一眼看出「给谁批的（驳的）」，只留 user_id 还得另查
-        const applicant = await dbPool.query('SELECT callsign, role FROM users WHERE id=$1', [old.rows[0].user_id]);
+        // 申请人呼号 / 原角色：事务内已取（见上），这里直接用，避免角色被改后 role_from 失真
+        const applicant = applicantRes;
         await logAudit(dbPool, req, {
             action: 'role.review',
             targetType: 'role_request',
@@ -2307,6 +2392,8 @@ app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async 
                 op: approved ? 'approve' : 'reject',
                 role_to: approved ? 'award_admin' : undefined,
                 reason: reason || '',
+                // 通过时捎给申请人的留言也留痕（空留言不写字段）
+                message: approved ? (approveMsg || undefined) : undefined,
             },
         });
 
@@ -2314,7 +2401,7 @@ app.post('/api/admin/role-requests/:id/review', verifyToken, verifyAdmin, async 
             type: approved ? 'role_approved' : 'role_rejected',
             title: approved ? '升级申请已通过' : '升级申请被驳回',
             body: approved
-                ? '恭喜！你的「奖状管理员」申请已通过，重新登录后即可创建和管理奖状。'
+                ? `恭喜！你的「奖状管理员」申请已通过，重新登录后即可创建和管理奖状。${approveMsg ? `\n管理员留言：${approveMsg}` : ''}`
                 : `你的「奖状管理员」申请被驳回${reason ? '：' + reason : ''}。`,
         });
         res.json({ success: true });

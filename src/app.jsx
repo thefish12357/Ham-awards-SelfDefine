@@ -626,6 +626,7 @@ const MyAwardsView = ({ user }) => {
     const [loading, setLoading] = useState(true);
     const [selectedAward, setSelectedAward] = useState(null); // For detail view
     const [exportingId, setExportingId] = useState(null);
+    const [withdrawingId, setWithdrawingId] = useState(null); // 正在撤回的记录 id
 
     // 用奖状的可视化布局导出 300 DPI 的 PDF（M3）
     const handleExportPdf = async (ua) => {
@@ -652,12 +653,51 @@ const MyAwardsView = ({ user }) => {
         }
     };
 
-    useEffect(() => {
-        apiFetch('/user/my-awards')
-            .then(setAwards)
-            .catch(console.error)
-            .finally(()=>setLoading(false));
-    }, []);
+    // 抽成具名函数：撤回后要复用同一套加载逻辑刷新列表
+    const load = async () => {
+        try {
+            const list = await apiFetch('/user/my-awards');
+            setAwards(Array.isArray(list) ? list : []);
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => { load(); }, []);
+
+    /**
+     * 撤回自己已领取的奖状（2026-09-30 用户需求）
+     * ------------------------------------------------------------------
+     * **理由必填**，会写进审计（`award.withdraw`）并站内通知管理员。
+     * 撤回是**软操作**：台账行保留（有序列号、可扫码追溯），只是从「我的奖状」隐藏、
+     * 校验页标记为「已由持证人撤回」，且之后仍可重新申请同一等级。
+     */
+    const handleWithdraw = async (ua) => {
+        if (demoGuard()) return;
+        const reason = await promptDialog({
+            title: '撤回奖状',
+            message: `确认撤回「${ua.name || '该奖状'}」？`,
+            detail: `撤回后这张奖状不再有效${ua.serial_number ? `（序列号 ${ua.serial_number} 的校验页会标记为「已撤回」）` : ''}，并会从「我的奖状」里移除。\n撤回理由会写入审计日志（管理员可查）；撤回后你仍可重新申请。`,
+            placeholder: '请填写撤回理由（必填）',
+            confirmText: '确认撤回',
+            danger: true,
+        });
+        if (reason === null) return; // 点了取消
+        setWithdrawingId(ua.id);
+        try {
+            await apiFetch(`/user/my-awards/${ua.id}/withdraw`, {
+                method: 'POST',
+                body: JSON.stringify({ reason: String(reason).trim() }),
+            });
+            await load();
+        } catch (e) {
+            alert(e.message || '撤回失败');
+        } finally {
+            setWithdrawingId(null);
+        }
+    };
 
     if (loading) return <div className="text-center p-8 text-slate-400">加载中...</div>;
 
@@ -789,8 +829,17 @@ const MyAwardsView = ({ user }) => {
                                      >
                                         {exportingId === ua.id ? <Loader2 size={14} className="animate-spin"/> : <Download size={14}/>}
                                         {exportingId === ua.id ? '导出中…' : '下载 PDF'}
-                                     </button>
-                                 </div>
+                                        </button>
+                                        {/* 撤回：理由必填、写审计、通知管理员。已下架的记录本身已失效，不需要撤 */}
+                                        <button
+                                         onClick={(e)=>{ e.stopPropagation(); handleWithdraw(ua); }}
+                                         disabled={withdrawingId === ua.id || ua.detached}
+                                         title={ua.detached ? '原奖状已被删除，无需撤回' : '撤回这张奖状（需填写理由，会记入审计）'}
+                                         className="text-xs font-bold px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-60"
+                                        >
+                                         {withdrawingId === ua.id ? '提交中…' : '撤回'}
+                                        </button>
+                                        </div>
                             </div>
                         </div>
                     );
@@ -2772,7 +2821,16 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                     ) : roleReq.status === 'pending' ? (
                         <div className="text-sm text-amber-600 bg-amber-50 px-4 py-2.5 rounded-lg">申请已提交，等待管理员审核…</div>
                     ) : (
-                        <div className="text-sm text-green-600 bg-green-50 px-4 py-2.5 rounded-lg">申请已通过，重新登录后生效。</div>
+                        <div className="space-y-2">
+                            <div className="text-sm text-green-600 bg-green-50 px-4 py-2.5 rounded-lg">申请已通过，重新登录后生效。</div>
+                            {/* 审核人通过时留的留言（可选填）：让申请人不用去翻通知也能看到 */}
+                            {roleReq.approve_message && (
+                                <div className="rounded-lg border border-green-100 bg-white p-3 text-xs text-slate-600">
+                                    <div className="mb-1 font-bold text-slate-500">管理员留言</div>
+                                    <div className="whitespace-pre-wrap break-words">{roleReq.approve_message}</div>
+                                </div>
+                            )}
+                        </div>
                     )}
                 </div>
             )}
@@ -3162,6 +3220,7 @@ const UserManage = () => {
 
     const reviewRoleRequest = async (id, action) => {
         let reason = '';
+        let message = '';
         if (action === 'reject') {
             const r = await promptDialog({
                 title: '驳回升级申请',
@@ -3173,17 +3232,22 @@ const UserManage = () => {
             if (!r) return;
             reason = r;
         } else {
-            const ok = await confirmDialog({
+            // 「通过」也支持捎一句**可选**留言：会写进站内通知与审计，并显示在申请人的「角色权限」卡片上。
+            // promptDialog 默认 required=true，这里显式关掉 —— 留空直接提交 = 不留言。
+            const msg = await promptDialog({
                 title: '通过升级申请',
                 message: '确认通过该用户的「奖状管理员」申请？',
-                detail: '通过后该用户角色立即变更为奖状管理员，需要其重新登录才生效。',
+                detail: '通过后该用户角色立即变更为奖状管理员，需要其重新登录才生效。留言可以不填。',
+                placeholder: '可选：给申请人的留言（会随站内通知发送）',
                 confirmText: '通过',
+                required: false,
             });
-            if (!ok) return;
+            if (msg === null) return; // 点了取消
+            message = msg || '';
         }
         setReviewingReqId(id);
         try {
-            await apiFetch(`/admin/role-requests/${id}/review`, { method: 'POST', body: JSON.stringify({ action, reason }) });
+            await apiFetch(`/admin/role-requests/${id}/review`, { method: 'POST', body: JSON.stringify({ action, reason, message }) });
             loadRoleRequests();
             loadUsers();
         } catch (err) {
