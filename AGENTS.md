@@ -255,13 +255,13 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 主要模块：
 
-| 前缀                                    | 用途                                                                                                | 权限                                        |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------- | ---- |
-| `/api/system-status`                    | 系统状态（是否已安装、adminPath）                                                                   | 公开                                        |
-| `/api/install`                          | 首次安装向导                                                                                        | 未安装时公开                                |
+| 前缀 | 用途 | 权限 |
+| ---------- | --------------- | ------------------ |
+| `/api/system-status`| 系统状态（是否已安装、adminPath）| 公开|
+| `/api/install`| 首次安装向导| 未安装时公开|
 | `/api/auth/login`、`/api/auth/register` | 登录 / 注册                                                                                         | 公开                                        |
 | `/api/stats/dashboard`                  | 仪表盘统计                                                                                          | 登录                                        |
-| `/api/user/*`                           | 个人中心：profile、`2fa/setup                                                                       | enable                                      | disable`、password、logs、account、my-awards、qsos | 登录 |
+| `/api/user/*`                           | 个人中心：profile、`2fa/setup`、enable / disable、password、logs、account、my-awards、qsos | 登录 |
 | `/api/logbook/upload`                   | ADIF 日志上传                                                                                       | 登录                                        |
 | `/api/lotw/connect`                     | 读取 LoTW 报表到**内存会话**（不落库、不落盘）                                                      | 登录                                        |
 | `/api/lotw/evaluate`                    | 用内存会话判定奖状进度                                                                              | 登录                                        |
@@ -510,6 +510,9 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 38. **颁发管理三级折叠**：`GET /api/admin/issued-awards` 新增 `creator_call`（多 join 一次 `users`，别名与申请人的 `u` 区分）；`IssuanceManager` 重写为 发布人（默认展开）→ 奖状（默认折叠）→ 详情行，带关键字搜索（覆盖发布人/奖状名/编号/序列号/申请人/等级，**命中路径自动展开**）、每级计数、全部展开/折叠；`detached` 记录仍走原独立区块 + 一键清理。
 39. **两个顺手修复**：① `UserCenterView` 进页面调用一次 `refreshUser()` —— 否则用户中心的 `user` 来自 localStorage 快照，会出现「明明绑了邮箱却显示未绑定、新加的开关被误禁用」；② `AuditLogsView` 的 `DETAIL_LABELS` 去掉重复的 `level`/`serial` 键（vite 构建告警），并补齐本轮新增动作的中文名与 detail 标签。
 
+40. **安全审计整改（2026-09-30，提交 `de02a40`，OAuth 相关）**：① **补上邮箱验证门槛**：`/complete`（绑定已有账号 / 新建账号）与 `/code` 两条出 JWT 路径此前不查 `email_verified`，未验证邮箱账号可经 HamCQ 授权绕过登录策略；现统一复用与密码登录一致的 `EMAIL_NOT_VERIFIED` 拦截（403 + 含 `email` 字段，前端可弹「重发验证邮件」）。**策略**：新建 OAuth 账号因邮箱来自受信 IdP HamCQ，INSERT 时直接置 `email_verified=TRUE`；绑定/回填邮箱时也一并置验证（避免「有 IdP 邮箱却被门槛卡死」）；存量未验证账号无论哪种渠道一律拦下。② **state 内存泄漏**：`server/services/sessionStore.js` 内存回退加 5 分钟周期清扫（`setInterval` + `unref`），防 `/start` 公开未限流导致 Map 无限增长（Redis 后端由 TTL 自然淘汰，无需此扫）。③ **上游错误不外泄**：`/callback` 换令牌 / 取用户信息失败不再记录上游响应正文、抛错文本去掉片段；异常 catch 不再把 `e.message` 回显浏览器，仅留服务端日志（符合「不记录凭据」约束）。
+   - 中危依赖告警（minio@8.0.7 传递依赖 decode-uri-component / stream-json，4 个 moderate）**维持现状**：`npm audit fix --force` 会降级到 MinIO 7.x 破坏功能，按「不可达」接受（见 §4 依赖红线）。
+
 ### ★ 邮件 / 账号安全 / 部署红线（2026-09-30 追加，给后续 AI 的硬约束）
 
 **邮件**
@@ -529,6 +532,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 **账号安全**
 - 🔴 **OAuth 出 JWT 的两条路径（`/api/auth/oauth/complete`、`/api/auth/oauth/code`）必须校验 `totp_secret`**（字段 `totp_code`），失败时**绝不消费** pendingToken / 一次性换码。这是 2026-09-30 修掉的高危（否则启用 2FA 的账号走一遍 HamCQ 授权即可免验证码登录）——**勿回退**。
+- 🔴 **OAuth 同样必须过邮箱验证门槛**（2026-09-30 审计整改，提交 `de02a40`）：两条出 JWT 路径统一调 `verifyEmailGate()`，`email_verified === false` 一律 403 `EMAIL_NOT_VERIFIED`（与密码登录一致），否则未验证邮箱账号可经 HamCQ 授权绕过登录策略。**新建 OAuth 账号因邮箱来自受信 IdP，INSERT 置 `email_verified=TRUE`**；绑定/回填邮箱也一并置验证。**勿回退**，改 OAuth 后重跑 `selftest-oauth-2fa.mjs` 并顺手验一遍未验证账号走 OAuth 应被拦。
 - ⚠️ `server/routes/oauth.js` 的 `/callback` 里 `const email` 有 **TDZ 陷阱**：任何代码/日志写在声明之前都会抛 `ReferenceError`，被外层 catch 吞掉 → **回调必然 500（OAuth 全挂）**。
 - **邮箱验证是登录门槛**：`users.email_verified=false` → 登录 403。⚠️ 改动用户数据（导入/迁移/批量脚本）时注意**存量账号必须回填为已验证**，否则全员被锁在门外。
 - ⚠️ `users.callsign` 一词三义（登录名/展示名/呼号），校验不一致，但**QSO 匹配只用 `user_id`**；用户已拍板**维持现状不修**，别主动重提。
