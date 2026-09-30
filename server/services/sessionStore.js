@@ -89,6 +89,14 @@ export function createTtlStore(prefix) {
 
   // ---- 内存回退：行为与改造前一致 ----
   const m = new Map();
+  // 周期性扫描清理过期键（2026-09-30 审计整改）：`/start` 是公开且未限流的接口，若用户发起
+  // 授权后放弃（不回调），对应 state 永远等不到 `get()` 来清理，长期高频访问会让 Map 无限
+  // 增长 → 内存耗尽风险。Redis 后端由 TTL 自然淘汰，无需此扫。
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [k, e] of m) if (e.exp <= now) m.delete(k);
+  }, 5 * 60 * 1000);
+  if (sweep && sweep.unref) sweep.unref(); // 不阻止进程正常退出
   return {
     async set(key, value, ttlMs) {
       m.set(key, { v: value, exp: Date.now() + ttlMs });

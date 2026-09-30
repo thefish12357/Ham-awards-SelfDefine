@@ -111,6 +111,39 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   };
 
   /**
+   * 强制邮箱验证门槛（与密码登录 /api/auth/login 的 EMAIL_NOT_VERIFIED 对齐，2026-09-30 审计整改）
+   * ------------------------------------------------------------------
+   * 原漏洞：密码登录会拒绝 `email_verified=false` 的账号，但 OAuth 的两条出 JWT 路径
+   * （/complete 绑定已有账号、/code 换登录）**都没查**，于是未验证邮箱的账号只要走一遍
+   * HamCQ 授权就能拿到 JWT、使用站内功能 —— 等于绕过了登录策略。
+   *
+   * 这里统一复用同一套判定：返回 null = 放行；否则把 { status, body } 原样回给前端
+   * （含 email 字段，方便前端弹出「重发验证邮件」入口，与密码登录体验一致）。
+   * 新建 OAuth 账号一律把 email_verified 置 TRUE（邮箱由受信 IdP HamCQ 提供并认证，
+   * 视为已验证），因此新号不会被此门槛卡住；存量未验证账号（无论密码还是 OAuth 绑定）
+   * 一律按同一规则拦截。
+   */
+  const verifyEmailGate = async (req, user) => {
+    if (user.email_verified === false) {
+      await audit(req, {
+        action: 'auth.login_blocked',
+        targetType: 'user',
+        targetId: user.id,
+        detail: { callsign: user.callsign, reason: 'EMAIL_NOT_VERIFIED', channel: 'hamcq' },
+      });
+      return {
+        status: 403,
+        body: {
+          error: 'EMAIL_NOT_VERIFIED',
+          message: '邮箱尚未验证：请到注册时填写的邮箱里点验证链接',
+          email: user.email || null,
+        },
+      };
+    }
+    return null;
+  };
+
+  /**
    * 记一次 2FA 失败。超过上限直接作废本次会话 ——
    * 否则在「换码 60s / 待绑定 10min」这个窗口里可以反复试 6 位验证码。
    */
@@ -200,9 +233,8 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       });
       console.log(`[oauth] 换令牌 -> POST ${cfg.tokenUrl} 结果 status=${tokenRes.status}`);
       if (!tokenRes.ok) {
-        const t = await tokenRes.text().catch(() => '');
-        console.error(`[oauth] 换令牌失败 status=${tokenRes.status} 响应片段=${t.slice(0, 200)}`);
-        throw new Error(`换令牌失败（${tokenRes.status}）${t.slice(0, 120)}`);
+        console.error(`[oauth] 换令牌失败 status=${tokenRes.status}`);
+        throw new Error(`授权服务器返回错误（${tokenRes.status}）`);
       }
       const tokens = await tokenRes.json();
       const accessToken = tokens.access_token;
@@ -218,8 +250,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       });
       console.log(`[oauth] 取用户信息 -> status=${uiRes.status}`);
       if (!uiRes.ok) {
-        const t = await uiRes.text().catch(() => '');
-        console.error(`[oauth] 取用户信息失败 status=${uiRes.status} 响应片段=${t.slice(0, 200)}`);
+        console.error(`[oauth] 取用户信息失败 status=${uiRes.status}`);
         throw new Error(`获取用户信息失败（${uiRes.status}）`);
       }
       const profile = await uiRes.json();
@@ -251,7 +282,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         // （绝不覆盖用户已有值）
         // 还要确保该邮箱没被**别的**账号占用（同一邮箱只允许绑一个账号）
         if (!u.email && email && !(await isEmailTaken(db(), email, u.id))) {
-          await db().query("UPDATE users SET email=$1, email_source='hamcq' WHERE id=$2", [email, u.id]);
+          await db().query("UPDATE users SET email=$1, email_source='hamcq', email_verified=TRUE, email_verified_at=NOW() WHERE id=$2", [email, u.id]);
         }
         // 安全加固（审计整改）：不直接把长期 JWT 放进 URL（会进浏览器历史/扩展/截图）。
         // 改为签发一次性短时效换码，前端再 POST /code 换取 JWT。
@@ -278,7 +309,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       );
     } catch (e) {
       console.error('[oauth] callback 异常中断:', e?.message || e);
-      res.status(500).send(`登录失败：${e.message}`);
+      res.status(500).send('登录失败：授权服务器异常，请稍后重试');
     }
   });
 
@@ -333,7 +364,7 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       const emailTaken = pending.email ? await isEmailTaken(db(), pending.email, u.id) : false;
       const emailBackfilled = !u.email && !!pending.email && !emailTaken;
       if (emailBackfilled) {
-        await db().query("UPDATE users SET email=$1, email_source='hamcq' WHERE id=$2", [pending.email, u.id]);
+        await db().query("UPDATE users SET email=$1, email_source='hamcq', email_verified=TRUE, email_verified_at=NOW() WHERE id=$2", [pending.email, u.id]);
       }
       await pendingBinds.del(pendingToken);
       // 审计：OAuth「绑定已有账号」也是一次登录，必须留痕（此前漏记，导致用户登录查不到）
@@ -350,6 +381,9 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
           email_conflict: emailTaken || undefined,
         },
       });
+      // ★ 邮箱门槛（审计整改）：绑定已有账号 = 一次完整登录，未验证邮箱一律拦下（与密码登录一致）
+      const emailGate1 = await verifyEmailGate(req, u);
+      if (emailGate1) return res.status(emailGate1.status).json(emailGate1.body);
       return res.json({ token: signToken(u), user: publicUser(u) });
     }
 
@@ -371,8 +405,8 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
     const newEmailTaken = pending.email ? await isEmailTaken(db(), pending.email) : false;
     const bindEmail = pending.email && !newEmailTaken ? pending.email : null;
     const created = await db().query(
-      `INSERT INTO users (callsign, password_hash, role, oauth_provider, oauth_sub, oauth_raw, invite_code, email, email_source)
-       VALUES ($1, $2, 'user', $3, $4, $5, $6, $7, $8) RETURNING *`,
+      `INSERT INTO users (callsign, password_hash, role, oauth_provider, oauth_sub, oauth_raw, invite_code, email, email_source, email_verified, email_verified_at)
+       VALUES ($1, $2, 'user', $3, $4, $5, $6, $7, $8, TRUE, NOW()) RETURNING *`,
       [cs, hash, pending.provider, pending.sub, JSON.stringify(pending.profile), usedCode, bindEmail, bindEmail ? 'hamcq' : null],
     );
     await pendingBinds.del(pendingToken);
@@ -389,6 +423,10 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       actor: { id: u.id, callsign: u.callsign, role: u.role },
       detail: { channel: 'hamcq', created: true },
     });
+    // ★ 邮箱门槛（审计整改）：新建 OAuth 账号已在 INSERT 时置 email_verified=TRUE，此处门槛恒通过；
+    //   保留检查是防御性一致（万一未来策略变动，不致从这条路径漏过去）。
+    const emailGate2 = await verifyEmailGate(req, u);
+    if (emailGate2) return res.status(emailGate2.status).json(emailGate2.body);
     return res.json({ token: signToken(u), user: publicUser(u) });
   });
 
@@ -432,6 +470,10 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         actor: { id: u.id, callsign: u.callsign, role: u.role },
         detail: { channel: 'hamcq' },
       });
+      // ★ 邮箱门槛（审计整改）：一次性换码只证明 HamCQ 授权成功，不等于本站邮箱已验证；
+      //   未验证邮箱的存量账号（无论最初密码还是 OAuth 注册）一律拦下，与密码登录一致。
+      const emailGate3 = await verifyEmailGate(req, u);
+      if (emailGate3) return res.status(emailGate3.status).json(emailGate3.body);
       res.json({ token: signToken(u), user: publicUser(u) });
     } catch (e) {
       res.status(500).json({ error: 'SERVER_ERROR' });
