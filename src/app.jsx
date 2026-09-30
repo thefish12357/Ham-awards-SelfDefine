@@ -3473,30 +3473,61 @@ export default function App() {
         oauthCodeRef.current = true;
         // 安全加固（审计整改）：URL 里只有一次性短码，POST 向后端换 JWT，
         // 避免长期 JWT 暴露在地址栏/历史/浏览器扩展可见范围。
-        apiFetch('/auth/oauth/code', { method: 'POST', body: JSON.stringify({ code }) })
-          .then((data) => {
-            if (data && data.token && data.user) {
-              localStorage.setItem('ham_token', data.token);
-              localStorage.setItem('ham_user', JSON.stringify(data.user));
-              setUser(data.user);
-              setView('main');
-              setSubView(DEFAULT_ROUTE);
-              window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/dashboard`);
-            } else {
-              setView('auth');
+        // ★ 2FA（2026-09-30 安全整改）：账号启用了两步验证时后端会回 2FA_REQUIRED /
+        //   INVALID_2FA —— 此时后端**不会消费换码**，这里就地要一次验证码再重试。
+        (async () => {
+          const body = { code };
+          for (let attempt = 0; attempt < 4; attempt += 1) {
+            try {
+              const data = await apiFetch('/auth/oauth/code', { method: 'POST', body: JSON.stringify(body) });
+              if (data && data.token && data.user) {
+                localStorage.setItem('ham_token', data.token);
+                localStorage.setItem('ham_user', JSON.stringify(data.user));
+                setUser(data.user);
+                setView('main');
+                setSubView(DEFAULT_ROUTE);
+                window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/dashboard`);
+              } else {
+                setView('auth');
+              }
+              return;
+            } catch (err) {
+              if (err.error === '2FA_REQUIRED' || err.error === 'INVALID_2FA') {
+                const input = window.prompt(
+                  err.error === 'INVALID_2FA'
+                    ? '验证码无效，请重新输入两步验证码：'
+                    : '该账号已启用两步验证，请输入动态验证码：',
+                );
+                if (input && String(input).trim()) {
+                  body.totp_code = String(input).trim();
+                  continue;
+                }
+                setAuthMode('login');
+                setView('auth');
+                return;
+              }
+              if (err.error === 'CODE_INVALID') {
+                alert('登录码已失效（可能已使用或超时），请重新登录');
+                setAuthMode('login');
+                setView('auth');
+                return;
+              }
+              // 兜底：若本地其实已有登录态（例如换码被重复消费 / 网络抖动），
+              // 不要把已经登录的用户踢回登录页。
+              const savedUser = localStorage.getItem('ham_user');
+              if (savedUser && localStorage.getItem('ham_token')) {
+                setUser(JSON.parse(savedUser));
+                setView('main');
+              } else {
+                setView('auth');
+              }
+              return;
             }
-          })
-          .catch(() => {
-            // 兜底：若本地其实已有登录态（例如换码被重复消费 / 网络抖动），
-            // 不要把已经登录的用户踢回登录页。
-            const savedUser = localStorage.getItem('ham_user');
-            if (savedUser && localStorage.getItem('ham_token')) {
-              setUser(JSON.parse(savedUser));
-              setView('main');
-            } else {
-              setView('auth');
-            }
-          });
+          }
+          alert('验证码多次不正确，请重新登录');
+          setAuthMode('login');
+          setView('auth');
+        })();
         return;
       }
     }
@@ -3737,18 +3768,38 @@ export default function App() {
       const callsign = e.target.callsign.value;
       const password = e.target.password.value;
       const inviteCode = e.target.invite_code ? e.target.invite_code.value : '';
-      try {
-          const res = await apiFetch('/auth/oauth/complete', { method: 'POST', body: JSON.stringify({ pending_token: oauthPendingToken, callsign, password, invite_code: inviteCode }) });
-          localStorage.setItem('ham_token', res.token);
-          localStorage.setItem('ham_user', JSON.stringify(res.user));
-          setUser(res.user);
-          setView('main');
-          setSubView(DEFAULT_ROUTE);
-          setOauthPendingToken(null);
-          window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/dashboard`);
-      } catch (err) {
-          alert(err.message || '登录失败');
+      // ★ 2FA（2026-09-30 安全整改）：「呼号已注册 → 验密绑定」这条路径现在也要求两步验证。
+      //   后端在验证码缺失/错误时**不消费** pending_token，所以可以就地补验证码重试。
+      const payload = { pending_token: oauthPendingToken, callsign, password, invite_code: inviteCode };
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+          try {
+              const res = await apiFetch('/auth/oauth/complete', { method: 'POST', body: JSON.stringify(payload) });
+              localStorage.setItem('ham_token', res.token);
+              localStorage.setItem('ham_user', JSON.stringify(res.user));
+              setUser(res.user);
+              setView('main');
+              setSubView(DEFAULT_ROUTE);
+              setOauthPendingToken(null);
+              window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/dashboard`);
+              return;
+          } catch (err) {
+              if (err.error === '2FA_REQUIRED' || err.error === 'INVALID_2FA') {
+                  const input = window.prompt(
+                      err.error === 'INVALID_2FA'
+                          ? '验证码无效，请重新输入该账号的两步验证码：'
+                          : '该账号已启用两步验证，请输入动态验证码后重试：',
+                  );
+                  if (input && String(input).trim()) {
+                      payload.totp_code = String(input).trim();
+                      continue;
+                  }
+                  return;
+              }
+              alert(err.message || '登录失败');
+              return;
+          }
       }
+      alert('验证码多次不正确，请重新登录');
   };
 
   const handleLogout = () => {

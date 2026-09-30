@@ -25,6 +25,8 @@ import express from 'express';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+// 2FA：与密码登录共用同一个 otplib 实例（server.js 已设 window:1；ESM 单例，这里拿到同一份配置）
+import otplib from 'otplib';
 // 内测门禁：OAuth 首次建号也要邀请码，否则会绕过注册关（绑定已有账号不需要）
 import { consumeInviteCode, inviteError, isInviteRequired } from '../services/invites.js';
 import { createTtlStore } from '../services/sessionStore.js';
@@ -86,6 +88,42 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
 
   const signToken = (user) =>
     jwt.sign({ id: user.id, role: user.role, callsign: user.callsign, tv: user.token_version ?? 0 }, getConfig().jwtSecret, { expiresIn: '24h' });
+
+  /**
+   * 2FA 强制校验（2026-09-30 安全整改）
+   * ------------------------------------------------------------------
+   * 原漏洞：密码登录会强制校验 `totp_secret`（见 server.js `/api/auth/login`），
+   * 但 OAuth 的两条出 JWT 的路径（`/complete` 绑定已有账号、`/code` 换登录）**都没查** ——
+   * 于是**启用了 2FA 的账号只要走一遍 HamCQ 授权就能跳过验证码**，等于 2FA 形同虚设。
+   *
+   * 现在两条路径都必须带上 `totp_code`。返回 null = 通过；否则把 { status, body } 原样回给前端。
+   * ⚠️ 校验失败时调用方**绝不能消费** pendingToken / 一次性换码，否则用户没有机会补验证码重试。
+   */
+  const TOTP_MAX_FAILS = 5;
+  const verifyTotp = (user, provided) => {
+    if (!user?.totp_secret) return null; // 未启用 2FA → 不拦
+    const code = String(provided || '').trim();
+    if (!code) return { status: 403, body: { error: '2FA_REQUIRED', message: '该账号已启用两步验证，请输入动态验证码' } };
+    if (!otplib.authenticator.check(code, user.totp_secret)) {
+      return { status: 403, body: { error: 'INVALID_2FA', message: '两步验证码无效' } };
+    }
+    return null;
+  };
+
+  /**
+   * 记一次 2FA 失败。超过上限直接作废本次会话 ——
+   * 否则在「换码 60s / 待绑定 10min」这个窗口里可以反复试 6 位验证码。
+   */
+  const bumpTotpFails = async (store, key, entry) => {
+    const fails = (entry?.tfaFails || 0) + 1;
+    if (fails >= TOTP_MAX_FAILS) {
+      await store.del(key);
+      return fails;
+    }
+    const exp = entry?.exp || entry?.expiresAt || 0;
+    await store.set(key, { ...entry, tfaFails: fails }, Math.max(1000, exp - Date.now()));
+    return fails;
+  };
 
   // ---- 前端查询：当前启用的 OAuth 提供方（登录页据此渲染按钮）----
   router.get('/providers', (req, res) => {
@@ -194,11 +232,14 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         console.error(`[oauth] 字段映射失败 callsignField=${cfg.callsignField}->'${callsign}' userSubField=${cfg.userSubField}->'${sub}'`);
         throw new Error('未能从授权服务器获取呼号 / 用户 ID');
       }
-      console.log(`[oauth] 解析成功 callsign=${callsign} sub=${sub} 有邮箱=${!!email}（值不打印）`);
       // HamCQ 的邮箱（可能为空，取决于 scope / 是否已验证）。
       // 非法格式一律当作「没有」——绝不因为一个邮箱把整条登录链路打断。
       const providerEmail = normalizeEmail(profile[cfg.emailField]);
       const email = providerEmail === '' ? null : providerEmail;
+      // ⚠️ 这一行**必须放在 `email` 声明之后**：`const` 有暂时性死区（TDZ），
+      //    写在前面会抛 ReferenceError → 被外层 catch 捕获 → 回调直接 500。
+      //    （2026-09-30 审计发现：日志断点最初写在了声明之前。）
+      console.log(`[oauth] 解析成功 callsign=${callsign} sub=${sub} 有邮箱=${!!email}（值不打印）`);
 
       // 3) 已绑定过 → 直接登录
       const bound = await db().query('SELECT * FROM users WHERE oauth_provider=$1 AND oauth_sub=$2', [cfg.provider, sub]);
@@ -243,9 +284,9 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
 
   // ---- 补全信息：确认呼号 → 绑定已有账号（需密码）或创建新账号 ----
   router.post('/complete', async (req, res) => {
-    const { pending_token: pendingToken, callsign, password, invite_code: inviteCode } = req.body || {};
+    const { pending_token: pendingToken, callsign, password, invite_code: inviteCode, totp_code: totpCode } = req.body || {};
     // ★ 日志断点③：补全信息页提交 —— 第一次建号 / 绑定老账号都从这里过
-    console.log(`[oauth] complete: pending=${pendingToken ? `${String(pendingToken).slice(0, 6)}…` : '无'} 呼号=${callsign || '(空)'} 有密码=${!!password} 邀请码=${inviteCode ? '有' : '无'}`);
+    console.log(`[oauth] complete: pending=${pendingToken ? `${String(pendingToken).slice(0, 6)}…` : '无'} 呼号=${callsign || '(空)'} 有密码=${!!password} 邀请码=${inviteCode ? '有' : '无'} 2FA=${totpCode ? '有' : '无'}`);
     if (!pendingToken) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少参数' });
     const pending = await pendingBinds.get(pendingToken);
     if (!pending || pending.expiresAt < Date.now()) {
@@ -271,6 +312,15 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       }
       const ok = await bcrypt.compare(password, u.password_hash);
       if (!ok) return res.status(401).json({ error: 'AUTH_FAILED', message: '密码错误，绑定失败' });
+
+      // ★ 2FA（安全整改）：绑定已有账号 = 一次完整登录，必须和密码登录一样过两步验证。
+      //   失败时**不消费** pendingToken，前端可带上 totp_code 重试（TTL 10 分钟）。
+      const tfaErr = verifyTotp(u, totpCode);
+      if (tfaErr) {
+        const fails = await bumpTotpFails(pendingBinds, pendingToken, pending);
+        console.error(`[oauth] complete 被 2FA 拦下：callsign=${u.callsign} ${tfaErr.body.error} 第 ${fails} 次`);
+        return res.status(tfaErr.status).json(tfaErr.body);
+      }
 
       await db().query('UPDATE users SET oauth_provider=$1, oauth_sub=$2, oauth_raw=$3 WHERE id=$4', [
         pending.provider,
@@ -344,9 +394,9 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
 
   // ---- 一次性换码：前端拿 URL 里的 code 来换 JWT（code 不长期留在 URL/历史里）----
   router.post('/code', async (req, res) => {
-    const { code } = (req.body || {});
+    const { code, totp_code: totpCode } = (req.body || {});
     // ★ 日志断点④：前端拿一次性换码换 JWT（"已绑定 → 直接登录"这条路径的最后一跳）
-    console.log(`[oauth] code 换登录: ${code ? `${String(code).slice(0, 6)}…(len=${String(code).length})` : '无'}`);
+    console.log(`[oauth] code 换登录: ${code ? `${String(code).slice(0, 6)}…(len=${String(code).length})` : '无'} 2FA=${totpCode ? '有' : '无'}`);
     if (!code) return res.status(400).json({ error: 'BAD_REQUEST', message: '缺少换码' });
     const entry = await sessionCodes.get(code);
     if (!entry || entry.exp < Date.now()) {
@@ -354,12 +404,26 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       console.error('[oauth] code 换登录失败：换码无效或已过期（一次性，可能已被消费）');
       return res.status(401).json({ error: 'CODE_INVALID', message: '登录码无效或已过期，请重新登录' });
     }
-    await sessionCodes.del(code); // 一次性消费
     try {
       const r = await db().query('SELECT * FROM users WHERE id=$1', [entry.userId]);
       const u = r.rows[0];
-      if (!u) return res.status(401).json({ error: 'USER_NOT_FOUND', message: '账号不存在' });
-      if (u.status === 'disabled') return res.status(401).json({ error: 'ACCOUNT_DISABLED', message: '账号已被禁用' });
+      if (!u) {
+        await sessionCodes.del(code);
+        return res.status(401).json({ error: 'USER_NOT_FOUND', message: '账号不存在' });
+      }
+      if (u.status === 'disabled') {
+        await sessionCodes.del(code);
+        return res.status(401).json({ error: 'ACCOUNT_DISABLED', message: '账号已被禁用' });
+      }
+      // ★ 2FA（安全整改）：一次性换码只证明「HamCQ 那边授权成功」，**不等于**本站第二因素。
+      //   校验失败时**不消费换码**，前端可带上 totp_code 重试（TTL 60s，失败 5 次即作废）。
+      const tfaErr = verifyTotp(u, totpCode);
+      if (tfaErr) {
+        const fails = await bumpTotpFails(sessionCodes, code, entry);
+        console.error(`[oauth] code 换登录被 2FA 拦下：${u.callsign} ${tfaErr.body.error} 第 ${fails} 次`);
+        return res.status(tfaErr.status).json(tfaErr.body);
+      }
+      await sessionCodes.del(code); // 2FA 通过后才一次性消费
       // 审计：OAuth 已绑定账号的常规登录（此前漏记，导致用户登录查不到）
       await audit(req, {
         action: 'auth.login',

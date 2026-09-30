@@ -90,10 +90,23 @@ if (process.env.DEMO_MODE === 'true') {
 
 // 配置上传：日志 ADIF 与奖状底图分别限大小；底图额外限制为图片类型，避免磁盘耗尽
 const upload = multer({ dest: 'uploads/', limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+/**
+ * 允许上传的**位图**类型白名单（2026-09-30 安全整改）。
+ * ⚠️ 以前用的是 `/^image\//`，把 **SVG 也放进来了** —— 而 SVG 是可以内嵌 `<script>` 的，
+ * 媒体又是从**本站同源**直出的（/api/media 与 MinIO 对象地址），
+ * 于是「上传一个 SVG → 把这个地址发给别人打开」= 在本站源下执行任意 JS（存储型 XSS，
+ * 可读 localStorage 里的 token）。禁止 SVG 后这条路直接断掉。
+ * 另注：`file.mimetype` 由客户端提供、可伪造，所以下面 `storeAwardImage` 还会**按扩展名**
+ * 由服务端决定 Content-Type，`/api/media` 也补了 nosniff + CSP sandbox（三层防护）。
+ */
+const RASTER_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+/** 扩展名 → 安全 Content-Type（写入对象存储时用，不信任客户端 MIME）；不在表内的一律按 .png 处理 */
+const RASTER_MIME_BY_EXT = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+const rasterFileFilter = (req, file, cb) => cb(null, RASTER_MIME.has(String(file.mimetype || '').toLowerCase()));
 const uploadBg = multer({
   dest: 'uploads/',
   limits: { fileSize: 10 * 1024 * 1024, files: 1 },
-  fileFilter: (req, file, cb) => cb(null, /^image\//.test(file.mimetype)),
+  fileFilter: rasterFileFilter,
 });
 // 奖状里的元素图片（印章 / logo / 小图标）：比底图小得多。
 // 上限 2MB —— 与前端 `src/lib/uploadLimits.js` 的 ASSET_MAX_MB 必须一致；
@@ -101,7 +114,7 @@ const uploadBg = multer({
 const uploadAsset = multer({
   dest: 'uploads/',
   limits: { fileSize: 2 * 1024 * 1024, files: 1 },
-  fileFilter: (req, file, cb) => cb(null, /^image\//.test(file.mimetype)),
+  fileFilter: rasterFileFilter,
 });
 
 /**
@@ -835,8 +848,21 @@ app.post('/api/install', installLimiter, async (req, res) => {
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
       return res.status(403).json({ error: 'INSTALL_TOKEN_REQUIRED', message: '需要正确的安装令牌' });
     }
-  } else if (!isPrivateOrLoopback(req.ip)) {
-    return res.status(403).json({ error: 'INSTALL_LOCAL_ONLY', message: '安装接口仅允许本机或内网访问' });
+  } else {
+    // 未配置 INSTALL_TOKEN 时的兜底判断（2026-09-30 审计加固）。
+    // ⚠️ 漏洞场景：站点在**公网反向代理**后面，而 TRUST_PROXY 没开 —— 此时 `req.ip` 只会是
+    //    反代自己的地址（多半是内网/回环），于是"内网即安全"的判断会把**公网请求当内网放行**。
+    //    因此：只要带了转发头（说明前面有反代、而我们没解析真实 IP），就不再信任 req.ip，直接拒绝。
+    const forwarded = req.get('x-forwarded-for') || req.get('x-real-ip');
+    if (forwarded) {
+      return res.status(403).json({
+        error: 'INSTALL_TOKEN_REQUIRED',
+        message: '检测到反向代理但未配置 INSTALL_TOKEN，已拒绝安装请求；请在部署环境设置强随机 INSTALL_TOKEN',
+      });
+    }
+    if (!isPrivateOrLoopback(req.ip)) {
+      return res.status(403).json({ error: 'INSTALL_LOCAL_ONLY', message: '安装接口仅允许本机或内网访问' });
+    }
   }
 
   installInProgress = true;
@@ -1616,9 +1642,14 @@ async function storeAwardImage(file, prefix) {
     //   （表现为预览/导出 PDF 缺图，甚至因图片加载失败让导出卡住）。
     //   只取扩展名，主体用时间戳 + 随机串，彻底规避编码问题。
     const rawExt = path.extname(file.originalname || '').toLowerCase();
-    const ext = /^\.[a-z0-9]{1,5}$/.test(rawExt) ? rawExt : '.png';
+    // 扩展名同样来自客户端：只接受白名单位图后缀，其余一律按 .png 存。
+    // （对象名带 .svg 而内容其实不是图，会让某些查看器按 SVG 解析 —— 也是 XSS 面）
+    const ext = RASTER_MIME_BY_EXT[rawExt] ? rawExt : '.png';
+    // ★ 内容类型由**服务端**按扩展名决定，不用客户端的 file.mimetype：
+    //   否则伪造 `image/png` 头传 SVG，桶里就会存成可执行文档（2026-09-30 审计）。
+    const contentType = RASTER_MIME_BY_EXT[ext];
     const fileName = `awards/${prefix}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}${ext}`;
-    await minioClient.putObject(appConfig.minioBucket, fileName, fs.createReadStream(file.path), { 'Content-Type': file.mimetype });
+    await minioClient.putObject(appConfig.minioBucket, fileName, fs.createReadStream(file.path), { 'Content-Type': contentType });
     // 写进数据库的是给浏览器直接访问的绝对地址，需要能解析到 MinIO。
     // 容器里存对象走服务名（minio:9000），但浏览器解析不了服务名，
     // 因此允许配置/环境变量单独指定对外地址。
@@ -1639,14 +1670,18 @@ async function storeAwardImage(file, prefix) {
 
 // 奖状底图上传（上限 10MB，与前端 BG_MAX_MB 一致）
 app.post('/api/awards/upload-bg', verifyToken, verifyAwardAdmin, handleUpload(uploadBg.single('bg'), 10), async (req, res) => {
-    if (!req.file || !minioClient) return res.status(400).json({ error: 'UPLOAD_FAILED', message: '上传失败，或对象存储未配置' });
+    // fileFilter 拒掉的文件不会进 req.file → 这里把「类型不支持」也说清楚（别只说"上传失败"）
+    if (!req.file) return res.status(400).json({ error: 'UPLOAD_FAILED', message: '上传失败：仅支持 PNG / JPEG / WebP / GIF 图片（不支持 SVG）' });
+    if (!minioClient) return res.status(400).json({ error: 'UPLOAD_FAILED', message: '上传失败：对象存储未配置' });
     try { res.json(await storeAwardImage(req.file, 'bg')); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // 奖状「图片元素」上传（上限 2MB，与前端 ASSET_MAX_MB 一致）。
 // 与底图分开一个接口是为了用不同的体积上限 —— 元素图片（印章/logo）不需要底图那么大。
 app.post('/api/awards/upload-asset', verifyToken, verifyAwardAdmin, handleUpload(uploadAsset.single('image'), 2), async (req, res) => {
-    if (!req.file || !minioClient) return res.status(400).json({ error: 'UPLOAD_FAILED', message: '上传失败，或对象存储未配置' });
+    // 同上：类型被 fileFilter 拒掉时给出明确原因
+    if (!req.file) return res.status(400).json({ error: 'UPLOAD_FAILED', message: '上传失败：仅支持 PNG / JPEG / WebP / GIF 图片（不支持 SVG）' });
+    if (!minioClient) return res.status(400).json({ error: 'UPLOAD_FAILED', message: '上传失败：对象存储未配置' });
     try { res.json(await storeAwardImage(req.file, 'img')); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1945,6 +1980,11 @@ app.get('/api/media', async (req, res) => {
         const contentType = (stat.metaData && stat.metaData['content-type']) || 'application/octet-stream';
         res.setHeader('Content-Type', contentType);
         res.setHeader('Cache-Control', 'public, max-age=3600');
+        // 安全（2026-09-30 审计）：桶里可能还留着更早上传的 SVG（现在已禁止上传）。
+        // 直接打开这个地址时，`sandbox` 会**禁用 SVG 内嵌脚本**，nosniff 阻止 MIME 嗅探；
+        // 这两行只在「当地址栏里的文档打开」时生效，`<img>` 里正常加载不受影响。
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', 'sandbox');
         const stream = await minioClient.getObject(appConfig.minioBucket, key);
         stream.on('error', () => { if (!res.headersSent) res.status(500).end(); else res.destroy(); });
         stream.pipe(res);

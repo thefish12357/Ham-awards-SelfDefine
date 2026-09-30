@@ -121,3 +121,6 @@ npm run dev             # 终端 2 -> http://localhost:5173 ，/api 自动代理
 - **`config.json` 含 `jwtSecret` 与数据库口令**，已在 `.gitignore` 中排除，切勿提交。
 - **端口冲突**：若本机 9993 / 5173 / 9000 / 9001 / 55432 被占用，改 `.env` 里的 `*_HOST_PORT` 即可。
 - **`uploads/` 是 multer 的临时目录**，容器内为 `/app/uploads`，不持久化也无妨（文件解析后即删）。
+- 🔴 **公网部署务必设置 `INSTALL_TOKEN`**（强随机字符串，如 `openssl rand -hex 32`）。安装接口 `/api/install` 的防护顺序是：配了 `INSTALL_TOKEN` → 校验令牌；没配 → 只放行「本机回环 / 私有网段且**不带转发头**」的请求。**没配令牌又走反向代理时，请求会被直接拒绝**（2026-09-30 审计加固：以前只看 `req.ip`，而没开 `TRUST_PROXY` 时 `req.ip` 只是反代的内网地址，会把公网安装请求误当内网放行）。
+- **`TRUST_PROXY`**：仅当后端确实在可信反向代理后面（且代理会**覆盖**而不是透传客户端的 `X-Forwarded-For`）才设为 `true`。乱开会让 `req.ip` / 限流键（`clientIp`）可被客户端伪造。
+- **上传只接受位图**（PNG / JPEG / WebP / GIF）：**不支持 SVG**（SVG 可内嵌脚本，而媒体是从本站同源直出的，等于存储型 XSS）。实物材料上传另有 magic bytes 校验，只收 PNG / JPEG。
