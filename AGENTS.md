@@ -416,6 +416,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - **绝不记录凭据**：密码 / TOTP secret / LoTW 账号密码只记"是否发生过"（如 `password_reset: true`），不进 `detail`。
 - 写入是 **best-effort**：审计失败只打 `console.error`，绝不阻断业务；`actor_id` 用 `ON DELETE SET NULL` + 冗余 `actor_callsign`，删号后仍能追溯。
 - **与「单奖状审核流水」分清**：`awards.audit_log`（JSONB）是**单张奖状**的业务时间线，可见范围 = 该奖状的管理员 + `admin`；`audit_logs` 表是**全站**记录，只有 `admin` 能查（页面 `#/admin_logs`）。
+- 🔴 **申领奖状有两条路径，都要写审计**（2026-10-01 修，提交 `7efcd4c`）：① 主路径 `POST /api/awards/:id/apply`；② **`server/routes/lotw.js` 里「用 LoTW 临时日志判定 → 申领」**。此前只有 ① 调了 `logAudit`，② 插完 `user_awards` 就返回 → 这类申领在 `#/admin_logs` 完全查不到（实测 BH7CNC 领了两张、审计零记录）。⚠️ **工厂函数式路由（`lotw.js` / `evidence.js` / `oauth.js`）不会自动拿到 `logAudit`** —— 必须在 `createXxxRouter({...})` 里**显式注入**，否则写审计静默失效（不报错）。两条路径都写 `action='award.apply'`，LoTW 那条额外带 `channel:'lotw'`。驳回/撤回后的重复申领判定两边都要带 `AND withdrawn_at IS NULL`。
 
 19. **★ 日期输入一律走 `src/components/DateInput.jsx`，校验逻辑只有一份 `src/lib/dateInput.js`**（2026-09-24 落地）。
     - 为什么：原生 `<input type="date">` 的**年份段允许超过 4 位**（Chrome 上限 275760），直接用它会让下游**静默出错**：
