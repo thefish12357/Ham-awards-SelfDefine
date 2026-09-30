@@ -137,6 +137,24 @@
 - 后端端口已支持 `process.env.PORT` 覆盖，**默认仍是 9993**（原为硬编码，为 Docker 化所加）。
 - Docker 部署时宿主机映射端口见 `.env` 的 `*_HOST_PORT`：应用 `9993`、PostgreSQL `55432`、MinIO `9000/9001`。
 
+### ★ 线上主站的服务方式（2026-09-30 变更，务必记住）
+
+| 入口 | 源站 | 说明 |
+| --- | --- | --- |
+| `https://hamglory.top` | **`http://127.0.0.1:9993`**（本机 `node server.js`，直接托管 `dist`） | 2026-09-30 起从「Vite dev(5173)」切换过来 |
+| `https://demo.hamglory.top` | `http://127.0.0.1:9994`（demo 容器，镜像内 `dist`） | 不变 |
+| 本机开发 | `http://localhost:5173`（Vite dev，`/api` 代理到 9993） | **仅供本机**，公网不再经过它 |
+
+- 🔴 **改完前端必须 `npm run build`**，否则线上还是旧产物（`server.js` 每次请求读磁盘，build 完**立即生效、无需重启**）。
+  `start-local.ps1` 已把 build 纳入启动流程，并在自检里校验「公网返回的是 dist 而非 dev」。
+- 🔴 **`web` / `demo` 隧道的 ingress 是「云端托管配置」**（Cloudflare 仪表盘 / API 下发）：
+  计划任务里的 `--url` **会被忽略**！改指向只能改云端配置 —— 仪表盘 `Zero Trust → Networks → Tunnels → <tunnel> → Public Hostnames`，
+  或用 `~/.cloudflared/cert.pem` 里的 **ARGO TUNNEL TOKEN** 调 API：
+  `GET/PUT https://api.cloudflare.com/client/v4/accounts/{accountID}/cfd_tunnel/{tunnelID}/configurations`。
+  （`web` = `5bb0bd05-de56-4dde-8d4d-493bb4bc354c`，`demo` = `4e458a34-092a-4c34-a8f5-add85363f23e`）
+- 为什么换：dev server 经隧道时会偶发 **502**（HMR 抖动），入口模块拿不到 → `#root` 空 → **白屏**；
+  换成 dist 后是带哈希的静态产物，`/assets/*` 可 `immutable` 一年缓存，稳定得多。
+
 ## 5. 启动与调试
 
 ```powershell
@@ -213,7 +231,9 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 本项目已配置 **Playwright MCP**（`--browser chrome`，headed 模式）。调试时：
 
-- 开发态访问 `http://localhost:5173`；需要验证构建产物时访问 `http://localhost:9993`
+- **验证「用户实际看到的样子」必须用 `http://127.0.0.1:9993` 或公网 `https://hamglory.top`**（线上主站 = 9993 的 dist 产物）：
+  `http://localhost:5173` 是 Vite dev，与线上产物**不是同一份**，只看它可能漏掉构建期问题。
+  改了前端要先 `npm run build`，再看 9993。
 - 优先用 `browser_snapshot`（无障碍树）而非截图定位元素
 - 改完 UI 后自查 `browser_console_messages`，不要只看页面渲染
 
@@ -491,6 +511,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 **部署 / 环境**
 - 🔴 **`docker-compose.yml` 没有 `env_file`**，各服务是**显式变量列表**：**新增任何环境变量必须同步加进 `app` 服务的 `environment`**，否则容器读不到（本地裸跑由 `loadEnv.js` 读根 `.env`，不受影响）。
 - 🔴 **主站上线新功能必须同步重建 demo**（用户 2026-09-30 明确要求）：`docker compose --profile demo build demo && docker compose --profile demo up -d demo`；核验「容器内产物含新标识串」+「页面实机可见」。⚠️ 判断新功能有没有进镜像要 **grep 产物里的标识串**，别比对 bundle 文件名（本地与容器构建环境不同、哈希本就不一样）。
+- 🔴 **线上主站服务 `dist`（源站 9993），不再是 Vite dev**：改完前端**必须 `npm run build`**（改后端只需重启 `node server.js`）。隧道 ingress 由 **Cloudflare 云端托管**，改计划任务的 `--url` 无效（详见 §4「线上主站的服务方式」）。
 - ⚠️ **改依赖（含 npm install 新包）必须在 Linux 容器里验证**：Windows 大小写不敏感会掩盖问题（minio 硬引用大写 `Parser.js`，本地全绿、容器 `ERR_MODULE_NOT_FOUND` 崩过一次）。
 - ⚠️ **DNS 归属**：`hamglory.top` 的 NS 在 **Cloudflare**（阿里云只是**域名注册商**）→ 解析记录（MX/SPF/DKIM/DMARC/验证 CNAME）**必须加在 Cloudflare**，加在阿里云云解析**不生效**；也**绝不能把 NS 改到阿里云**（隧道 CNAME 在 CF，改了主站 + 演示站一起挂）。邮箱类子域记录必须 **DNS only（灰云）**，开橙云会被隐藏导致第三方验证失败。
 - ⚠️ **只 push `archive`**：`git push archive release:main`。上游 `origin/main` 含泄露凭据历史（可达 `989f008`），**不要 merge 上游、不要试图 push origin**（无写权限）。曾暴露凭据一律按失效处理。
