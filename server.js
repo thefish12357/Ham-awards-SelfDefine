@@ -170,6 +170,15 @@ function rateLimit({ windowMs, max, keyFn }) {
     }
     hits.push(now);
     rateLimitStore.set(key, hits);
+    // 「这次不算数」的退还口子（2026-10-04）：处理函数在确认是**善意请求**时（如
+    // 密码已正确、仅因「邮箱未验证」被拦）调用它撤销本次计数。否则用户照提示反复重试，
+    // 会把自己限流成 429，反而更困惑。真正的爆破（无此用户 / 密码错误 / 2FA 失败）仍计数。
+    req.__rateLimitRefund = () => {
+      const cur = rateLimitStore.get(key) || [];
+      const i = cur.indexOf(now);
+      if (i >= 0) cur.splice(i, 1);
+      rateLimitStore.set(key, cur);
+    };
     next();
   };
 }
@@ -1022,6 +1031,9 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
         // ★ 放在 2FA 之前：没验证的人是"账号没生效"，不该让他白刷两步验证码（也省得 2FA 失败计数被误加）。
         //   ⚠️ 前端要能处理 403 EMAIL_NOT_VERIFIED：给「重发验证邮件」的入口（见 /api/auth/resend-verify）。
         if (user.email_verified === false) {
+            // ★ 密码已经对了，只是邮箱没验证 —— 这不是爆破，**退还本次限流计数**（2026-10-04 用户要求）。
+            //   否则用户照提示反复重试，会把自己撞成 429「请求过于频繁」，比原提示更迷惑。
+            req.__rateLimitRefund?.();
             await logAudit(dbPool, req, { action: 'auth.login_blocked', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, reason: 'EMAIL_NOT_VERIFIED' } });
             return res.status(403).json({
                 error: 'EMAIL_NOT_VERIFIED',
