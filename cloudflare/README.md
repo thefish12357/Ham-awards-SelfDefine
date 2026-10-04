@@ -67,6 +67,12 @@ curl -s -i https://demo.hamglory.top/ | head -n 5
 
 ## 五、注意点
 
+- ⚠️ **路由建了但不生效？** 若「Worker」列显示 **「Workers 已在此路由上禁用」**，
+  说明这条路由**没绑定 Worker**（只是建了 pattern）。点该行右侧 **编辑** → 在 **Worker**
+  下拉里选 `closed-notice` → 保存。两条都要选。绑定后 Worker 列会显示 `closed-notice`。
+- 路由的 Worker 下拉里找不到 `closed-notice` 时：确认当前在**建 Worker 的那个账号**下，
+  且 Worker 已部署成功（能打开 `https://closed-notice.<子域>.workers.dev/` 即成功）。
+
 - **管理员调试不受影响**：Worker 只拦公网域名；本机 `http://127.0.0.1:9993` 直连照旧可用。
 - 说明页返回 **200**（`no-store`，不会被缓存住）。若希望搜索引擎更快摘除，可把
   `closed-notice.worker.js` 里 HTML 那段的 `status: 200` 改成 `503`。
