@@ -119,6 +119,7 @@
 │   ├── update-cty.mjs          # 更新 data/cty.dat（呼号→DXCC）
 │   ├── check-smtp.mjs          # ★ SMTP 自检：默认**不发信**；`--auth` 验登录、`--send-to` 真投递
 │   └── selftest-oauth-2fa.mjs  # ★ OAuth 2FA 离线回归（10 项断言）——**改 OAuth 后必跑**
+├── cloudflare/         # ★ 新增：站外说明页 —— `closed-notice.worker.js`（「内测已结束」Worker）+ `README.md`（部署/恢复步骤）
 ├── dist/               # 前端构建产物，由 server.js 静态托管（不入库）
 │
 ├── Dockerfile          # ★ 新增：多阶段构建（Vite 构建 -> 生产依赖运行时）
@@ -549,6 +550,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - 🔴 **`docker-compose.yml` 没有 `env_file`**，各服务是**显式变量列表**：**新增任何环境变量必须同步加进 `app` 服务的 `environment`**，否则容器读不到（本地裸跑由 `loadEnv.js` 读根 `.env`，不受影响）。
 - 🔴 **主站上线新功能必须同步重建 demo**（用户 2026-09-30 明确要求）：`docker compose --profile demo build demo && docker compose --profile demo up -d demo`；核验「容器内产物含新标识串」+「页面实机可见」。⚠️ 判断新功能有没有进镜像要 **grep 产物里的标识串**，别比对 bundle 文件名（本地与容器构建环境不同、哈希本就不一样）。
 - 🔴 **线上主站服务 `dist`（源站 9993），不再是 Vite dev**：改完前端**必须 `npm run build`**（改后端只需重启 `node server.js`）。隧道 ingress 由 **Cloudflare 云端托管**，改计划任务的 `--url` 无效（详见 §4「线上主站的服务方式」）。
+- ⚠️ **要对外「停站」并让访客看到说明页**（2026-10-04 用户需求）：**隧道一关域名就没有源站**（Cloudflare 回 1033/502），本地怎么改都没用 —— 必须让页面由**边缘**提供。已备好 `cloudflare/closed-notice.worker.js`：「内测已结束」Worker，绑定 Route `hamglory.top/*` + `demo.hamglory.top/*` 即可（**Worker Route 在隧道记录之前拦截，不需要改 DNS**，关隧道/关本机都生效）；**删掉 Route 即恢复**，管理员本机 127.0.0.1:9993 不受影响。步骤见 `cloudflare/README.md`。
 - ⚠️ **改依赖（含 npm install 新包）必须在 Linux 容器里验证**：Windows 大小写不敏感会掩盖问题（minio 硬引用大写 `Parser.js`，本地全绿、容器 `ERR_MODULE_NOT_FOUND` 崩过一次）。
 - ⚠️ **DNS 归属**：`hamglory.top` 的 NS 在 **Cloudflare**（阿里云只是**域名注册商**）→ 解析记录（MX/SPF/DKIM/DMARC/验证 CNAME）**必须加在 Cloudflare**，加在阿里云云解析**不生效**；也**绝不能把 NS 改到阿里云**（隧道 CNAME 在 CF，改了主站 + 演示站一起挂）。邮箱类子域记录必须 **DNS only（灰云）**，开橙云会被隐藏导致第三方验证失败。
 - ⚠️ **只 push `archive`**：`git push archive release:main`。上游 `origin/main` 含泄露凭据历史（可达 `989f008`），**不要 merge 上游、不要试图 push origin**（无写权限）。曾暴露凭据一律按失效处理。
