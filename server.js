@@ -778,13 +778,18 @@ const EMAIL_GATE_ALLOW = [
 ];
 
 const verifyToken = async (req, res, next) => {
-  if (!appConfig.installed && req.path.startsWith('/api/install')) return next();
+  // ⚠️ 免鉴权的「前缀白名单」必须写成「**精确路径 或 带斜杠的前缀**」，不要用裸 `startsWith`：
+  //    `startsWith('/api/verify')` 会连 `/api/verifyXYZ` 一起免鉴权放行 —— 将来只要有人加一个
+  //    同前缀、本该要登录的路由，就等于开了**不需要令牌**的后门（与 `EMAIL_GATE_ALLOW` 是同一类
+  //    问题，2026-10-05 代码审查一并加固；改动前这些路由全部都是刻意公开的，故无行为变化）。
+  const isPublicPath = (base) => req.path === base || req.path.startsWith(base + '/');
+  if (!appConfig.installed && isPublicPath('/api/install')) return next();
   if (req.path === '/api/system-status' || req.path === '/api/auth/login' || req.path === '/api/auth/register') return next(); 
   // 公开路径（M3 新增）：
   //   /api/verify/*  奖状真伪校验 + 二维码，供拿到纸质/PDF 奖状的人扫码查验，必须免登录
   //   /api/media     同源图片代理，供前端 canvas 导出 PDF 时避免跨域污染画布
   //   /api/auth/oauth/*  OAuth 回调/换码，免登录（换码用一次性短码保护）
-  if (req.path.startsWith('/api/verify') || req.path.startsWith('/api/media') || req.path.startsWith('/api/auth/oauth')) return next();
+  if (isPublicPath('/api/verify') || isPublicPath('/api/media') || isPublicPath('/api/auth/oauth')) return next();
 
   const token = req.headers['authorization'];
   if (!token) return res.status(401).json({ error: 'TOKEN_MISSING', message: '未提供验证令牌' });
