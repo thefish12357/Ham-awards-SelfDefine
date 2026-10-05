@@ -540,6 +540,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - 🔴 **OAuth 出 JWT 的两条路径（`/api/auth/oauth/complete`、`/api/auth/oauth/code`）必须校验 `totp_secret`**（字段 `totp_code`），失败时**绝不消费** pendingToken / 一次性换码。这是 2026-09-30 修掉的高危（否则启用 2FA 的账号走一遍 HamCQ 授权即可免验证码登录）——**勿回退**。
 - 🔴 **邮箱验证策略（2026-10-05 起，勿按旧实现）**：~~登录必须验证邮箱（403）~~ → 现在**未验证邮箱也能登录**，但**不能用任何功能**。实现要点：
   - 闸门是 **`verifyToken` 里的 `EMAIL_GATE_ALLOW`**（`server.js`），**全局唯一**；所有需登录的接口都过它。
+  - ⚠️ **匹配必须用 `req.originalUrl`（去掉 query），不能用 `req.path`**：挂在 `app.use('/api/xxx', router)` 下的路由（`notifications` / `evidence` / `lotw` / `admin/audit-logs`）内部 `req.path` **已被剥掉挂载前缀**（变成 `/`），拿它匹配白名单会把本该放行的 `/api/notifications` 误拦（实测 403）。同理，新增白名单条目时先确认该路由是**顶层注册**还是**子路由挂载**。
   - 白名单只放行"完成验证 / 账号自身设置 / 通知读 / system-status"，其余 403 `EMAIL_NOT_VERIFIED`。
   - 前端 `EmailVerifyGate.jsx`（顶部 `EmailVerifyBanner` + 拦页面板），菜单只剩用户中心；**前端只是引导，别只靠它**。
   - 🔴 **不要再给 OAuth 两条路径单独加邮箱门槛**（原 `verifyEmailGate` 已删除）—— 那会让未验证用户连登录都进不来，与产品口径冲突；登录后照样被上面的闸门拦。

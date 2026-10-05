@@ -804,7 +804,11 @@ const verifyToken = async (req, res, next) => {
       //   这样用户至少能看到页面顶部的提示、点「重发验证邮件」，而不是卡在登录页反复试。
       //   ⚠️ 这里是**全局唯一的功能闸门**（所有需登录的接口都过 verifyToken）——
       //     不要再在别处放行未验证用户，也不必再给 OAuth 之类单独加门槛。
-      if (row.email_verified === false && !EMAIL_GATE_ALLOW.some((re) => re.test(req.path))) {
+      //   ⚠️ 匹配必须用 `originalUrl` 而不是 `req.path`：挂在 `app.use('/api/xxx', router)` 下的路由
+      //      （notifications / evidence / lotw / admin/audit-logs …）内部 `req.path` **已被剥掉挂载前缀**
+      //      （变成 `/` 或子路径），拿它匹配白名单会把本该放行的接口**误拦**（实测 /api/notifications 403）。
+      const fullPath = String(req.originalUrl || req.url || '').split('?')[0];
+      if (row.email_verified === false && !EMAIL_GATE_ALLOW.some((re) => re.test(fullPath))) {
         return res.status(403).json({
           error: 'EMAIL_NOT_VERIFIED',
           message: '邮箱尚未验证：请先在页面顶部完成邮箱验证，之后才能使用本站功能',

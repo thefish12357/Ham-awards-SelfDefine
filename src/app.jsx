@@ -3027,10 +3027,16 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
     const [showRoleReqForm, setShowRoleReqForm] = useState(false);
     const [roleReqForm, setRoleReqForm] = useState({ award_name: '', reason: '', experience: '', contact: '' });
 
+    // ★ 邮箱未验证时，后端只放行「账号设置」类接口（见 server.js 的 EMAIL_GATE_ALLOW）；
+    //   下面这两个都是**业务接口**，发了必然 403：既刷控制台报错，又让「清空日志」永远停在
+    //   "加载中…"。所以未验证时干脆不发，界面给对应文案。
+    const unverified = user.email_verified === false;
+
     const loadStats = () => {
+        if (unverified) return;
         apiFetch('/stats/dashboard').then((s) => setQsoCount(Number(s.qsos) || 0)).catch(() => {});
     };
-    useEffect(loadStats, []);
+    useEffect(loadStats, [unverified]);
 
     // 进页面拉一次最新资料：登录响应里缓存的 user 可能是旧的（例如后来才绑定的邮箱、
     // 或本页新加的「邮件提醒」开关状态），不刷新就会出现「明明绑了邮箱却显示未绑定、
@@ -3040,7 +3046,7 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
     const loadRoleReq = () => {
         apiFetch('/user/role-request').then(setRoleReq).catch(() => {});
     };
-    useEffect(() => { if (user.role === 'user') loadRoleReq(); }, [user.role]);
+    useEffect(() => { if (user.role === 'user' && !unverified) loadRoleReq(); }, [user.role, unverified]);
 
     const handleRoleRequest = async (e) => {
         e.preventDefault();
@@ -3260,7 +3266,11 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                 <div className="bg-white p-6 rounded-2xl shadow-sm border">
                     <h4 className="font-bold text-lg mb-2 flex items-center gap-2"><Trophy className="text-purple-600"/> 角色权限</h4>
                     <p className="text-xs text-slate-400 mb-4">当前为「普通用户」。申请成为「奖状管理员」后可创建与管理奖状，需系统管理员审核。</p>
-                    {!roleReq || roleReq.status === 'rejected' ? (
+                    {unverified ? (
+                        <div className="text-sm text-slate-500 bg-slate-50 px-4 py-2.5 rounded-lg">
+                            邮箱验证通过后才能申请成为奖状管理员。
+                        </div>
+                    ) : !roleReq || roleReq.status === 'rejected' ? (
                         <button onClick={() => { setRoleReqForm((f) => ({ ...f, contact: f.contact || user.email || '' })); setShowRoleReqForm(true); }} className="bg-purple-600 text-white px-5 py-2.5 rounded-lg text-sm font-bold hover:bg-purple-700">
                             申请成为奖状管理员
                         </button>
@@ -3280,7 +3290,7 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                     )}
                 </div>
             )}
-            {showRoleReqForm && (
+            {showRoleReqForm && !unverified && (
                 <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
                     <form onSubmit={handleRoleRequest} className="bg-white rounded-2xl w-full max-w-lg p-6 space-y-4 max-h-[90vh] overflow-y-auto">
                         <h4 className="font-bold text-lg text-slate-800">申请成为奖状管理员</h4>
@@ -3316,7 +3326,7 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                             <div>
                                 <div className={`font-bold ${qsoCount > 0 ? 'text-red-800' : 'text-slate-500'}`}>清空所有日志</div>
                                 <div className={`text-xs ${qsoCount > 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                                    {qsoCount == null ? '加载中…' : (qsoCount > 0 ? `将永久删除您上传的 ${qsoCount} 条 QSO 记录` : '当前没有日志记录')}
+                                    {unverified ? '邮箱验证通过后可查看与管理日志' : qsoCount == null ? '加载中…' : (qsoCount > 0 ? `将永久删除您上传的 ${qsoCount} 条 QSO 记录` : '当前没有日志记录')}
                                 </div>
                             </div>
                             <button
