@@ -749,14 +749,31 @@ const evaluateAward = async (userId, awardId, includeQsos = false) => {
  * 只放行「完成/重发邮箱验证」与「账号自身设置」这类没有它就走不下去的接口；
  * 站内所有业务功能（日志、奖状、材料、审核、后台…）都不在其中 → 未验证时一律 403。
  */
+/**
+ * 未验证邮箱的用户仍可访问的接口（其余一律 403 EMAIL_NOT_VERIFIED）。
+ * ------------------------------------------------------------------
+ * ⚠️ 写法要求（2026-10-05 代码审查整改）：
+ *   1. **一律用精确匹配**（`$` 收尾，或 `(\/|$)` 表示"该前缀且是完整一段"）。曾经写成
+ *      `/^\/api\/notifications/` 这种裸前缀 —— 它会连 `/api/notificationsXXX` 一起放行，
+ *      将来只要有人加个同前缀的新路由就等于偷偷开了口子。
+ *   2. 只登记**用户在被拦期间确实必须能做**的事：看提示 / 绑改邮箱 / 改密码 / 2FA /
+ *      重发验证信 / 站内通知轮询。
+ *   3. 新增条目之前先确认目标路由真的是**这一条**（尤其挂在 `app.use()` 子路由下的，
+ *      匹配用的是完整路径见下方 verifyToken）。
+ */
 const EMAIL_GATE_ALLOW = [
-  /^\/api\/user\/profile$/,        // 前端据此渲染顶部提示（也要知道 email_verified）
-  /^\/api\/user\/email/,           // 绑定 / 修改邮箱（改完可重新验证）
-  /^\/api\/user\/2fa/,             // 两步验证设置
-  /^\/api\/user\/password$/,       // 改密码
-  /^\/api\/user\/notify-settings$/,// 邮件提醒开关
-  /^\/api\/auth\//,                // 认证类（多为公开：验证邮箱、重发、找回密码…）
-  /^\/api\/notifications/,         // 站内通知读 / 标记已读（侧栏轮询，不拦以免刷错误）
+  // —— 账号设置（用户中心里必须可用的）——
+  /^\/api\/user\/profile$/,              // 前端据此渲染顶部提示 / 用户中心（也要知道 email_verified）
+  /^\/api\/user\/email$/,                // 绑定 / 修改邮箱（改完可重新验证）
+  /^\/api\/user\/2fa(\/|$)/,             // 两步验证设置（/setup、/enable、/disable）
+  /^\/api\/user\/password$/,             // 改密码
+  /^\/api\/user\/notify-settings$/,      // 邮件提醒开关
+  // —— 邮箱验证 / 找回密码（这几个都是**公开接口**、当前并不经过 verifyToken，
+  //    登记在此只为「将来若给它们加 verifyToken 守卫时不会把未验证用户锁在外面」）——
+  /^\/api\/auth\/(verify-email|resend-verify|forgot-password|reset-password|login|register)$/,
+  /^\/api\/auth\/oauth(\/|$)/,           // OAuth 公开回调/换码（同上，防御性登记）
+  // —— 站内通知（侧栏 10 秒轮询；拦了只会刷一屏 403，没有安全收益）——
+  /^\/api\/notifications(\/|$)/,
   /^\/api\/system-status$/,
 ];
 
@@ -807,8 +824,15 @@ const verifyToken = async (req, res, next) => {
       //   ⚠️ 匹配必须用 `originalUrl` 而不是 `req.path`：挂在 `app.use('/api/xxx', router)` 下的路由
       //      （notifications / evidence / lotw / admin/audit-logs …）内部 `req.path` **已被剥掉挂载前缀**
       //      （变成 `/` 或子路径），拿它匹配白名单会把本该放行的接口**误拦**（实测 /api/notifications 403）。
-      const fullPath = String(req.originalUrl || req.url || '').split('?')[0];
-      if (row.email_verified === false && !EMAIL_GATE_ALLOW.some((re) => re.test(fullPath))) {
+      //   ⚠️ 归一化后再匹配（2026-10-05 代码审查整改）：Express 的路由默认**忽略结尾斜杠、
+      //      大小写不敏感**，这里做同样的归一化，保证「闸门放行」与「路由会不会命中」判断一致
+      //      （否则 `/api/notifications/` 会被闸门误拦、而 `/API/USER/PROFILE` 会被误放的错位）。
+      //   ⚠️ 含 `..` 的路径一律不放行：Express 不做路径归一化，这类路径本来也匹配不到任何路由
+      //      （最终 404），这里只是确保它**绝不会**因为"前缀像白名单"而被放过去。
+      const rawPath = String(req.originalUrl || req.url || '').split('?')[0];
+      const gatePath = (rawPath.replace(/\/{2,}/g, '/').replace(/\/+$/, '') || '/').toLowerCase();
+      const gateAllowed = !rawPath.includes('..') && EMAIL_GATE_ALLOW.some((re) => re.test(gatePath));
+      if (row.email_verified === false && !gateAllowed) {
         return res.status(403).json({
           error: 'EMAIL_NOT_VERIFIED',
           message: '邮箱尚未验证：请先在页面顶部完成邮箱验证，之后才能使用本站功能',

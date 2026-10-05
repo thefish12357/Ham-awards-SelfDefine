@@ -541,8 +541,12 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - 🔴 **邮箱验证策略（2026-10-05 起，勿按旧实现）**：~~登录必须验证邮箱（403）~~ → 现在**未验证邮箱也能登录**，但**不能用任何功能**。实现要点：
   - 闸门是 **`verifyToken` 里的 `EMAIL_GATE_ALLOW`**（`server.js`），**全局唯一**；所有需登录的接口都过它。
   - ⚠️ **匹配必须用 `req.originalUrl`（去掉 query），不能用 `req.path`**：挂在 `app.use('/api/xxx', router)` 下的路由（`notifications` / `evidence` / `lotw` / `admin/audit-logs`）内部 `req.path` **已被剥掉挂载前缀**（变成 `/`），拿它匹配白名单会把本该放行的 `/api/notifications` 误拦（实测 403）。同理，新增白名单条目时先确认该路由是**顶层注册**还是**子路由挂载**。
-  - 白名单只放行"完成验证 / 账号自身设置 / 通知读 / system-status"，其余 403 `EMAIL_NOT_VERIFIED`。
+  - 🔴 **白名单一律写精确匹配**（2026-10-05 代码审查整改）：用 `$` 收尾，或 `(\/|$)` 表示"该前缀且是完整一段"。曾经写成裸前缀 `/^\/api\/notifications/` → 连 `/api/notificationsXXX` 也会放行，等于给将来同前缀的新路由留了后门。**新增条目前先确认目标路由就是这一条**。
+  - ✅ **匹配前做路径归一化**（对齐 Express 路由默认行为：忽略结尾斜杠 + 大小写不敏感）：`originalUrl 去 query → 折叠重复斜杠 → 去结尾斜杠 → 转小写`；**含 `..` 的路径一律不放行**。实测：`/api/notifications/` 放行、`/API/USER/PROFILE` 放行、`/API/USER/QSOS` 与 `/api/user/qsos/` 仍 403；`//api/user/qsos`、`/api/notifications/../user/qsos`、`/api/user/email/../qsos`、`/api/user/qsos?x=/api/notifications` 全部 404/403，无一返回业务数据。
+  - 白名单只放行"完成验证 / 账号自身设置 / 通知读 / system-status"，其余 403 `EMAIL_NOT_VERIFIED`。`/api/auth/*` **全是公开接口、都不经过 verifyToken**（`login/register/verify-email/resend-verify/forgot-password/reset-password`），所以以前那条 `/^\/api\/auth\//` 既没生效又过宽，已收紧成显式端点列表。
   - 前端 `EmailVerifyGate.jsx`（顶部 `EmailVerifyBanner` + 拦页面板），菜单只剩用户中心；**前端只是引导，别只靠它**。
+    - ⚠️ **验证完成后必须能自动解禁**（2026-10-05 代码审查整改）：用户多在**另一个标签页**点邮件链接（`#/verify-email` 是免登录公开页），回到本标签时 `user` 还是 localStorage 旧快照（`email_verified=false`）→ 提示条与拦页面板不会自己消失，用户会以为验证没生效。`App` 里已加 `focus` / `visibilitychange` / `hashchange` → `refreshUser()`（节流 5 秒），**勿删**。
+    - ⚠️ 未验证用户的「用户中心」里**不要再发业务请求**：`UserCenterView` 已按 `unverified` 跳过 `/stats/dashboard`、`/user/role-request`，并禁用「清空日志 / 注销账号」按钮 —— 否则必然 403，还会把「清空所有日志」永久卡在"加载中…"（实测过）。
   - 🔴 **不要再给 OAuth 两条路径单独加邮箱门槛**（原 `verifyEmailGate` 已删除）—— 那会让未验证用户连登录都进不来，与产品口径冲突；登录后照样被上面的闸门拦。
   - 新建 OAuth 账号仍因邮箱来自受信 IdP 而 `email_verified=TRUE`；绑定/回填邮箱也一并置验证。
 - ⚠️ `server/routes/oauth.js` 的 `/callback` 里 `const email` 有 **TDZ 陷阱**：任何代码/日志写在声明之前都会抛 `ReferenceError`，被外层 catch 吞掉 → **回调必然 500（OAuth 全挂）**。

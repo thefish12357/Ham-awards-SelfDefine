@@ -3335,9 +3335,18 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                                 className={`px-4 py-2 rounded-lg text-sm font-bold ${qsoCount > 0 ? 'bg-red-100 text-red-700 hover:bg-red-200' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
                             >清空日志</button>
                         </div>
-                        <div className="flex items-center justify-between p-4 bg-red-50/50 rounded-xl">
-                            <div><div className="font-bold text-red-800">注销账号</div><div className="text-xs text-red-600">将永久删除您的账号及所有数据，无法恢复</div></div>
-                            <button onClick={() => setModal('delete_account')} className="bg-red-600 text-white hover:bg-red-700 px-4 py-2 rounded-lg text-sm font-bold">注销账号</button>
+                        <div className={`flex items-center justify-between p-4 rounded-xl ${unverified ? 'bg-slate-50' : 'bg-red-50/50'}`}>
+                            <div>
+                                <div className={unverified ? 'font-bold text-slate-500' : 'font-bold text-red-800'}>注销账号</div>
+                                <div className={`text-xs ${unverified ? 'text-slate-400' : 'text-red-600'}`}>
+                                    {unverified ? '邮箱验证通过后才能注销账号（该接口同样被功能闸门拦下）' : '将永久删除您的账号及所有数据，无法恢复'}
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setModal('delete_account')}
+                                disabled={unverified}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold ${unverified ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                            >注销账号</button>
                         </div>
                     </div>
                  </div>
@@ -4333,6 +4342,34 @@ export default function App() {
   // ⚠️ 依赖只写 `user?.id`：refreshUser 自身会 setUser（同一 id），写 `user` 会死循环。
   useEffect(() => {
       if (user?.id) refreshUser();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // ★ 邮箱验证 / 改邮箱后要能**自动解禁**（2026-10-05 代码审查反馈）：
+  //   用户通常在**另一个标签页**点邮件里的验证链接（`#/verify-email` 是免登录公开页，
+  //   见 pages/EmailAuthView.jsx），回到本标签时 `user` 仍是 localStorage 里的旧快照
+  //   （email_verified=false）→ 顶部提示条、拦页面板、"未验证"标签都不会自己消失，
+  //   用户会以为验证没生效，必须手动刷新页面。
+  //   这里在「窗口重新获得焦点 / 标签重新可见 / hash 变化（从公开验证页回到站内）」时
+  //   拉一次最新资料；节流 5 秒，避免频繁切窗口反复打接口。
+  useEffect(() => {
+      if (!user?.id) return undefined;
+      let last = 0;
+      const onWake = () => {
+          if (document.visibilityState === 'hidden') return; // 切走时不打（回来那次会再触发）
+          const now = Date.now();
+          if (now - last < 5000) return;
+          last = now;
+          refreshUser();
+      };
+      window.addEventListener('focus', onWake);
+      document.addEventListener('visibilitychange', onWake);
+      window.addEventListener('hashchange', onWake);
+      return () => {
+          window.removeEventListener('focus', onWake);
+          document.removeEventListener('visibilitychange', onWake);
+          window.removeEventListener('hashchange', onWake);
+      };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
