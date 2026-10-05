@@ -33,6 +33,8 @@ import MailNotifyView from './pages/MailNotifyView.jsx';
 import LandingView from './pages/LandingView.jsx';
 // 演示环境全局横幅：仅 demoMode 时在每一页顶部展示（见下方各视图 return 包裹）
 import DemoBanner from './components/DemoBanner.jsx';
+// 邮箱未验证：页面顶端提示条 + 主内容区的拦页面板（2026-10-05：未验证也能登录，但禁止用功能）
+import EmailVerifyGate, { EmailVerifyBanner } from './components/EmailVerifyGate.jsx';
 import AboutView from './pages/AboutView.jsx';
 import PrivacyView from './pages/PrivacyView.jsx';
 import TermsView from './pages/TermsView.jsx';
@@ -4316,6 +4318,21 @@ export default function App() {
     } catch(e) { console.error(e); }
   };
 
+  // 登录态可能是**从 localStorage 恢复**的（里面没有/过期了 `email_verified`），进站后拉一次
+  // 最新资料，确保顶部「邮箱未验证」提示与后端闸门判断一致。
+  // ⚠️ 依赖只写 `user?.id`：refreshUser 自身会 setUser（同一 id），写 `user` 会死循环。
+  useEffect(() => {
+      if (user?.id) refreshUser();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // 「重新发送验证邮件」（顶部提示/拦页面板用）：包一层 loading，避免连点
+  const [gateResending, setGateResending] = useState(false);
+  const resendForGate = async () => {
+      setGateResending(true);
+      try { await handleResendVerify(user?.callsign); } finally { setGateResending(false); }
+  };
+
   const handleLogin = async (e) => {
       e.preventDefault();
       const formData = new FormData(e.target);
@@ -4819,6 +4836,9 @@ export default function App() {
   }
 
   if (view === 'main') {
+      // 邮箱未验证：能进站，但除「用户中心」（可改邮箱）外，所有功能页都换成验证提示；
+      // 后端 verifyToken 的 EMAIL_GATE_ALLOW 才是真正的闸门，这里只是别让用户白点。
+      const unverified = !!user && user.email_verified === false;
       const menu = [
           // Common
           { id: 'dashboard', label: '概览', icon: BarChart, show: true },
@@ -4862,11 +4882,13 @@ export default function App() {
           
           // Common Bottom
           { id: 'userCenter', label: '用户中心', icon: User, show: true, notification: notifDot(['role_approved', 'role_rejected']) },
-      ].filter(i => i.show);
+      ].filter((i) => i.show && (!unverified || i.id === 'userCenter'));
 
       return (
           <div className="flex h-screen flex-col">
               {demoBar}
+              {/* 邮箱未验证：**页面最顶端**常驻提示（在侧栏/主内容之上） */}
+              {unverified && <EmailVerifyBanner email={user?.email} />}
               <div className={`${theme === 'dark' ? 'app-dark bg-slate-950' : 'app-light'} relative flex min-h-0 flex-1 overflow-hidden`}>
               <div className="pointer-events-none absolute inset-0 overflow-hidden">
                   <div className="absolute inset-0" style={{ background: 'radial-gradient(ellipse 90% 55% at 50% -10%, rgba(255,255,255,0.05), transparent)' }} />
@@ -4994,6 +5016,16 @@ export default function App() {
                       <span className="text-sm font-black tracking-[0.2em]">HAM<span className="text-cyan-400">AWARDS</span></span>
                   </div>
                   <div className="max-w-6xl mx-auto">
+                      {unverified && subView !== 'userCenter' ? (
+                          <EmailVerifyGate
+                              user={user}
+                              onResend={resendForGate}
+                              onOpenUserCenter={() => setSubView('userCenter')}
+                              onLogout={handleLogout}
+                              resending={gateResending}
+                          />
+                      ) : (
+                          <>
                       {subView === 'dashboard' && <DashboardView user={user} />}
                       {subView === 'awards' && <AwardCenterView user={user} />} 
                       {subView === 'my_awards' && <MyAwardsView user={user} />}
@@ -5017,6 +5049,8 @@ export default function App() {
                       {subView === 'admin_logs' && <AuditLogsView />}
                       {subView === 'mail_notify' && <MailNotifyView />}
                       {subView === 'userCenter' && <UserCenterView user={user} refreshUser={refreshUser} onLogout={handleLogout} />}
+                          </>
+                      )}
                   </div>
               </main>
           </div>

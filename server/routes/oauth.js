@@ -72,6 +72,8 @@ const publicUser = (u) => ({
   role: u.role,
   has2fa: !!u.totp_secret,
   email: u.email || null,
+  // 前端据此显示顶部「邮箱未验证」提示（2026-10-05 起：未验证也能登录，只是不能用功能）
+  email_verified: u.email_verified === true,
 });
 
 export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
@@ -111,37 +113,15 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
   };
 
   /**
-   * 强制邮箱验证门槛（与密码登录 /api/auth/login 的 EMAIL_NOT_VERIFIED 对齐，2026-09-30 审计整改）
+   * ⚠️ 邮箱验证策略（2026-10-05 变更，勿再往回加门槛）
    * ------------------------------------------------------------------
-   * 原漏洞：密码登录会拒绝 `email_verified=false` 的账号，但 OAuth 的两条出 JWT 路径
-   * （/complete 绑定已有账号、/code 换登录）**都没查**，于是未验证邮箱的账号只要走一遍
-   * HamCQ 授权就能拿到 JWT、使用站内功能 —— 等于绕过了登录策略。
-   *
-   * 这里统一复用同一套判定：返回 null = 放行；否则把 { status, body } 原样回给前端
-   * （含 email 字段，方便前端弹出「重发验证邮件」入口，与密码登录体验一致）。
-   * 新建 OAuth 账号一律把 email_verified 置 TRUE（邮箱由受信 IdP HamCQ 提供并认证，
-   * 视为已验证），因此新号不会被此门槛卡住；存量未验证账号（无论密码还是 OAuth 绑定）
-   * 一律按同一规则拦截。
+   * 原实现（2026-09-30 审计整改）：OAuth 两条出 JWT 路径都调 `verifyEmailGate()`，
+   * `email_verified===false` 直接 403 —— 防的是"未验证邮箱账号走 OAuth 绕过登录策略"。
+   * 现在策略改成 **未验证邮箱也能登录**（进站后由页面顶部提示引导验证，功能由
+   * `verifyToken` 里的 `EMAIL_GATE_ALLOW` 白名单统一拦），所以这里不再需要该门槛：
+   * 保留它反而会让未验证用户**连登录都进不来**，与新产品口径冲突。
+   * 安全属性未削弱：任何业务接口仍会因 email_verified=false 被 verifyToken 拦下。
    */
-  const verifyEmailGate = async (req, user) => {
-    if (user.email_verified === false) {
-      await audit(req, {
-        action: 'auth.login_blocked',
-        targetType: 'user',
-        targetId: user.id,
-        detail: { callsign: user.callsign, reason: 'EMAIL_NOT_VERIFIED', channel: 'hamcq' },
-      });
-      return {
-        status: 403,
-        body: {
-          error: 'EMAIL_NOT_VERIFIED',
-          message: '邮箱尚未验证：请到注册时填写的邮箱里点验证链接',
-          email: user.email || null,
-        },
-      };
-    }
-    return null;
-  };
 
   /**
    * 记一次 2FA 失败。超过上限直接作废本次会话 ——
@@ -381,9 +361,6 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
           email_conflict: emailTaken || undefined,
         },
       });
-      // ★ 邮箱门槛（审计整改）：绑定已有账号 = 一次完整登录，未验证邮箱一律拦下（与密码登录一致）
-      const emailGate1 = await verifyEmailGate(req, u);
-      if (emailGate1) return res.status(emailGate1.status).json(emailGate1.body);
       return res.json({ token: signToken(u), user: publicUser(u) });
     }
 
@@ -423,10 +400,6 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
       actor: { id: u.id, callsign: u.callsign, role: u.role },
       detail: { channel: 'hamcq', created: true },
     });
-    // ★ 邮箱门槛（审计整改）：新建 OAuth 账号已在 INSERT 时置 email_verified=TRUE，此处门槛恒通过；
-    //   保留检查是防御性一致（万一未来策略变动，不致从这条路径漏过去）。
-    const emailGate2 = await verifyEmailGate(req, u);
-    if (emailGate2) return res.status(emailGate2.status).json(emailGate2.body);
     return res.json({ token: signToken(u), user: publicUser(u) });
   });
 
@@ -470,10 +443,6 @@ export function createOauthRouter({ getDbPool, getConfig, logAudit }) {
         actor: { id: u.id, callsign: u.callsign, role: u.role },
         detail: { channel: 'hamcq' },
       });
-      // ★ 邮箱门槛（审计整改）：一次性换码只证明 HamCQ 授权成功，不等于本站邮箱已验证；
-      //   未验证邮箱的存量账号（无论最初密码还是 OAuth 注册）一律拦下，与密码登录一致。
-      const emailGate3 = await verifyEmailGate(req, u);
-      if (emailGate3) return res.status(emailGate3.status).json(emailGate3.body);
       res.json({ token: signToken(u), user: publicUser(u) });
     } catch (e) {
       res.status(500).json({ error: 'SERVER_ERROR' });

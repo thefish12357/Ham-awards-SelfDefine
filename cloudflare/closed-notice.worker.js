@@ -51,6 +51,13 @@ const NOTICE_HTML = `<!doctype html>
   p { margin: 0; line-height: 1.85; color: #9ca3af; font-size: 14px; }
   .mail { margin-top: 28px; font-size: 12px; color: #6b7280; }
   .mail a { color: #22D3EE; text-decoration: none; }
+  .links { margin-top: 28px; padding-top: 22px; border-top: 1px solid rgba(255,255,255,.07); text-align: left; }
+  .links-title { font-size: 12px; font-weight: 700; color: #9ca3af; letter-spacing: .08em; margin-bottom: 8px; }
+  .links p { font-size: 12px; }
+  .links ul { margin: 10px 0 0; padding-left: 18px; }
+  .links li { font-size: 12px; line-height: 1.9; color: #9ca3af; }
+  .links a { color: #22D3EE; text-decoration: none; word-break: break-all; }
+  .links a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -61,6 +68,15 @@ const NOTICE_HTML = `<!doctype html>
       本站内测阶段已经结束，系统暂时停止对外服务。<br>
       感谢每一位参与测试的 HAM，恢复开放的时间会另行通知。
     </p>
+    <div class="links">
+      <div class="links-title">开源与共建</div>
+      <p>本项目以 <b>GPL-3.0</b> 开源 —— 欢迎提交 <b>PR / Issue</b>，也欢迎基于它做自己的奖状站。</p>
+      <ul>
+        <li>本仓库（公开存档）：<a href="https://github.com/thefish12357/Ham-awards-SelfDefine" target="_blank" rel="noreferrer">github.com/thefish12357/Ham-awards-SelfDefine</a></li>
+        <li>上游（原作者）：<a href="https://github.com/BH2VSQ/Ham-awards-SelfDefine" target="_blank" rel="noreferrer">github.com/BH2VSQ/Ham-awards-SelfDefine</a></li>
+      </ul>
+    </div>
+
     <div class="mail">
       如需联系：<a href="mailto:contact@hamglory.top">contact@hamglory.top</a>
     </div>

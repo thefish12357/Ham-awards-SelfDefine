@@ -744,6 +744,22 @@ const evaluateAward = async (userId, awardId, includeQsos = false) => {
  * ==========================================
  */
 
+/**
+ * 未验证邮箱的用户**可以**调用的接口白名单（2026-10-05）。
+ * 只放行「完成/重发邮箱验证」与「账号自身设置」这类没有它就走不下去的接口；
+ * 站内所有业务功能（日志、奖状、材料、审核、后台…）都不在其中 → 未验证时一律 403。
+ */
+const EMAIL_GATE_ALLOW = [
+  /^\/api\/user\/profile$/,        // 前端据此渲染顶部提示（也要知道 email_verified）
+  /^\/api\/user\/email/,           // 绑定 / 修改邮箱（改完可重新验证）
+  /^\/api\/user\/2fa/,             // 两步验证设置
+  /^\/api\/user\/password$/,       // 改密码
+  /^\/api\/user\/notify-settings$/,// 邮件提醒开关
+  /^\/api\/auth\//,                // 认证类（多为公开：验证邮箱、重发、找回密码…）
+  /^\/api\/notifications/,         // 站内通知读 / 标记已读（侧栏轮询，不拦以免刷错误）
+  /^\/api\/system-status$/,
+];
+
 const verifyToken = async (req, res, next) => {
   if (!appConfig.installed && req.path.startsWith('/api/install')) return next();
   if (req.path === '/api/system-status' || req.path === '/api/auth/login' || req.path === '/api/auth/register') return next(); 
@@ -767,14 +783,34 @@ const verifyToken = async (req, res, next) => {
   // 不再只信任 JWT 里写死的 24h role。token_version 在改密/改角色/禁用时自增。
   if (dbPool && decoded && decoded.id) {
     try {
-      const r = await dbPool.query('SELECT id, role, status, token_version FROM users WHERE id=$1', [decoded.id]);
+      const r = await dbPool.query('SELECT id, role, status, token_version, email, email_verified FROM users WHERE id=$1', [decoded.id]);
       const row = r.rows[0];
       if (!row) return res.status(401).json({ error: 'TOKEN_INVALID', message: '账号不存在' });
       if (row.status === 'disabled') return res.status(401).json({ error: 'ACCOUNT_DISABLED', message: '账号已被禁用' });
       if (row.token_version !== (decoded.tv ?? 0)) {
         return res.status(401).json({ error: 'TOKEN_REVOKED', message: '凭证已失效，请重新登录' });
       }
-      req.user = { id: row.id, role: row.role, callsign: decoded.callsign, tokenVersion: row.token_version };
+      req.user = {
+        id: row.id,
+        role: row.role,
+        callsign: decoded.callsign,
+        tokenVersion: row.token_version,
+        email: row.email || null,
+        emailVerified: row.email_verified === true,
+      };
+
+      // ★ 邮箱验证策略（2026-10-05 调整）：**允许未验证邮箱登录**，但**禁止使用任何功能**。
+      //   原实现是在 /api/auth/login 直接 403；现在改成「能进站，但除了验证邮箱/账号设置外全部拦下」，
+      //   这样用户至少能看到页面顶部的提示、点「重发验证邮件」，而不是卡在登录页反复试。
+      //   ⚠️ 这里是**全局唯一的功能闸门**（所有需登录的接口都过 verifyToken）——
+      //     不要再在别处放行未验证用户，也不必再给 OAuth 之类单独加门槛。
+      if (row.email_verified === false && !EMAIL_GATE_ALLOW.some((re) => re.test(req.path))) {
+        return res.status(403).json({
+          error: 'EMAIL_NOT_VERIFIED',
+          message: '邮箱尚未验证：请先在页面顶部完成邮箱验证，之后才能使用本站功能',
+          email: row.email || null,
+        });
+      }
     } catch (e) {
       return res.status(401).json({ error: 'TOKEN_INVALID', message: '凭证校验失败' });
     }
@@ -1027,35 +1063,28 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
             return res.status(401).json({ error: 'AUTH_FAILED', message: '密码错误' });
         }
 
-        // 强制邮箱验证（2026-09-30）：未验证就不给 JWT。
-        // ★ 放在 2FA 之前：没验证的人是"账号没生效"，不该让他白刷两步验证码（也省得 2FA 失败计数被误加）。
-        //   ⚠️ 前端要能处理 403 EMAIL_NOT_VERIFIED：给「重发验证邮件」的入口（见 /api/auth/resend-verify）。
-        if (user.email_verified === false) {
-            // ★ 密码已经对了，只是邮箱没验证 —— 这不是爆破，**退还本次限流计数**（2026-10-04 用户要求）。
-            //   否则用户照提示反复重试，会把自己撞成 429「请求过于频繁」，比原提示更迷惑。
-            req.__rateLimitRefund?.();
-            await logAudit(dbPool, req, { action: 'auth.login_blocked', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, reason: 'EMAIL_NOT_VERIFIED' } });
-            return res.status(403).json({
-                error: 'EMAIL_NOT_VERIFIED',
-                message: '邮箱尚未验证：请到注册时填写的邮箱里点验证链接',
-                email: user.email || null,
-            });
-        }
+        // ★ 邮箱未验证**不再拦登录**（2026-10-05 用户调整策略）：允许进站，由页面顶部的提示
+        //   引导去验证，真正的"禁止使用功能"统一在 `verifyToken` 里做（EMAIL_GATE_ALLOW 白名单）。
+        //   ⚠️ 别在这里重新加回 403 —— 那会让用户卡在登录页（旧问题：反复重试、还容易被限流）。
 
         // Removed role guard to allow merged login
         // if (loginType === 'admin' && user.role === 'user') { ... }
 
         if (user.totp_secret) {
-            if (!code) return res.status(403).json({ error: '2FA_REQUIRED', message: '请输入两步验证码' });
+            // 要求补验证码 = 合法流程的中间态，不是爆破 → 退还限流计数
+            if (!code) { req.__rateLimitRefund?.(); return res.status(403).json({ error: '2FA_REQUIRED', message: '请输入两步验证码' }); }
             if (!otplib.authenticator.check(code, user.totp_secret)) {
                 await logAudit(dbPool, req, { action: 'auth.login_failed', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, reason: 'BAD_2FA' } });
                 return res.status(403).json({ error: 'INVALID_2FA', message: '验证码无效' });
             }
         }
 
+        // 登录成功同样退还限流计数（正确密码不是爆破信号；否则用户反复登录会把自己限流成 429）。
+        // 只有「无此用户 / 密码错误 / 2FA 失败」这类真正的失败才计入额度。
+        req.__rateLimitRefund?.();
         const token = jwt.sign({ id: user.id, role: user.role, callsign: user.callsign, tv: user.token_version ?? 0 }, appConfig.jwtSecret, { expiresIn: '24h' });
         await logAudit(dbPool, req, { action: 'auth.login', targetType: 'user', targetId: user.id, actor: { id: user.id, callsign: user.callsign, role: user.role } });
-        res.json({ token, user: { id: user.id, callsign: user.callsign, role: user.role, has2fa: !!user.totp_secret, email: user.email || null } });
+        res.json({ token, user: { id: user.id, callsign: user.callsign, role: user.role, has2fa: !!user.totp_secret, email: user.email || null, email_verified: user.email_verified === true } });
     } catch (e) { console.error(e); res.status(500).json({ error: 'SERVER_ERROR' }); }
 });
 

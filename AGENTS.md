@@ -292,7 +292,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - `/api/admin/mail-settings`（GET / POST）：管理员配置「**哪些站内事件同时发邮件**」—— 总开关 + 事件勾选，存 `config.json` 的 `mail` 段，改完立即生效。**系统管理员**（POST 走 `require2FA`）。
 - `/api/admin/mail-test`：给自己账号绑定的邮箱发一封测试信（验 SMTP 通道 + 模板）。**系统管理员**。
 
-⚠️ **登录门槛**：`users.email_verified = false` 的账号登录会被 **403 `EMAIL_NOT_VERIFIED`** 拦下（注册必须过邮箱验证，见 §10）。
+⚠️ **邮箱验证策略（2026-10-05 调整，勿按旧的写）**：未验证邮箱的账号**可以登录**，但**不能用任何功能** —— 真正的闸门在 `verifyToken` 的 **`EMAIL_GATE_ALLOW`** 白名单（只放行 `/api/user/profile`、`/api/user/email*`、`/api/user/2fa*`、`/api/user/password`、`/api/user/notify-settings`、`/api/auth/*`、`/api/notifications*`、`/api/system-status`），其余接口一律 **403 `EMAIL_NOT_VERIFIED`**。前端在页面**最顶端**显示提示条 + 把主内容区换成「先验证邮箱」面板（`src/components/EmailVerifyGate.jsx`），菜单也只剩「用户中心」。见 §10 产品规则 1。
 
 **颁发记录（`user_awards`）生命周期（2026-09-24 修订）**
 
@@ -516,6 +516,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 39. **两个顺手修复**：① `UserCenterView` 进页面调用一次 `refreshUser()` —— 否则用户中心的 `user` 来自 localStorage 快照，会出现「明明绑了邮箱却显示未绑定、新加的开关被误禁用」；② `AuditLogsView` 的 `DETAIL_LABELS` 去掉重复的 `level`/`serial` 键（vite 构建告警），并补齐本轮新增动作的中文名与 detail 标签。
 
 40. **安全审计整改（2026-09-30，提交 `de02a40`，OAuth 相关）**：① **补上邮箱验证门槛**：`/complete`（绑定已有账号 / 新建账号）与 `/code` 两条出 JWT 路径此前不查 `email_verified`，未验证邮箱账号可经 HamCQ 授权绕过登录策略；现统一复用与密码登录一致的 `EMAIL_NOT_VERIFIED` 拦截（403 + 含 `email` 字段，前端可弹「重发验证邮件」）。**策略**：新建 OAuth 账号因邮箱来自受信 IdP HamCQ，INSERT 时直接置 `email_verified=TRUE`；绑定/回填邮箱时也一并置验证（避免「有 IdP 邮箱却被门槛卡死」）；存量未验证账号无论哪种渠道一律拦下。② **state 内存泄漏**：`server/services/sessionStore.js` 内存回退加 5 分钟周期清扫（`setInterval` + `unref`），防 `/start` 公开未限流导致 Map 无限增长（Redis 后端由 TTL 自然淘汰，无需此扫）。③ **上游错误不外泄**：`/callback` 换令牌 / 取用户信息失败不再记录上游响应正文、抛错文本去掉片段；异常 catch 不再把 `e.message` 回显浏览器，仅留服务端日志（符合「不记录凭据」约束）。
+   - ⚠️ **其中 ① 的「OAuth 邮箱门槛」已于 2026-10-05 撤销**：产品策略改成"未验证也能登录、功能统一由 `verifyToken` 拦"，保留该门槛会让未验证用户连登录都进不来。**别再往回加** —— 安全属性未削弱（业务接口仍被 `EMAIL_GATE_ALLOW` 拦）。见 §7 账号安全「邮箱验证策略」。
    - 中危依赖告警（minio@8.0.7 传递依赖 decode-uri-component / stream-json，4 个 moderate）**维持现状**：`npm audit fix --force` 会降级到 MinIO 7.x 破坏功能，按「不可达」接受（见 §4 依赖红线）。
 
 ### ★ 邮件 / 账号安全 / 部署红线（2026-09-30 追加，给后续 AI 的硬约束）
@@ -537,9 +538,14 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 **账号安全**
 - 🔴 **OAuth 出 JWT 的两条路径（`/api/auth/oauth/complete`、`/api/auth/oauth/code`）必须校验 `totp_secret`**（字段 `totp_code`），失败时**绝不消费** pendingToken / 一次性换码。这是 2026-09-30 修掉的高危（否则启用 2FA 的账号走一遍 HamCQ 授权即可免验证码登录）——**勿回退**。
-- 🔴 **OAuth 同样必须过邮箱验证门槛**（2026-09-30 审计整改，提交 `de02a40`）：两条出 JWT 路径统一调 `verifyEmailGate()`，`email_verified === false` 一律 403 `EMAIL_NOT_VERIFIED`（与密码登录一致），否则未验证邮箱账号可经 HamCQ 授权绕过登录策略。**新建 OAuth 账号因邮箱来自受信 IdP，INSERT 置 `email_verified=TRUE`**；绑定/回填邮箱也一并置验证。**勿回退**，改 OAuth 后重跑 `selftest-oauth-2fa.mjs` 并顺手验一遍未验证账号走 OAuth 应被拦。
+- 🔴 **邮箱验证策略（2026-10-05 起，勿按旧实现）**：~~登录必须验证邮箱（403）~~ → 现在**未验证邮箱也能登录**，但**不能用任何功能**。实现要点：
+  - 闸门是 **`verifyToken` 里的 `EMAIL_GATE_ALLOW`**（`server.js`），**全局唯一**；所有需登录的接口都过它。
+  - 白名单只放行"完成验证 / 账号自身设置 / 通知读 / system-status"，其余 403 `EMAIL_NOT_VERIFIED`。
+  - 前端 `EmailVerifyGate.jsx`（顶部 `EmailVerifyBanner` + 拦页面板），菜单只剩用户中心；**前端只是引导，别只靠它**。
+  - 🔴 **不要再给 OAuth 两条路径单独加邮箱门槛**（原 `verifyEmailGate` 已删除）—— 那会让未验证用户连登录都进不来，与产品口径冲突；登录后照样被上面的闸门拦。
+  - 新建 OAuth 账号仍因邮箱来自受信 IdP 而 `email_verified=TRUE`；绑定/回填邮箱也一并置验证。
 - ⚠️ `server/routes/oauth.js` 的 `/callback` 里 `const email` 有 **TDZ 陷阱**：任何代码/日志写在声明之前都会抛 `ReferenceError`，被外层 catch 吞掉 → **回调必然 500（OAuth 全挂）**。
-- **邮箱验证是登录门槛**：`users.email_verified=false` → 登录 403。⚠️ 改动用户数据（导入/迁移/批量脚本）时注意**存量账号必须回填为已验证**，否则全员被锁在门外。
+- **邮箱验证 = 功能门槛（不是登录门槛）**：`users.email_verified=false` → 能登录但**所有业务接口 403**（`EMAIL_GATE_ALLOW` 白名单除外）。⚠️ 改动用户数据（导入/迁移/批量脚本）时仍要注意**存量账号要回填为已验证**，否则老用户进站后发现什么都点不了。
 - ⚠️ `users.callsign` 一词三义（登录名/展示名/呼号），校验不一致，但**QSO 匹配只用 `user_id`**；用户已拍板**维持现状不修**，别主动重提。
 
 **前端样式**
@@ -646,7 +652,7 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 **产品规则（2026-09-30 用户拍板，勿擅自改口径）**
 
-1. **注册强制邮箱验证**：注册必须填邮箱 → 发验证邮件 → **点了链接才能登录**。未验证登录返回 `403 EMAIL_NOT_VERIFIED`，登录页**就地**给「重新发送验证邮件」；注册成功后前端切到「去邮箱点链接」面板（不再只弹 alert）。
+1. **注册强制邮箱验证**：注册必须填邮箱 → 发验证邮件。（**2026-10-05 调整**）**未验证也能登录**，但进站后**不能用任何功能**：页面最顶端常驻「邮箱未验证」提示条、主内容区换成「请先完成邮箱验证」面板（含「重新发送验证邮件 / 去用户中心 / 退出登录」），侧栏菜单只剩「用户中心」；后端 `verifyToken` 的 `EMAIL_GATE_ALLOW` 是最终闸门。注册成功后前端切到「去邮箱点链接」面板（不再只弹 alert）。
 2. **找回密码只对已绑邮箱的账号可用**：邮件链接 30 分钟、一次性。**没绑邮箱的老账号不强制补**，页面文案引导「用 HamCQ 登录一次会自动带上邮箱，或联系管理员」。
 3. **没绑邮箱的老账号怎么处理**（不做骚扰式强推）：
    - 用户中心「安全设置 → 绑定邮箱」那一行直接显示提示（未绑定就无法用邮箱找回密码）；
