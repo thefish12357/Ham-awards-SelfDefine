@@ -517,9 +517,16 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 
 40. **安全审计整改（2026-09-30，提交 `de02a40`，OAuth 相关）**：① **补上邮箱验证门槛**：`/complete`（绑定已有账号 / 新建账号）与 `/code` 两条出 JWT 路径此前不查 `email_verified`，未验证邮箱账号可经 HamCQ 授权绕过登录策略；现统一复用与密码登录一致的 `EMAIL_NOT_VERIFIED` 拦截（403 + 含 `email` 字段，前端可弹「重发验证邮件」）。**策略**：新建 OAuth 账号因邮箱来自受信 IdP HamCQ，INSERT 时直接置 `email_verified=TRUE`；绑定/回填邮箱时也一并置验证（避免「有 IdP 邮箱却被门槛卡死」）；存量未验证账号无论哪种渠道一律拦下。② **state 内存泄漏**：`server/services/sessionStore.js` 内存回退加 5 分钟周期清扫（`setInterval` + `unref`），防 `/start` 公开未限流导致 Map 无限增长（Redis 后端由 TTL 自然淘汰，无需此扫）。③ **上游错误不外泄**：`/callback` 换令牌 / 取用户信息失败不再记录上游响应正文、抛错文本去掉片段；异常 catch 不再把 `e.message` 回显浏览器，仅留服务端日志（符合「不记录凭据」约束）。
    - ⚠️ **其中 ① 的「OAuth 邮箱门槛」已于 2026-10-05 撤销**：产品策略改成"未验证也能登录、功能统一由 `verifyToken` 拦"，保留该门槛会让未验证用户连登录都进不来。**别再往回加** —— 安全属性未削弱（业务接口仍被 `EMAIL_GATE_ALLOW` 拦）。见 §7 账号安全「邮箱验证策略」。
-   - 中危依赖告警（minio@8.0.7 传递依赖 decode-uri-component / stream-json，4 个 moderate）**维持现状**：`npm audit fix --force` 会降级到 MinIO 7.x 破坏功能，按「不可达」接受（见 §4 依赖红线）。
+   - 中危依赖告警（minio@8.0.7 传递依赖 decode-uri-component / stream-json，4 个 moderate）**维持现状**：`npm audit fix --force` 会降级到 MinIO 7.x 破坏功能，按「不可达」接受（见下方 §7 红线「依赖」）。
 
 ### ★ 邮件 / 账号安全 / 部署红线（2026-09-30 追加，给后续 AI 的硬约束）
+
+**依赖（2026-10-05 复核）**
+- 现状：`npm audit --omit=dev` = **4 moderate**，全在 `minio` 传递链（minio / query-string / decode-uri-component / stream-json）；唯一"修复"是 `npm audit fix --force` 降级 minio 到 7.1.3 → **按「不可达」接受，别 force**。
+- **完整审计（含 dev）= 4 moderate + 5 high**：5 个 high 全在 **tailwindcss v3 构建链**（tailwindcss / fast-glob / micromatch / braces / chokidar），属 **devDependencies、只影响构建期、不进产物**；唯一修复是升 **tailwindcss 4.3.3（major + 破坏性，配置格式全改）** → 同样**接受、别 force**，要升须单独评审 v4 迁移。
+- ✅ **dompurify（`jspdf@4.2.1` 的传递依赖，severity low）已于 2026-10-05 用普通 `npm audit fix` 修好**：3.4.15 → **3.4.16**（只动 `package-lock.json`）。该 advisory 是 `IN_PLACE` + `afterSanitize` hook 的 DOM XSS；本站**不引用 DOMPurify**（`src` 0 处），`src/lib/exportAwardPdf.js` 只用 jsPDF 的 `addImage`/`output`（**不调 `.html()`**）→ 不可达，但顺手修掉。核验：`dist/assets/purify.es-*.js` 含 `3.4.16`、不再含 `3.4.15`。
+- ⚠️ **`package-lock.json` 存在且已被 git 跟踪，但 Dockerfile 两个阶段都只 `COPY package.json`**（走 `npm install` 重新解析）→ **容器依赖不锚定**：会出现"本地 3.4.15 / 容器 3.4.16"这种差异，容器产物哈希也永远 ≠ 本地。要收紧供应链需改成 `COPY package.json package-lock.json` + `npm ci`（**尚未做**，属构建流水线变更，单独评审；`npm ci` 要求 lockfile 与 package.json 严格同步）。
+- 🔴 **改依赖后必须在 Linux 侧验证**：`docker compose --profile demo build demo && docker compose --profile demo up -d demo` → 9994 healthy 才算过。
 
 **邮件**
 - 发信统一走 `server/services/mailer.js`（`sendMail` / `enqueueMail`），**不要在业务路由里直接 new nodemailer**。
