@@ -4671,6 +4671,11 @@ export default function App() {
                     <div className="space-y-1">
                         <label className={labelCls}>本站呼号</label>
                         <input name="callsign" required defaultValue={oauthPendingUsername} className={`${field} uppercase`} placeholder="例如: BG1ABC" />
+                        {/* ★ 呼号就是奖状上的「获奖者名称」（2026-10-06 加）：HamCQ 用户名可能只是昵称
+                            （曾有昵称直接被印上奖状与公开校验页），这里明确提醒用户确认/改成自己的呼号。 */}
+                        <span className="text-[10px] leading-relaxed text-amber-400/90">
+                            已带入 HamCQ 用户名 <b>{oauthPendingUsername}</b>。<b>这里的名称会作为获奖者印在奖状上</b>（奖状大厅、公开校验页都会显示）—— 若它不是您的呼号，请改成自己的呼号。
+                        </span>
                     </div>
                     <div className="space-y-1">
                         <label className={labelCls}>本站密码（可选）</label>
@@ -4790,7 +4795,15 @@ export default function App() {
                     </div>
                 ) : (
                 <form onSubmit={handleRegister} className="space-y-4">
-                    <div className="space-y-1"><label className={labelCls}>注册呼号</label><input name="callsign" required className={field} placeholder="例如: BA1AA" /></div>
+                    <div className="space-y-1">
+                        <label className={labelCls}>注册呼号</label>
+                        <input name="callsign" required className={field} placeholder="例如: BA1AA" />
+                        {/* ★ 呼号就是奖状上的「获奖者名称」（2026-10-06 加）：曾有用户用昵称/英文名注册，
+                            结果昵称直接被印在奖状与公开校验页上（奖状大厅里看到「ETHAN」这类名字）。 */}
+                        <span className="text-[10px] leading-relaxed text-amber-400/90">
+                            填写的呼号将作为<b>获奖者名称印在奖状上</b>，并显示在奖状大厅与公开校验页 —— 建议使用您的业余无线电呼号，不要用昵称或英文名。
+                        </span>
+                    </div>
                     <div className="space-y-1">
                         <label className={labelCls}>设置密码</label>
                         <PasswordInput variant="dark" name="password" required autoComplete="new-password" className={field} />
