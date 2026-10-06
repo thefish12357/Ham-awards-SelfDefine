@@ -533,6 +533,9 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
 - **两道禁发闸**：`SMTP_ENABLED != true` 或未配 `SMTP_HOST/USER/PASS` → 静默跳过；`DEMO_MODE=true` → 强制跳过（演示站不许发信）。**发信失败只记日志、绝不抛**（不能因为邮件把注册等业务链路搞崩）。
 - 发信**串行 + 间隔**（腾讯对并发敏感，基础版对外约 500 封/天）；请求链路里只 `enqueueMail`（不 await）。
 - ⚠️ 腾讯要求 **From 地址 == SMTP 登录账号**：发件地址固定取 `SMTP_USER`，只有**显示名**可配（`SMTP_FROM_NAME`）。
+- 🔴 **验证邮件「重发」有每账号每天 10 封上限**（2026-10-06）：`RESEND_DAILY_LIMIT = 10` + `countVerifyResendToday()`，**按被验证的账号计数**（不是按 IP——`loginLimiter` 是「IP/5 分钟」，挡不住换 IP 轰炸同一邮箱），计数直接读 `audit_logs` 里 `action='user.email_verify_resend'` 的行（**只在真的投出去时才记账**，不新建表），口径 `date_trunc('day', NOW())`。
+  - 两个入口**都要过这道闸**：公开的 `POST /api/auth/resend-verify`（超限则不再投递，但**仍回同一句笼统话术**防枚举）、登录态的 `POST /api/user/resend-verify`（用户中心按钮用，超限回 **429 `RESEND_LIMIT`** 并带 `remaining`）。
+  - ⚠️ **新增「未验证用户自己要能做」的接口，必须登记进 `server.js` 的 `EMAIL_GATE_ALLOW`**，否则未验证用户被功能闸门拦死（`resend-verify` 就是这么加的，见白名单「账号设置」组）。
 - 邮件里的链接用 `publicBaseUrl(req)` 拼，**不要** `req.get('host')`（本机打开会生成 localhost 链接）。
 - 邮件公开页（`#/verify-email`、`#/reset-password`）**必须免登录 → 必须用裸 fetch**；`apiFetch` 遇 401 会强制重载、把用户甩回登录页。
 - 令牌只存 **sha256 摘要**、一次性、验证 24h / 重置 30min；`issueEmailToken` 会**先作废同用途旧令牌**（重发即让旧链接失效）。

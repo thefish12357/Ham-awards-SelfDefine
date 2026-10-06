@@ -2353,7 +2353,7 @@ const IssuanceManager = () => {
                                                 >
                                                     <span className="flex min-w-0 items-center gap-2">
                                                         {awardOpen ? <ChevronDown size={15} className="shrink-0 text-slate-400" /> : <ChevronRight size={15} className="shrink-0 text-slate-400" />}
-                                                        <Trophy size={14} className="shrink-0 text-orange-400" />
+                                                        <Trophy size={14} className="shrink-0 text-orange-300" />
                                                         <span className="truncate font-bold text-slate-700">{a.name}</span>
                                                         {a.trackingId && <span className="shrink-0 font-mono text-[11px] text-slate-400">({a.trackingId})</span>}
                                                     </span>
@@ -3026,6 +3026,8 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
     const [roleReqSubmitting, setRoleReqSubmitting] = useState(false);
     const [showRoleReqForm, setShowRoleReqForm] = useState(false);
     const [roleReqForm, setRoleReqForm] = useState({ award_name: '', reason: '', experience: '', contact: '' });
+    // 重发验证邮件（未验证用户在「用户中心」自助触发；后端按「每账号每天 10 封」限流并回剩余额度）
+    const [resend, setResend] = useState({ busy: false, tone: '', msg: '' });
 
     // ★ 邮箱未验证时，后端只放行「账号设置」类接口（见 server.js 的 EMAIL_GATE_ALLOW）；
     //   下面这两个都是**业务接口**，发了必然 403：既刷控制台报错，又让「清空日志」永远停在
@@ -3037,6 +3039,22 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
         apiFetch('/stats/dashboard').then((s) => setQsoCount(Number(s.qsos) || 0)).catch(() => {});
     };
     useEffect(loadStats, [unverified]);
+
+    // ★ 重发验证邮件（2026-10-06）：走**登录态**专用接口 `POST /api/user/resend-verify`。
+    //   为什么不用登录页那个公开的 `/api/auth/resend-verify`：它为防枚举**永远只回一句笼统的话**，
+    //   用户点了既不知道有没有真发出去、也不知道今天还剩几次额度（用户反馈「进大厅提示去用户中心，
+    //   但那里没有重发按钮」）。这个只对自己的邮箱操作，会回真实结果 + 今日剩余额度。
+    //   后端超限会返回 429（`RESEND_LIMIT`），apiFetch 把 message 抛出来 → 直接显示给用户。
+    const resendVerifyEmail = async () => {
+        if (resend.busy) return;
+        setResend({ busy: true, tone: '', msg: '' });
+        try {
+            const r = await apiFetch('/user/resend-verify', { method: 'POST' });
+            setResend({ busy: false, tone: 'ok', msg: `${r.message}（今日剩余 ${r.remaining} 次）` });
+        } catch (e) {
+            setResend({ busy: false, tone: 'err', msg: e.message || '重发失败，请稍后再试' });
+        }
+    };
 
     // 进页面拉一次最新资料：登录响应里缓存的 user 可能是旧的（例如后来才绑定的邮箱、
     // 或本页新加的「邮件提醒」开关状态），不刷新就会出现「明明绑了邮箱却显示未绑定、
@@ -3224,6 +3242,31 @@ const UserCenterView = ({ user, refreshUser, onLogout }) => {
                         </div>
                         <button onClick={() => { setEmailInput(user.email || ''); setModal('email'); }} className="shrink-0 bg-white border px-4 py-2 rounded-lg text-sm font-bold">{user.email ? '修改' : '绑定'}</button>
                     </div>
+                    {/* ★ 未验证时的「重发验证邮件」自助入口（2026-10-06）：
+                        用户反馈「进大厅提示去用户中心，但用户中心没有重发按钮」——而未验证用户
+                        此时被功能闸门拦着，想用登录页那个「没收到？重发」都走不到。
+                        每账号每天最多 10 封；超限后端回 429，这里直接显示原因与剩余额度。 */}
+                    {unverified && user.email && (
+                        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="min-w-0 text-[11px] leading-relaxed text-amber-700">
+                                    邮箱未验证，<b>大部分功能需验证后才能使用</b>。没收到验证邮件可在此重发（每账号每天最多 10 封）。
+                                </div>
+                                <button
+                                    onClick={resendVerifyEmail}
+                                    disabled={resend.busy}
+                                    className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {resend.busy ? '发送中…' : '重新发送验证邮件'}
+                                </button>
+                            </div>
+                            {resend.msg && (
+                                <div className={`mt-2 text-[11px] leading-relaxed ${resend.tone === 'err' ? 'text-red-600' : 'text-emerald-700'}`}>
+                                    {resend.msg}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             </div>
             {/* 通知设置（2026-09-30）：邮件提醒开关。与「后台管理 → 邮件通知」是两层开关 ——
@@ -4545,7 +4588,7 @@ export default function App() {
                   <div className="text-sm font-bold text-slate-300">正在加载 HamGlory 奖状系统…</div>
                   {bootSlow ? (
                       <>
-                          <div className="max-w-xs text-xs leading-relaxed text-amber-400">
+                          <div className="max-w-xs text-xs leading-relaxed text-amber-300">
                               服务器响应较慢，可能是网络波动或服务正在重启。
                           </div>
                           <button
@@ -4608,7 +4651,11 @@ export default function App() {
     return (
     <div className="flex min-h-screen flex-col">
       {demoBar}
-      <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative min-h-0 flex-1 bg-slate-950 antialiased`}>
+      {/* ⚠️ 必须是 flex 容器（2026-10-06 修）：内层分屏(4635)用 `flex-1` 撑满高度，
+          若本层是 block，flex-1 不生效 → 分屏只有内容高度，右侧品牌区下方会露出本层背景。
+          深色模式露出的 bg-slate-950 与品牌区同为深色「看不出来」，亮色模式被 .app-light
+          强制成白色 → 右侧下方出现一条空白断层。 */}
+      <div className={`${theme === 'dark' ? 'app-dark' : 'app-light'} relative flex min-h-0 flex-1 flex-col bg-slate-950 antialiased`}>
       {/* 顶栏：跨两栏悬浮（返回首页 / 主题切换） */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-between px-6 py-5">
         <button
@@ -4720,7 +4767,7 @@ export default function App() {
                 {loginNotice && (
                     <div className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-xs leading-relaxed text-amber-200">
                         <div className="font-bold">邮箱还没验证</div>
-                        <div className="mt-1 text-amber-200/90">
+                        <div className="mt-1 text-amber-200">
                             {loginNotice.message}
                             {loginNotice.email ? `（${loginNotice.email}）` : ''}
                         </div>
@@ -4769,9 +4816,9 @@ export default function App() {
         ) : (
             <div className="pt-6">
                 {registerDone ? (
-                    <div className="space-y-4 rounded-xl border border-green-400/25 bg-green-400/[0.08] p-4 text-green-100">
+                    <div className="space-y-4 rounded-xl border border-green-400/25 bg-green-400/[0.08] p-4 text-emerald-300">
                         <div className="text-sm font-bold">注册成功，还差一步：验证邮箱</div>
-                        <div className="text-xs leading-relaxed text-green-200/90">
+                        <div className="text-xs leading-relaxed text-emerald-300">
                             验证邮件已发送到 <b className="font-mono">{registerDone.email}</b>
                             {registerDone.mailSent === false
                                 ? '（提示：本机未配置 SMTP，邮件未真正发出，请联系管理员）'
@@ -4781,7 +4828,7 @@ export default function App() {
                         <button
                             type="button"
                             onClick={() => handleResendVerify(registerDone.callsign)}
-                            className="w-full rounded-xl bg-white/10 py-2.5 text-xs font-bold text-green-100 transition-colors hover:bg-white/15"
+                            className="w-full rounded-xl bg-white/10 py-2.5 text-xs font-bold text-emerald-300 transition-colors hover:bg-white/15"
                         >
                             没收到？重新发送验证邮件
                         </button>

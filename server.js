@@ -768,6 +768,7 @@ const EMAIL_GATE_ALLOW = [
   /^\/api\/user\/2fa(\/|$)/,             // 两步验证设置（/setup、/enable、/disable）
   /^\/api\/user\/password$/,             // 改密码
   /^\/api\/user\/notify-settings$/,      // 邮件提醒开关
+  /^\/api\/user\/resend-verify$/,        // 重发验证邮件（2026-10-06：用户中心按钮；未验证用户自己就靠它解禁）
   // —— 邮箱验证 / 找回密码（这几个都是**公开接口**、当前并不经过 verifyToken，
   //    登记在此只为「将来若给它们加 verifyToken 守卫时不会把未验证用户锁在外面」）——
   /^\/api\/auth\/(verify-email|resend-verify|forgot-password|reset-password|login|register)$/,
@@ -1209,6 +1210,30 @@ async function sendVerifyEmail(req, { id, callsign, email }) {
     return !!r?.ok;
 }
 
+/**
+ * 「重发验证邮件」每账号每天上限（2026-10-06）。
+ * ------------------------------------------------------------------
+ * 为什么按**账号**计数而不是复用 loginLimiter：
+ *   `loginLimiter` 是「按 IP / 5 分钟 10 次」，挡不住「换 IP 或慢速」反复把验证信
+ *   投递到**同一个邮箱**（邮件轰炸 + 白耗腾讯企业邮配额）。
+ * 计数口径：服务器本地自然日（`date_trunc('day', NOW())`）。
+ * 记账方式：复用 `audit_logs` 里 `action='user.email_verify_resend'` 的行 ——
+ *   **只在邮件真的投出去时才写审计**，所以计数 = 实际发出的封数，
+ *   不会因为「撞到上限而没发」把额度越扣越少。target_id 存的是用户 id（VARCHAR）。
+ */
+const RESEND_DAILY_LIMIT = 10;
+async function countVerifyResendToday(userId) {
+    const r = await dbPool.query(
+        `SELECT count(*)::int AS n
+           FROM audit_logs
+          WHERE action = 'user.email_verify_resend'
+            AND target_id = $1
+            AND created_at >= date_trunc('day', NOW())`,
+        [String(userId)],
+    );
+    return r.rows[0]?.n || 0;
+}
+
 /** 点验证链接后由前端调用（链接形如 `#/verify-email?token=…`） */
 app.post('/api/auth/verify-email', async (req, res) => {
     const token = String((req.body || {}).token || '').trim();
@@ -1233,11 +1258,71 @@ app.post('/api/auth/resend-verify', loginLimiter, async (req, res) => {
         const r = await dbPool.query('SELECT id, callsign, email, email_verified, status FROM users WHERE callsign=$1', [callsign]);
         const user = r.rows[0];
         if (user && user.email && user.email_verified === false && user.status !== 'disabled') {
-            await sendVerifyEmail(req, user);
-            await logAudit(dbPool, req, { action: 'user.email_verify_resend', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, email: user.email } });
+            // ★ 每账号每天最多 RESEND_DAILY_LIMIT 封（2026-10-06）：超限就不再投递，
+            //   防「换 IP 反复轰炸同一邮箱 + 耗 SMTP 配额」。注意仍然回同一句 generic ——
+            //   这是**公开**接口，不能让调用方知道「这个账号已被限流 / 存在 / 已验证」。
+            const sentToday = await countVerifyResendToday(user.id);
+            if (sentToday < RESEND_DAILY_LIMIT) {
+                await sendVerifyEmail(req, user);
+                await logAudit(dbPool, req, { action: 'user.email_verify_resend', targetType: 'user', targetId: user.id, detail: { callsign: user.callsign, email: user.email, source: 'auth_resend' } });
+            }
         }
         res.json(generic);
     } catch (e) { res.json(generic); }
+});
+
+/**
+ * 重发验证邮件（**登录态**版，供「用户中心 → 绑定邮箱」按钮调用，2026-10-06）。
+ * ------------------------------------------------------------------
+ * 为什么另开一个登录态接口，而不让用户中心复用公开的 `/api/auth/resend-verify`：
+ *   公开那个为了防枚举**永远只回一句笼统的话**，用户点了按钮既不知道有没有真发出去、
+ *   也不知道今天还剩几次额度，体验很差（用户反馈「进大厅提示去用户中心，但那里没有
+ *   重发按钮」）。这里只对**自己的**邮箱操作，可以放心回真实结果与剩余额度。
+ *
+ * ⚠️ 该路径必须登记进 `EMAIL_GATE_ALLOW`（未验证用户自己就发不了这封验证信，闸门会拦死他）。
+ */
+app.post('/api/user/resend-verify', verifyToken, async (req, res) => {
+    try {
+        const u = await dbPool.query(
+            'SELECT id, callsign, email, email_verified, status FROM users WHERE id=$1',
+            [req.user.id],
+        );
+        const user = u.rows[0];
+        if (!user) return res.status(404).json({ error: 'USER_NOT_FOUND', message: '账号不存在' });
+        if (!user.email) return res.status(400).json({ error: 'NO_EMAIL', message: '尚未绑定邮箱，请先在上方绑定邮箱' });
+        if (user.email_verified !== false) return res.status(400).json({ error: 'ALREADY_VERIFIED', message: '邮箱已验证，无需重发' });
+        if (user.status === 'disabled') return res.status(403).json({ error: 'ACCOUNT_DISABLED', message: '账号已被停用' });
+
+        const sentToday = await countVerifyResendToday(user.id);
+        if (sentToday >= RESEND_DAILY_LIMIT) {
+            return res.status(429).json({
+                error: 'RESEND_LIMIT',
+                message: `今天的重发次数已用完（每天最多 ${RESEND_DAILY_LIMIT} 封），明天再来`,
+                remaining: 0,
+                sentToday,
+            });
+        }
+
+        const sent = await sendVerifyEmail(req, user);
+        if (sent) {
+            // 只在真发出时记账 → countVerifyResendToday 统计的就是实际封数
+            await logAudit(dbPool, req, {
+                action: 'user.email_verify_resend', targetType: 'user', targetId: user.id,
+                detail: { callsign: user.callsign, email: user.email, source: 'user_center' },
+            });
+        }
+        res.json({
+            success: true,
+            sent,
+            sentToday: sentToday + (sent ? 1 : 0),
+            remaining: Math.max(0, RESEND_DAILY_LIMIT - sentToday - (sent ? 1 : 0)),
+            message: sent
+                ? '验证邮件已重新发送，请查收（同一邮箱以「最新一封」为准，旧链接会失效）'
+                : '本机未配置 SMTP，邮件没有真正发出，请联系管理员',
+        });
+    } catch (e) {
+        res.status(500).json({ error: 'SERVER_ERROR', message: e.message });
+    }
 });
 
 /** 忘记密码：给已绑定邮箱的账号发重置链接 */

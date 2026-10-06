@@ -383,7 +383,7 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme, demoU
             data-reveal
             className="mx-auto max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-white/[0.04] p-10 text-center opacity-0 md:p-16"
           >
-            <Waves className="mx-auto text-cyan-300/70" size={34} />
+            <Waves className="mx-auto text-cyan-300" size={34} />
             <h2 className="mt-6 text-3xl font-black tracking-tight md:text-4xl">准备好领取你的第一张奖状了吗？</h2>
             <p className="mx-auto mt-4 max-w-xl text-slate-300">注册即可上传日志、查看奖状进度，全程免费。</p>
             <div className="mt-9 flex flex-col items-center justify-center gap-4 sm:flex-row">

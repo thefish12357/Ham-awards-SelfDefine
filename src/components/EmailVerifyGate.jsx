@@ -36,7 +36,7 @@ export default function EmailVerifyGate({ user, onResend, onOpenUserCenter, onLo
   return (
     <div className="mx-auto max-w-2xl rounded-2xl border border-amber-500/30 bg-amber-950 p-6 text-amber-200 sm:p-8">
       <div className="flex items-start gap-3">
-        <MailWarning className="mt-0.5 shrink-0 text-amber-400" size={22} />
+        <MailWarning className="mt-0.5 shrink-0 text-amber-300" size={22} />
         <div className="min-w-0">
           <h2 className="text-lg font-bold">请先完成邮箱验证</h2>
           <p className="mt-2 text-sm leading-relaxed">
