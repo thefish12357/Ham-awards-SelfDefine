@@ -1,8 +1,14 @@
-# `cloudflare/` —— 站外「内测已结束」说明页
+# `cloudflare/` —— 公网「内测已结束」说明页 与 「静态演示」主站
 
-> 场景：**关闭 cloudflared 隧道 / 关掉本机服务** 之后，希望访客访问 `hamglory.top`
-> 或 `demo.hamglory.top` 看到的是「内测已结束」说明页，而不是 Cloudflare 的
-> `1033 / 502` 错误页。
+> **两种形态，按域名区分**：
+>
+> 1. **说明页**（`closed-notice.worker.js`）—— 关掉隧道 / 本机服务后，访客访问域名看到的是
+>    「内测已结束」说明页，而不是 Cloudflare 的 `1033 / 502`。**`demo.hamglory.top` 现在用它。**
+> 2. **静态演示**（`static-demo.worker.js` + 根目录 `wrangler.toml`）—— **没有服务器**时的过渡形态：
+>    `hamglory.top` 只放「落地页 + 示例奖状」（纯前端数据），其余功能一律跳说明页。
+>    部署步骤见 **第六节**。
+>
+> 下面第一~五节讲第 1 种（两个域名都能用）。
 
 核心思路：把说明页交给 **Cloudflare Worker（边缘运行，不需要源站）**。
 Worker Route 会在「隧道」类型的 DNS 记录**之前**拦截请求 —— 所以 **不需要改 DNS**，
@@ -80,3 +86,60 @@ curl -s -i https://demo.hamglory.top/ | head -n 5
   证书、其它子域都不受影响。
 - 免费套餐 Worker 额度（10 万次/天）对这种说明页绰绰有余。
 - 想改文案：只改 `closed-notice.worker.js` 里的 `NOTICE_HTML` 然后重新 Deploy。
+
+---
+
+## 六、主站改「静态演示」形态（2026-10-07 新增）
+
+> 背景：**暂时没有服务器** → `hamglory.top` 只对外展示**落地页 + 示例奖状**（纯前端本地数据，
+> 不依赖 API），其余功能（登录 / 注册 / 日志 / 审核 / 校验…）一律跳 `/closed` 说明页；
+> `demo.hamglory.top` **维持全站说明页**。等以后有了源站，删 Route 即可恢复。
+
+### 与第一种形态的区别
+
+| | `closed-notice`（demo 域名） | `static-demo`（主站） |
+|---|---|---|
+| `/` | 说明页 | **落地页 + 示例奖状**（`dist` 静态资源） |
+| `/api/*` | 503 | 503（前端据此进入「停站模式」） |
+| 未知路径 | 说明页（200） | 说明页（**404**） |
+| 部署方式 | 控制台粘贴单文件 | **wrangler + 静态资源** |
+
+### 相关文件
+
+- `wrangler.toml`（**仓库根**）：Worker 名 `hamglory-demo`，静态资源指向 `./dist`
+- `cloudflare/static-demo.worker.js`：`/api/*` → 503、`/closed` 与未知路径 → 说明页
+- `src/lib/siteMode.js` + `src/app.jsx` + `src/pages/LandingView.jsx`：前端拿到
+  503 `SERVICE_CLOSED` 后进入停站模式 —— CTA 跳 `/closed`、白名单外的 hash 路由也跳 `/closed`
+  （白名单只有 5 个公开静态页：`#/about` `#/privacy` `#/terms` `#/protocol` `#/contact`）
+
+### 部署步骤
+
+```powershell
+cd <仓库根>
+npm run build                 # ⚠️ 必须先构建（dist/ 不入库）
+npx wrangler login            # 首次：浏览器授权（或设 CLOUDFLARE_API_TOKEN）
+npx wrangler deploy           # 按 wrangler.toml 部署 hamglory-demo
+```
+
+先用 workers.dev 预览自测（`https://hamglory-demo.<子域>.workers.dev/`）：
+落地页能看、`/closed` 是说明页、`/api/system-status` 返回 503 JSON。
+
+### 切换路由（关键一步）
+
+域名页 `hamglory.top` → **Workers 路由** → 把 **`hamglory.top/*`** 这条的 **Worker 改成 `hamglory-demo`**；
+**`demo.hamglory.top/*` 保持 `closed-notice` 不动**。
+
+### 注意
+
+- 命中静态资源的请求由 Cloudflare **直接返回、不经过 Worker**（免费且不限量）；只有 `/api/*`、
+  `/closed` 与未知路径才会调用 Worker。
+- `dist/` 改了要**重新 `npm run build` + `npx wrangler deploy`**（同本机 9993 那套：产物必须重建）。
+- 说明页文案在 `static-demo.worker.js` 与 `closed-notice.worker.js` 里**各有一份拷贝**
+  （后者为能在控制台单文件粘贴而保持自包含）→ **改文案要两处同改**。
+- 恢复开放：删掉 `hamglory.top/*` 这条 Route（或换回 tunnel 指向）即可。
+- 🎯 **这条形态的核心价值**：页面与静态资源**全部由 Cloudflare 边缘提供**，与源站无关 →
+  **关掉 Docker、关掉本机 `node server.js`、甚至关机，公网访问 `hamglory.top` 依然能看到演示**。
+  代价是**必须在 Cloudflare 侧配一次 Route**（边缘得知道"这个 hostname 归这台 Worker 管"），
+  这一点和上次做「内测已结束」说明页是完全一样的操作、同样只需一次。
+- 不想进后台的话：在根目录 `wrangler.toml` 里取消 `[[routes]]` 的注释后 `npx wrangler deploy`
+  （**前提**：先把 `hamglory.top/*` 原有的 `closed-notice` 绑定删掉，别让两台 Worker 抢同一个 pattern）。

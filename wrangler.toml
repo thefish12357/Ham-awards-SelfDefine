@@ -1,0 +1,38 @@
+# Cloudflare Workers —— 「静态演示 + 内测已结束」形态（仅 hamglory.top 主站用）
+# ==================================================================
+# 部署（在仓库根目录执行）：
+#   npm run build
+#   npx wrangler login          # 首次：浏览器授权（或设 CLOUDFLARE_API_TOKEN）
+#   npx wrangler deploy
+# 然后在 Cloudflare 控制台把 Route `hamglory.top/*` 的 Worker 换成 `hamglory-demo`；
+# `demo.hamglory.top/*` 那条不动（继续用 `closed-notice`）。
+# 细节见 cloudflare/README.md。
+#
+# ⚠️ `dist/` 是 Vite 构建产物（不入库）→ 部署前**必须先 npm run build**。
+
+name = "hamglory-demo"
+main = "cloudflare/static-demo.worker.js"
+compatibility_date = "2026-10-01"
+
+# 静态资源：命中即由 Cloudflare 直接返回（**不经过 Worker**，请求免费且不限量）；
+# 未命中的路径才进入 Worker → 见 cloudflare/static-demo.worker.js
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "none"
+
+# ------------------------------------------------------------------
+# 路由（Route）—— 本项目决定：**只上主站 `hamglory.top`，不动 demo 域名**
+# ------------------------------------------------------------------
+# 采用「方案 A」：部署后在 Cloudflare 控制台手动改 Route（只需一次）——
+#   域名页 → Workers 路由 → 把 `hamglory.top/*` 这条的 Worker 改成 `hamglory-demo`
+#   （`demo.hamglory.top/*` 保持 `closed-notice` 不动）
+# 因此下面这段**保持注释**即可，`wrangler deploy` 不会碰任何 Route。
+#
+# 若哪天想改成「用 wrangler 一键接管 Route」（免进后台），取消注释后 deploy：
+# ⚠️ 前提：先删掉 `hamglory.top/*` 上原有的 `closed-notice` 绑定 ——
+#    同一个 pattern 不能让两台 Worker 同时抢，否则谁生效不可预测。
+#
+# [[routes]]
+# pattern = "hamglory.top/*"
+# zone_name = "hamglory.top"

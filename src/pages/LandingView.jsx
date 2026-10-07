@@ -113,7 +113,7 @@ function useReveal() {
   return ref;
 }
 
-const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme, demoUrl = '', demoMode = false, demoUser = '', demoPass = '' }) => {
+const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme, demoUrl = '', demoMode = false, demoUser = '', demoPass = '', closedMode = false }) => {
   const rootRef = useReveal();
   const [selectedDemo, setSelectedDemo] = useState(null);
 
@@ -240,6 +240,17 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme, demoU
               </button>
             </div>
 
+            {/* 停站 / 静态演示模式：说清"能看什么、不能做什么"，避免点入口后被弹走 */}
+            {closedMode && (
+              <p
+                className="mx-auto mt-8 max-w-2xl animate-fade-up rounded-xl border border-amber-300/30 bg-amber-300/10 px-4 py-3 text-xs leading-relaxed text-amber-300"
+                style={{ animationDelay: '0.35s' }}
+              >
+                本站内测阶段已结束，<strong>暂不开放注册与登录</strong>。
+                下面是示例奖状的真实渲染效果，仅用于展示系统能力。
+              </p>
+            )}
+
             <div
               className="mt-14 flex animate-fade-up flex-wrap items-center justify-center gap-2.5 text-[11px] text-slate-400"
               style={{ animationDelay: '0.4s' }}
@@ -261,7 +272,8 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme, demoU
               <h2 className="mt-4 text-3xl font-black tracking-tight text-white md:text-4xl">真实奖状，先看效果</h2>
               <p className="mx-auto mt-4 max-w-2xl text-slate-400">
                 下面是按可视化布局<strong className="text-slate-200">真实渲染</strong>的示例奖状（数据为演示用途）。
-                点击任意一张查看规则与等级要求；登录后即可看到你自己的完整奖状大厅与真实进度。
+                点击任意一张查看规则与等级要求。
+                {closedMode ? '（内测已结束，登录入口已暂时关闭）' : '登录后即可看到你自己的完整奖状大厅与真实进度。'}
               </p>
             </div>
 
@@ -306,10 +318,12 @@ const LandingView = ({ onLogin, onRegister, theme = 'dark', onToggleTheme, demoU
                 onClick={onLogin}
                 className="group inline-flex items-center gap-2 rounded-xl bg-slate-900 px-7 py-3.5 font-bold text-white transition-all hover:-translate-y-0.5"
               >
-                登录查看完整奖状大厅
+                {closedMode ? '内测已结束 · 查看说明' : '登录查看完整奖状大厅'}
                 <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
               </button>
-              <p className="text-xs text-slate-500">示例数据仅用于演示；登录后展示的是你本人日志匹配出的真实进度。</p>
+              {!closedMode && (
+                <p className="text-xs text-slate-500">示例数据仅用于演示；登录后展示的是你本人日志匹配出的真实进度。</p>
+              )}
             </div>
           </div>
         </section>

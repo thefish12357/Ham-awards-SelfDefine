@@ -22,6 +22,9 @@ import { importWithRetry } from './lib/lazyImport.js';
 // 奖状目标类型规格（placeholder / 即时提示 / 保存前校验）
 import { TARGET_SPECS, validateRulesTargets } from './lib/awardTargets.js';
 import { DEFAULT_ROUTE, isPublicHashRoute, isRouteAllowed, parseEmailAuthHash, parseVerifyHash, readPublicPage, readRoute, writeRoute } from './lib/routes.js';
+// 「内测已结束 · 静态演示」模式（无服务器过渡形态，2026-10-07）：
+// 由 /api/* 返回 503 SERVICE_CLOSED 推断；只放落地页，其余跳 /closed 说明页
+import { goClosedNotice, isHashAllowedWhenClosed, isServiceClosedError } from './lib/siteMode.js';
 import LotwImportView from './pages/LotwImportView.jsx';
 import VerifyView from './pages/VerifyView.jsx';
 // 邮件里的公开页：邮箱验证 / 重置密码（免登录，同样在登录态判断之前拦截）
@@ -4074,6 +4077,9 @@ export default function App() {
   const [demoMode, setDemoMode] = useState(false);
   const [demoUser, setDemoUser] = useState('');
   const [demoPass, setDemoPass] = useState('');
+  // ★ 停站 / 静态演示模式（2026-10-07）：/api/* 返回 503 SERVICE_CLOSED → true。
+  //   见 src/lib/siteMode.js 与 cloudflare/static-demo.worker.js
+  const [closedDemo, setClosedDemo] = useState(false);
   
   // New States for Menu and Notifications
   const [expandedMenus, setExpandedMenus] = useState({});
@@ -4203,7 +4209,20 @@ export default function App() {
                 setView('landing'); // 已安装未登录：先展示网站首页，由 CTA 进入 auth
             }
         }
-    }).catch(() => setView('landing')).finally(() => {
+    }).catch((e) => {
+        // ★ 停站 / 静态演示模式（2026-10-07）：无服务器时 Worker 对 /api/* 回
+        //   503 SERVICE_CLOSED（cloudflare/static-demo.worker.js）。此时**只放**
+        //   「落地页 + 5 个公开静态页」，其余 hash 路由（登录/注册/校验/邮件页…）
+        //   一律跳「内测已结束」说明页 /closed。
+        if (isServiceClosedError(e)) {
+            setClosedDemo(true);
+            if (!isHashAllowedWhenClosed(window.location.hash)) {
+                goClosedNotice();
+                return;
+            }
+        }
+        setView('landing');
+    }).finally(() => {
         clearTimeout(slowTimer);
         clearTimeout(hardTimer);
     });
@@ -4613,14 +4632,16 @@ export default function App() {
     <>
       {demoBar}
       <LandingView
-        onLogin={() => { setAuthMode('login'); setView('auth'); }}
-        onRegister={() => { setAuthMode('register'); setView('auth'); }}
+        onLogin={() => { if (closedDemo) return goClosedNotice(); setAuthMode('login'); setView('auth'); }}
+        onRegister={() => { if (closedDemo) return goClosedNotice(); setAuthMode('register'); setView('auth'); }}
         theme={theme}
         onToggleTheme={toggleTheme}
-        demoUrl={demoUrl}
+        /* 停站时不给「体验演示系统」入口：demo 站本身也是「内测已结束」 */
+        demoUrl={closedDemo ? '' : demoUrl}
         demoMode={demoMode}
         demoUser={demoUser}
         demoPass={demoPass}
+        closedMode={closedDemo}
       />
     </>
   );
